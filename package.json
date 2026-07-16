@@ -1,0 +1,69 @@
+{
+  "name": "@seanmozeik/spike",
+  "version": "0.0.1",
+  "description": "Always-on single-self-chat iMessage agent backed by Codex app-server",
+  "keywords": [
+    "agent",
+    "bun",
+    "cli",
+    "codex",
+    "effect",
+    "imessage"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seanmozeik/spike.git"
+  },
+  "bin": {
+    "spike": "./dist/spike"
+  },
+  "files": [
+    "dist",
+    "examples",
+    "LICENSE",
+    "README.md",
+    "src"
+  ],
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "audit:public": "bun scripts/audit-public-tree.ts",
+    "build": "bun scripts/build.ts",
+    "check": "bun run format && bun run lint:fix && bun run typecheck",
+    "dev": "bun run src/cli.ts",
+    "prepublishOnly": "bun scripts/build.ts -- --no-formula",
+    "test": "bun --bun vitest run --reporter=minimal",
+    "typecheck": "tsc --noEmit",
+    "format": "oxfmt --write .",
+    "lint": "oxlint --format agent --tsconfig tsconfig.oxlint.json ./src ./tests ./scripts",
+    "lint:fix": "oxlint --format agent --tsconfig tsconfig.oxlint.json --fix ./src ./tests ./scripts",
+    "setup": "effect-tsgo patch",
+    "verify": "bun run check && bun run test && bun run audit:public && bun run build -- --no-formula"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.0-beta.98",
+    "effect": "4.0.0-beta.98",
+    "smol-toml": "^1.6.1",
+    "typescript": "^7.0.2"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "^0.18.1",
+    "@effect/vitest": "4.0.0-beta.98",
+    "bun-types": "1.3.14",
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.73.0",
+    "oxlint-tsgolint": "^0.24.0",
+    "vitest": "4.1.10"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

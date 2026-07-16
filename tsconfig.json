@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Effect-TS/language-service/refs/heads/main/schema.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "lib": ["ESNext", "DOM", "ES2024"],
+    "types": ["bun-types"],
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "allowUnreachableCode": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "exactOptionalPropertyTypes": true,
+
+    "outDir": "dist",
+    "rootDir": ".",
+    "incremental": true,
+    "sourceMap": true,
+
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": { "preferSchemaOverJson": "off" }
+      }
+    ]
+  },
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

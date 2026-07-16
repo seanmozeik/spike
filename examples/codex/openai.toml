@@ -1,0 +1,7 @@
+# Built-in OpenAI provider. Authentication is managed by Codex.
+model_provider = "openai"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"

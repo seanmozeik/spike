@@ -1,0 +1,7 @@
+model_provider = "local_lm_studio"
+model = "your-lm-studio-model"
+
+[model_providers.local_lm_studio]
+name = "LM Studio"
+base_url = "http://localhost:1234/v1"
+wire_api = "responses"

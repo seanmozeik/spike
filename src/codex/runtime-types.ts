@@ -1,0 +1,51 @@
+import type { Effect } from 'effect';
+
+import type { CodexThreadId, CodexTurnId } from '../domain/ids';
+import type { CodexRuntimeError, GenerationBroken } from '../errors';
+import type { ClassifiedOutput } from './output-classifier';
+import type { ThreadSnapshot } from './reconcile';
+
+interface StartTurnOptions {
+  readonly clientUserMessageId: string;
+  readonly input: string;
+  readonly threadId: CodexThreadId;
+}
+
+interface SteerTurnOptions extends StartTurnOptions {
+  readonly expectedTurnId: CodexTurnId;
+}
+
+interface TurnEventHandlers {
+  readonly onAcknowledgement: (text: string) => void;
+  readonly onCompactionStarted: (itemId: string) => void;
+}
+
+interface CodexRuntime {
+  readonly accountId: string;
+  readonly archiveThread: (threadId: CodexThreadId) => Effect.Effect<void, CodexRuntimeError>;
+  readonly close: () => Promise<void>;
+  readonly health: Effect.Effect<void, CodexRuntimeError>;
+  readonly loadedThreads: Effect.Effect<readonly CodexThreadId[], CodexRuntimeError>;
+  readonly rateLimits: Effect.Effect<unknown, CodexRuntimeError>;
+  readonly readThread: (
+    threadId: CodexThreadId,
+  ) => Effect.Effect<ThreadSnapshot, CodexRuntimeError | GenerationBroken>;
+  readonly resumeThread: (
+    threadId: CodexThreadId,
+  ) => Effect.Effect<void, CodexRuntimeError | GenerationBroken>;
+  readonly interruptTurn: (
+    threadId: CodexThreadId,
+    turnId: CodexTurnId,
+  ) => Effect.Effect<void, CodexRuntimeError>;
+  readonly startThread: Effect.Effect<CodexThreadId, CodexRuntimeError>;
+  readonly startTurn: (options: StartTurnOptions) => Effect.Effect<CodexTurnId, CodexRuntimeError>;
+  readonly steerTurn: (options: SteerTurnOptions) => Effect.Effect<void, CodexRuntimeError>;
+  readonly usage: Effect.Effect<unknown, CodexRuntimeError>;
+  readonly waitForTurn: (
+    threadId: CodexThreadId,
+    turnId: CodexTurnId,
+    handlers: TurnEventHandlers,
+  ) => Effect.Effect<ClassifiedOutput, CodexRuntimeError>;
+}
+
+export type { CodexRuntime, StartTurnOptions, SteerTurnOptions, TurnEventHandlers };

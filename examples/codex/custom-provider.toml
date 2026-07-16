@@ -1,0 +1,8 @@
+model_provider = "proxy"
+model = "your-model-name"
+
+[model_providers.proxy]
+name = "OpenAI-compatible proxy"
+base_url = "https://proxy.example.com/v1"
+wire_api = "responses"
+env_key = "PROXY_API_KEY"

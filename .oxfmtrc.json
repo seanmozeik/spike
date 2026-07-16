@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "useTabs": false,
+  "tabWidth": 2,
+  "printWidth": 100,
+  "endOfLine": "lf",
+  "insertFinalNewline": true,
+  "singleQuote": true,
+  "quoteProps": "as-needed",
+  "trailingComma": "all",
+  "semi": true,
+  "arrowParens": "always",
+  "bracketSameLine": false,
+  "bracketSpacing": true,
+  "objectWrap": "collapse",
+  "sortImports": { "internalPattern": ["@/"], "newlinesBetween": true, "sortSideEffects": false },
+  "sortPackageJson": true,
+  "ignorePatterns": ["node_modules", "dist", "build", ".wrangler", "coverage"]
+}

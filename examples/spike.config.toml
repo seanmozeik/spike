@@ -1,0 +1,17 @@
+# Copy to ~/.config/spike/config.toml and replace the fictional values.
+# Put all Codex model, provider, MCP, hook, feature, approval, and sandbox
+# configuration under codex_home, not in this file.
+chat_guid = "any;-;+15555550123"
+handle = "+15555550123"
+working_directory = "~/Documents"
+prompt_path = "~/.config/spike/prompt.md"
+codex_home = "~/.config/spike/codex-home"
+codex_executable = "codex"
+casing = "lowercase"
+emoji = "after_user"
+final_punctuation = "no_full_stop"
+swearing = "tasteful"
+wit = "dry"
+seed_auth_path = "~/.codex/auth.json"
+messages_database = "~/Library/Messages/chat.db"
+like_acknowledgements = true
