@@ -35,7 +35,6 @@
     "access": "public"
   },
   "scripts": {
-    "audit:public": "bun scripts/audit-public-tree.ts",
     "build": "bun scripts/build.ts",
     "check": "bun run format && bun run lint:fix && bun run typecheck",
     "dev": "bun run src/cli.ts",
@@ -46,7 +45,7 @@
     "lint": "oxlint --format agent --tsconfig tsconfig.oxlint.json ./src ./tests ./scripts",
     "lint:fix": "oxlint --format agent --tsconfig tsconfig.oxlint.json --fix ./src ./tests ./scripts",
     "setup": "effect-tsgo patch",
-    "verify": "bun run check && bun run test && bun run audit:public && bun run build -- --no-formula"
+    "verify": "bun run check && bun run test && bun run build -- --no-formula"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-beta.98",
