@@ -170,7 +170,7 @@ const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContex
   closing: { value: false },
   codexJournal: makeCodexJournal(options.database),
   controllerReady: Promise.withResolvers<SchedulerController>(),
-  journal: makeJournal(options.database),
+  journal: makeJournal(options.database, { chatGuid: options.chatGuid, handle: options.handle }),
   monitors: new Map(),
   now,
   options,

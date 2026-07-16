@@ -5,7 +5,7 @@ import { Effect } from 'effect';
 
 import { ChatGuid, MessageGuid, MessagesRowId } from './domain/ids';
 import type { ObservedAttachment, ObservedMessage } from './domain/inbound';
-import { MessagesPermissionError, MessagesQueryError, SelfChatMismatchError } from './errors';
+import { ConversationMismatchError, MessagesPermissionError, MessagesQueryError } from './errors';
 
 interface MessagesInboxOptions {
   readonly chatGuid: string;
@@ -16,6 +16,7 @@ interface MessagesInboxOptions {
 interface ChatRow {
   readonly guid: string;
   readonly has_handle: number;
+  readonly participant_count: number;
   readonly style: number;
 }
 
@@ -62,20 +63,23 @@ const FOUR_BYTES = 4;
 const EIGHT_BYTES = 8;
 const BYTE_BASE = 256;
 const PLUS_BYTE = 43;
-const SELF_CHAT_STYLE = 45;
+const DIRECT_CHAT_STYLE = 45;
 const ENCODED_LENGTH_BYTES = new Map<number, number>([
   [TWO_BYTE_LENGTH, TWO_BYTES],
   [FOUR_BYTE_LENGTH, FOUR_BYTES],
   [EIGHT_BYTE_LENGTH, EIGHT_BYTES],
 ]);
 
-const CHAT_QUERY = `SELECT c.guid, c.style,
+const CHAT_QUERY = `SELECT c.guid, c.style, COUNT(chj_all.handle_id) AS participant_count,
   EXISTS(
     SELECT 1 FROM chat_handle_join chj
     JOIN handle h ON h.ROWID = chj.handle_id
     WHERE chj.chat_id = c.ROWID AND lower(h.id) = lower(?)
   ) AS has_handle
-  FROM chat c WHERE c.guid = ?`;
+  FROM chat c
+  LEFT JOIN chat_handle_join chj_all ON chj_all.chat_id = c.ROWID
+  WHERE c.guid = ?
+  GROUP BY c.ROWID`;
 const ATTACHMENT_QUERY = `SELECT a.guid AS attachment_guid, a.filename, a.mime_type,
   a.transfer_name, a.uti, a.total_bytes
   FROM attachment a JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
@@ -170,14 +174,17 @@ const accessError = (
       })
     : queryError(operation, cause);
 
-const validateSelfChat = (database: Database, options: MessagesInboxOptions): void => {
+const validateConfiguredConversation = (
+  database: Database,
+  options: MessagesInboxOptions,
+): void => {
   const chat = database
     .query<ChatRow, [string, string]>(CHAT_QUERY)
     .get(options.handle, options.chatGuid);
-  if (chat?.style === SELF_CHAT_STYLE && chat.has_handle === 1) {
+  if (chat?.style === DIRECT_CHAT_STYLE && chat.has_handle === 1 && chat.participant_count === 1) {
     return;
   }
-  throw new SelfChatMismatchError({
+  throw new ConversationMismatchError({
     chatGuid: options.chatGuid,
     handle: options.handle,
     message: 'configured chat must be a one-to-one iMessage chat containing the configured handle',
@@ -194,6 +201,7 @@ const mapMessage = (
       : [],
   chatGuid: ChatGuid.make(row.chat_guid),
   handle: row.handle_id,
+  isFromMe: false,
   messageGuid: MessageGuid.make(row.message_guid),
   rowId: MessagesRowId.make(row.rowid),
   sentAt: new Date(row.unix_ms),
@@ -242,12 +250,12 @@ const openMessagesInbox = Effect.fn('MessagesInbox.open')((options: MessagesInbo
       Effect.try({
         catch: (cause) => {
           database.close();
-          return cause instanceof SelfChatMismatchError
+          return cause instanceof ConversationMismatchError
             ? cause
-            : accessError(options, 'validate-self-chat', cause);
+            : accessError(options, 'validate-configured-conversation', cause);
         },
         try: () => {
-          validateSelfChat(database, options);
+          validateConfiguredConversation(database, options);
           return makeInbox(database, options);
         },
       }),

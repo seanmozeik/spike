@@ -19,6 +19,7 @@ interface SpikeEngineOptions {
   readonly chatGuid: ChatGuid;
   readonly database: Database;
   readonly delivery: DeliveryService;
+  readonly handle: string;
   readonly inbox: MessagesInboxHandle;
   readonly like: LikeAcknowledgement;
   readonly now?: () => Date;

@@ -13,6 +13,7 @@ import type { ObservedMessage } from '../src/domain/inbound';
 import { makeJournal } from '../src/journal/service';
 
 const CHAT_GUID = ChatGuid.make('any;-;+15555550199');
+const HANDLE = '+15555550199';
 const roots: string[] = [];
 
 afterEach(() => {
@@ -24,7 +25,8 @@ afterEach(() => {
 const observed = (rowId: number, text = `message-${rowId}`): ObservedMessage => ({
   attachments: [],
   chatGuid: CHAT_GUID,
-  handle: '+15555550199',
+  handle: HANDLE,
+  isFromMe: false,
   messageGuid: MessageGuid.make(`guid-${rowId}`),
   rowId: MessagesRowId.make(rowId),
   sentAt: new Date('2026-07-14T12:00:00.000Z'),
@@ -42,7 +44,7 @@ it.effect('atomically persists inbound rows and cursor, dedupes, and resumes aft
   Effect.gen(function* journalFixture() {
     const databasePath = makeDatabasePath();
     const firstHandle = yield* openJournal(databasePath);
-    const first = makeJournal(firstHandle.database);
+    const first = makeJournal(firstHandle.database, { chatGuid: CHAT_GUID, handle: HANDLE });
     expect(
       yield* first.ingestObservedMessages(CHAT_GUID, new Date(), [observed(2), observed(1)]),
     ).toBe(2);
@@ -53,7 +55,10 @@ it.effect('atomically persists inbound rows and cursor, dedupes, and resumes aft
     firstHandle.close();
 
     const restartedHandle = yield* openJournal(databasePath);
-    const restarted = makeJournal(restartedHandle.database);
+    const restarted = makeJournal(restartedHandle.database, {
+      chatGuid: CHAT_GUID,
+      handle: HANDLE,
+    });
     expect((yield* restarted.inboxCursor(CHAT_GUID))?.lastMessageGuid).toBe('guid-2');
     expect((yield* restarted.listInbound).map(({ rowId }) => rowId)).toStrictEqual([1, 2]);
     restartedHandle.close();
@@ -63,7 +68,7 @@ it.effect('atomically persists inbound rows and cursor, dedupes, and resumes aft
 it.effect('rolls back inserted rows and cursor together when an observed batch is invalid', () =>
   Effect.gen(function* rollbackFixture() {
     const handle = yield* openJournal(makeDatabasePath());
-    const journal = makeJournal(handle.database);
+    const journal = makeJournal(handle.database, { chatGuid: CHAT_GUID, handle: HANDLE });
     const wrongChat = { ...observed(2), chatGuid: ChatGuid.make('chat-other') };
     const result = yield* Effect.result(
       journal.ingestObservedMessages(CHAT_GUID, new Date(), [observed(1), wrongChat]),
@@ -75,12 +80,27 @@ it.effect('rolls back inserted rows and cursor together when an observed batch i
   }),
 );
 
+it.effect('rejects a message from another handle before it reaches scheduling', () =>
+  Effect.gen(function* wrongHandleFixture() {
+    const handle = yield* openJournal(makeDatabasePath());
+    const journal = makeJournal(handle.database, { chatGuid: CHAT_GUID, handle: HANDLE });
+    const result = yield* Effect.result(
+      journal.ingestObservedMessages(CHAT_GUID, new Date(), [
+        { ...observed(1), handle: 'someone@icloud.com' },
+      ]),
+    );
+    expect(Result.isFailure(result)).toBe(true);
+    expect(yield* journal.listInbound).toStrictEqual([]);
+    handle.close();
+  }),
+);
+
 it.effect(
   'redacts copied payloads after 30 terminal days while preserving identity and state',
   () =>
     Effect.gen(function* retentionFixture() {
       const handle = yield* openJournal(makeDatabasePath());
-      const journal = makeJournal(handle.database);
+      const journal = makeJournal(handle.database, { chatGuid: CHAT_GUID, handle: HANDLE });
       const startedAt = yield* Clock.currentTimeMillis;
       yield* journal.ingestObservedMessages(CHAT_GUID, new Date(startedAt), [
         observed(1, 'private'),
@@ -137,7 +157,7 @@ it.effect(
 it.effect('enforces one current generation and one batch assignment per inbound row', () =>
   Effect.gen(function* constraintsFixture() {
     const handle = yield* openJournal(makeDatabasePath());
-    const journal = makeJournal(handle.database);
+    const journal = makeJournal(handle.database, { chatGuid: CHAT_GUID, handle: HANDLE });
     yield* journal.ingestObservedMessages(CHAT_GUID, new Date(), [observed(1)]);
     const [inbound] = yield* journal.listInbound;
     if (inbound === undefined) {

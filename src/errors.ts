@@ -20,8 +20,8 @@ export class MessagesQueryError extends Schema.TaggedErrorClass<MessagesQueryErr
   { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
 ) {}
 
-export class SelfChatMismatchError extends Schema.TaggedErrorClass<SelfChatMismatchError>()(
-  'SelfChatMismatchError',
+export class ConversationMismatchError extends Schema.TaggedErrorClass<ConversationMismatchError>()(
+  'ConversationMismatchError',
   { chatGuid: Schema.String, handle: Schema.String, message: Schema.String },
 ) {}
 
@@ -29,6 +29,12 @@ export class JournalTransactionError extends Schema.TaggedErrorClass<JournalTran
   'JournalTransactionError',
   { cause: Schema.Defect(), message: Schema.String, transaction: Schema.String },
 ) {}
+
+export const journalTransactionError = (
+  transaction: string,
+  message: string,
+  cause: unknown,
+): JournalTransactionError => new JournalTransactionError({ cause, message, transaction });
 
 export class CodexRuntimeError extends Schema.TaggedErrorClass<CodexRuntimeError>()(
   'CodexRuntimeError',

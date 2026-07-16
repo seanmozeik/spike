@@ -119,7 +119,7 @@ const messagesChecks = (app: SpikeConfig | null): readonly DiagnosticCheck[] => 
         .get(expectedGuid);
       checks.push(
         check(
-          'exact self-chat',
+          'configured conversation',
           row?.guid === expectedGuid && expectedGuid !== '' ? 'pass' : 'fail',
           row?.guid ?? `not found: ${expectedGuid === '' ? 'unconfigured' : expectedGuid}`,
         ),
@@ -130,7 +130,7 @@ const messagesChecks = (app: SpikeConfig | null): readonly DiagnosticCheck[] => 
   } catch (error) {
     checks.push(
       check('chat.db FDA', 'fail', error instanceof Error ? error.message : String(error)),
-      check('exact self-chat', 'fail', 'chat.db unavailable'),
+      check('configured conversation', 'fail', 'chat.db unavailable'),
     );
   }
   const automation = Bun.spawnSync(['osascript', '-e', 'tell application "Messages" to get name'], {

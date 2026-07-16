@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect } from 'effect';
 
+import { belongsToConversation, type ConfiguredConversation } from '../conversation-guard';
 import { MessagesRowId, type ChatGuid } from '../domain/ids';
 import type { ObservedMessage } from '../domain/inbound';
-import { JournalTransactionError } from '../errors';
+import { journalTransactionError, type JournalTransactionError } from '../errors';
 import { makeListPendingControls, type PendingControl } from './control-recovery';
 import { makeInitializeInboxCursor } from './cursor';
 import { makeListPendingInbound, type PendingInboundMessage } from './inbound-recovery';
+import { newestMessage } from './observed-messages';
 
 interface InboxCursor {
   readonly chatGuid: string;
@@ -68,11 +70,7 @@ interface Journal {
 
 type PersistAttachments = (inboundId: string, message: ObservedMessage, observedAt: string) => void;
 type PersistMessage = (message: ObservedMessage, observedAt: string) => number;
-type IngestTransaction = (
-  chatGuid: string,
-  observedAt: string,
-  messages: readonly ObservedMessage[],
-) => number;
+type IngestTransaction = (observedAt: string, messages: readonly ObservedMessage[]) => number;
 type RedactTransaction = (cutoff: string, redactedAt: string) => number;
 
 const INSERT_MESSAGE = `INSERT OR IGNORE INTO inbound_messages(
@@ -108,12 +106,7 @@ const REDACT_ATTACHMENTS = `UPDATE attachments
   WHERE payload_redacted_at IS NULL AND inbound_message_id IN (
     SELECT id FROM inbound_messages WHERE payload_redacted_at = ?
   )`;
-
-const transactionError = (
-  transaction: string,
-  message: string,
-  cause: unknown,
-): JournalTransactionError => new JournalTransactionError({ cause, message, transaction });
+const REDACTION_ERROR = 'failed to redact terminal payloads';
 
 const makePersistAttachments = (database: Database): PersistAttachments => {
   const insertAttachment = database.prepare<
@@ -192,23 +185,18 @@ const makePersistMessage = (database: Database): PersistMessage => {
   };
 };
 
-const newestMessage = (messages: readonly ObservedMessage[]): ObservedMessage | null => {
-  let newest: ObservedMessage | null = null;
-  for (const message of messages) {
-    if (newest === null || message.rowId > newest.rowId) {
-      newest = message;
-    }
-  }
-  return newest;
-};
-
-const makeIngest = (database: Database): IngestTransaction => {
+const makeIngest = (
+  database: Database,
+  conversation: ConfiguredConversation,
+): IngestTransaction => {
   const persistMessage = makePersistMessage(database);
   return database.transaction(
-    (chatGuid: string, observedAt: string, messages: readonly ObservedMessage[]): number => {
+    (observedAt: string, messages: readonly ObservedMessage[]): number => {
       for (const message of messages) {
-        if (message.chatGuid !== chatGuid) {
-          throw new Error(`message ${message.messageGuid} does not belong to ${chatGuid}`);
+        if (!belongsToConversation(conversation, message)) {
+          throw new Error(
+            `message ${message.messageGuid} does not belong to the configured conversation`,
+          );
         }
       }
       let inserted = 0;
@@ -217,7 +205,12 @@ const makeIngest = (database: Database): IngestTransaction => {
       }
       const newest = newestMessage(messages);
       if (newest !== null) {
-        database.run(UPSERT_CURSOR, [chatGuid, newest.rowId, newest.messageGuid, observedAt]);
+        database.run(UPSERT_CURSOR, [
+          conversation.chatGuid,
+          newest.rowId,
+          newest.messageGuid,
+          observedAt,
+        ]);
       }
       return inserted;
     },
@@ -262,20 +255,25 @@ const makeRedact = (database: Database): RedactTransaction =>
     return result.changes;
   });
 
-const makeJournal = (database: Database): Journal => {
-  const ingest = makeIngest(database);
+const makeJournal = (database: Database, conversation: ConfiguredConversation): Journal => {
+  const ingest = makeIngest(database, conversation);
   const redact = makeRedact(database);
   return {
     inboxCursor: (chatGuid) => Effect.sync(() => readCursor(database, chatGuid)),
     ingestObservedMessages: (chatGuid, observedAt, messages) =>
       Effect.try({
         catch: (cause) =>
-          transactionError(
+          journalTransactionError(
             'ingestObservedMessages',
             'failed to atomically persist observed Messages rows and cursor',
             cause,
           ),
-        try: () => ingest(chatGuid, observedAt.toISOString(), messages),
+        try: () => {
+          if (chatGuid !== conversation.chatGuid) {
+            throw new Error('ingest target does not match the configured conversation');
+          }
+          return ingest(observedAt.toISOString(), messages);
+        },
       }),
     initializeInboxCursor: makeInitializeInboxCursor(database),
     listInbound: Effect.sync(() => readInbound(database)),
@@ -283,8 +281,7 @@ const makeJournal = (database: Database): Journal => {
     listPendingInbound: makeListPendingInbound(database)(),
     redactTerminalPayloads: (cutoff, redactedAt) =>
       Effect.try({
-        catch: (cause) =>
-          transactionError('redactTerminalPayloads', 'failed to redact terminal payloads', cause),
+        catch: (cause) => journalTransactionError('redactTerminalPayloads', REDACTION_ERROR, cause),
         try: () => redact(cutoff.toISOString(), redactedAt.toISOString()),
       }),
   };

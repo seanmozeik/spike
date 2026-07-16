@@ -1,4 +1,5 @@
 export { ensureRuntimeLayout } from './config-files';
+export type { ConfiguredConversation } from './conversation-guard';
 export { requestControl, startControlSocket } from './control-socket';
 export { inspectJournal, journalInfo, openJournal } from './database';
 export {

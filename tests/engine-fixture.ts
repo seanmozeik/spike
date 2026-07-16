@@ -58,6 +58,11 @@ interface RuntimeTrace {
 
 const CHAT_GUID = ChatGuid.make('any;-;+15555550199');
 
+const renderStatus = (behavior: TurnBehavior): Promise<string> =>
+  behavior.statusFailure === undefined
+    ? Promise.resolve('Spike ok · uptime 1m')
+    : Promise.reject(new Error(behavior.statusFailure));
+
 const makeWaitForTurn =
   (behavior: TurnBehavior): CodexRuntime['waitForTurn'] =>
   (_threadId, _turnId, handlers) =>
@@ -221,9 +226,9 @@ const makeEngineFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixt
 ) {
   const root = mkdtempSync(path.join(tmpdir(), 'spike-engine-'));
   const handle = yield* openJournal(path.join(root, 'spike.db'));
-  const likes: string[] = [];
+  const likes: string[] = [],
+    sent: string[] = [];
   const queue: ObservedMessage[] = [...(preexisting ?? [])];
-  const sent: string[] = [];
   const trace: RuntimeTrace = { inputs: [], reads: [], resumed: [], steers: [], turnsStarted: [] };
   if (prepare !== undefined) {
     yield* prepare(handle.database);
@@ -234,13 +239,11 @@ const makeEngineFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixt
     chatGuid: CHAT_GUID,
     database: handle.database,
     delivery: makeTestDelivery(handle, sent, behavior),
+    handle: '+15555550199',
     inbox: makeInbox(queue),
     like: makeLike(likes),
     now: () => new Date('2026-07-14T12:00:00.000Z'),
-    renderStatus: () =>
-      behavior.statusFailure === undefined
-        ? Promise.resolve('Spike ok · uptime 1m')
-        : Promise.reject(new Error(behavior.statusFailure)),
+    renderStatus: () => renderStatus(behavior),
     runtime,
   });
   return {

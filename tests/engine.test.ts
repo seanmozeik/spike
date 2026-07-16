@@ -13,6 +13,7 @@ const inbound = (rowId: number, text: string): ObservedMessage => ({
   attachments: [],
   chatGuid: CHAT_GUID,
   handle: '+15555550199',
+  isFromMe: false,
   messageGuid: MessageGuid.make(`message-${rowId}`),
   rowId: MessagesRowId.make(rowId),
   sentAt: new Date('2026-07-14T11:59:00.000Z'),
@@ -51,7 +52,7 @@ const seedAcceptedAttempt = (database: Database): void => {
   );
 };
 
-it.effect('runs a quick self-chat turn with only one final bubble', () =>
+it.effect('runs a quick direct-conversation turn with only one final bubble', () =>
   Effect.gen(function* quickTurn() {
     const fixture = yield* makeEngineFixture({ finalAnswer: 'Quick answer.' });
     fixture.push(inbound(1, 'hello Spike'));
@@ -174,7 +175,7 @@ it.effect('terminates a fresh submission after its one reconciliation retry', ()
 it.effect('redispatches a durably ingested message after a crash advanced the inbox cursor', () =>
   Effect.gen(function* replayInbound() {
     const fixture = yield* makeEngineFixture({ finalAnswer: 'Recovered.' });
-    const journal = makeJournal(fixture.database);
+    const journal = makeJournal(fixture.database, { chatGuid: CHAT_GUID, handle: '+15555550199' });
     yield* journal.ingestObservedMessages(CHAT_GUID, new Date('2026-07-14T12:00:00.000Z'), [
       inbound(1, 'survive restart'),
     ]);
@@ -228,7 +229,7 @@ it.effect('submits attachment-only inbound content without attempting a text Lik
 it.effect('recovers local control replies consumed immediately before a crash', () =>
   Effect.gen(function* replayControls() {
     const fixture = yield* makeEngineFixture();
-    const journal = makeJournal(fixture.database);
+    const journal = makeJournal(fixture.database, { chatGuid: CHAT_GUID, handle: '+15555550199' });
     yield* journal.ingestObservedMessages(CHAT_GUID, new Date('2026-07-14T12:00:00.000Z'), [
       inbound(1, '/status'),
     ]);

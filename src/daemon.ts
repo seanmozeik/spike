@@ -152,6 +152,7 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
     chatGuid: config.chatGuid,
     database: journal.database,
     delivery,
+    handle: config.handle,
     inbox,
     like,
     renderStatus: async () =>

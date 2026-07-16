@@ -8,7 +8,7 @@ import { Effect, Result } from 'effect';
 import { afterEach, expect } from 'vitest';
 
 import { MessagesRowId } from '../src/domain/ids';
-import { SelfChatMismatchError } from '../src/errors';
+import { ConversationMismatchError } from '../src/errors';
 import { decodeAttributedBody, openMessagesInbox } from '../src/messages-inbox';
 
 const CHAT_GUID = 'any;-;+15555550199';
@@ -57,10 +57,11 @@ const createMessagesFixture = (): string => {
     database.run(statement);
   }
   database.run("INSERT INTO handle VALUES (1, ?), (2, '+15555550198')", [HANDLE]);
-  database.run("INSERT INTO chat VALUES (1, ?, 45), (2, 'chat-group', 43), (3, 'chat-other', 45)", [
-    CHAT_GUID,
-  ]);
-  database.run('INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (3, 2)');
+  database.run(
+    "INSERT INTO chat VALUES (1, ?, 45), (2, 'chat-group', 43), (3, 'chat-other', 45), (4, 'chat-two-participants', 45)",
+    [CHAT_GUID],
+  );
+  database.run('INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (3, 2), (4, 1), (4, 2)');
   const appleNow = (Date.UTC(2026, 6, 14, 12) - 978_307_200_000) * 1_000_000;
   const insert = database.prepare<
     never,
@@ -92,7 +93,7 @@ const createMessagesFixture = (): string => {
   return databasePath;
 };
 
-it.effect('observes only ordered inbound iMessage rows from the configured self-chat', () =>
+it.effect('observes only ordered inbound iMessage rows from the configured conversation', () =>
   Effect.gen(function* messagesFixture() {
     const databasePath = createMessagesFixture();
     const inbox = yield* openMessagesInbox({ chatGuid: CHAT_GUID, databasePath, handle: HANDLE });
@@ -137,7 +138,7 @@ it.effect('returns a visible Full Disk Access error when chat.db cannot be opene
   }),
 );
 
-it.effect('rejects a configured chat that is not the exact self-chat', () =>
+it.effect('rejects a configured chat that is not the exact direct conversation', () =>
   Effect.gen(function* mismatchFixture() {
     const result = yield* Effect.result(
       openMessagesInbox({
@@ -148,7 +149,23 @@ it.effect('rejects a configured chat that is not the exact self-chat', () =>
     );
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) {
-      expect(result.failure).toBeInstanceOf(SelfChatMismatchError);
+      expect(result.failure).toBeInstanceOf(ConversationMismatchError);
+    }
+  }),
+);
+
+it.effect('rejects a style-45 conversation with more than one participant', () =>
+  Effect.gen(function* multiParticipantFixture() {
+    const result = yield* Effect.result(
+      openMessagesInbox({
+        chatGuid: 'chat-two-participants',
+        databasePath: createMessagesFixture(),
+        handle: HANDLE,
+      }),
+    );
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(ConversationMismatchError);
     }
   }),
 );

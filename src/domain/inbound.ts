@@ -16,6 +16,7 @@ export const ObservedMessage = Schema.Struct({
   attachments: Schema.Array(ObservedAttachment),
   chatGuid: ChatGuid,
   handle: Schema.String,
+  isFromMe: Schema.Literal(false),
   messageGuid: MessageGuid,
   rowId: MessagesRowId,
   sentAt: Schema.DateFromString,
