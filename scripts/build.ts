@@ -68,7 +68,6 @@ const stageInner = path.join(stageRoot, archiveInner);
 rmSync(stageRoot, { force: true, recursive: true });
 cpSync(distDir, path.join(stageInner, 'dist'), { recursive: true });
 cpSync(path.join(root, 'src'), path.join(stageInner, 'src'), { recursive: true });
-cpSync(path.join(root, 'skills'), path.join(stageInner, 'skills'), { recursive: true });
 cpSync(path.join(root, 'package.json'), path.join(stageInner, 'package.json'));
 
 mkdirSync(path.join(root, 'artifacts'), { recursive: true });
