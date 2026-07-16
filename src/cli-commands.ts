@@ -6,7 +6,8 @@ import { emit, toMode } from './cli-shared';
 import { serveDaemon } from './daemon';
 import { SpikeRuntimeError } from './errors';
 import { realPrompts } from './onboarding/prompts';
-import { defaultServices, runOnboarding } from './onboarding/run';
+import { runOnboarding } from './onboarding/run';
+import { defaultServices } from './onboarding/services';
 import {
   accounts,
   doctor,

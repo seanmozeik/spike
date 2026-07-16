@@ -73,19 +73,34 @@ const discoverCodexModels = (codexExecutable: string): readonly CodexModelOption
     throw new Error(`Codex model discovery failed: ${result.stderr.toString().trim()}`);
   }
   const models = parseModelCatalog(JSON.parse(result.stdout.toString()));
-  if (models.length === 0) {throw new Error('Codex returned an empty model catalog');}
+  if (models.length === 0) {
+    throw new Error('Codex returned an empty model catalog');
+  }
   return models;
+};
+
+const validateCodexConfiguration = (codexExecutable: string, codexHome: string): void => {
+  const result = Bun.spawnSync([codexExecutable, 'debug', 'models', '--bundled'], {
+    env: { ...process.env, CODEX_HOME: codexHome },
+    stderr: 'pipe',
+    stdout: 'ignore',
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`Codex rejected its configuration: ${result.stderr.toString().trim()}`);
+  }
 };
 
 const tomlString = (value: string): string => JSON.stringify(value);
 
 const applyPolicy = (config: string, policy: string): string => {
-  const preserved = config
-    .split('\n')
-    .filter((line) => !/^\s*(?:approval_policy|sandbox_mode)\s*=/u.test(line))
-    .join('\n')
-    .trimEnd();
-  return `${preserved}\n${policy}\n`;
+  let insideTable = false;
+  const preserved = config.split('\n').filter((line) => {
+    if (/^\s*\[/u.test(line)) {
+      insideTable = true;
+    }
+    return insideTable || !/^\s*(?:approval_policy|sandbox_mode)\s*=/u.test(line);
+  });
+  return `${policy}\n${preserved.join('\n').trim()}\n`;
 };
 
 const renderCodexConfig = async (
@@ -149,4 +164,5 @@ export {
   parseModelCatalog,
   renderCodexConfig,
   seedDefaultAccount,
+  validateCodexConfiguration,
 };

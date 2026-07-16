@@ -8,13 +8,23 @@ interface CandidateRow {
   readonly last_message_unix_ms: null | number;
 }
 
+class ConversationDiscoveryError extends Error {
+  readonly kind: 'permission' | 'query';
+
+  constructor(kind: 'permission' | 'query', cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'ConversationDiscoveryError';
+    this.kind = kind;
+  }
+}
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 const E164 = /^\+[1-9]\d{7,14}$/u;
 
 const normalizePeerHandle = (input: string): string => {
   const trimmed = input.trim();
   if (EMAIL.test(trimmed)) {
-    return trimmed.toLocaleLowerCase();
+    return trimmed.toLowerCase();
   }
   const phone = trimmed.replaceAll(/[\s().-]/gu, '');
   if (E164.test(phone)) {
@@ -40,7 +50,12 @@ const discoverDirectConversations = (
   databasePath: string,
   handle: string,
 ): readonly ConversationCandidate[] => {
-  const database = new Database(databasePath, { readonly: true, strict: true });
+  let database: Database;
+  try {
+    database = new Database(databasePath, { readonly: true, strict: true });
+  } catch (error) {
+    throw new ConversationDiscoveryError('permission', error);
+  }
   try {
     return database
       .query<CandidateRow, [string]>(CANDIDATES_QUERY)
@@ -51,9 +66,13 @@ const discoverDirectConversations = (
         lastMessageAt:
           row.last_message_unix_ms === null ? null : new Date(row.last_message_unix_ms),
       }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error);
+    const kind = /authoriz|permission|unable to open/u.test(message) ? 'permission' : 'query';
+    throw new ConversationDiscoveryError(kind, error);
   } finally {
     database.close();
   }
 };
 
-export { discoverDirectConversations, normalizePeerHandle };
+export { ConversationDiscoveryError, discoverDirectConversations, normalizePeerHandle };

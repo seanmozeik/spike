@@ -50,6 +50,24 @@ const requestMessagesAutomation = (): void => {
   }
 };
 
+const requestAccessibility = (): void => {
+  const helper =
+    process.env['SPIKE_LIKE_HELPER'] ??
+    path.join(path.dirname(process.argv[1] ?? import.meta.filename), 'spike-like');
+  const result = Bun.spawnSync([helper, '--status'], { stderr: 'pipe', stdout: 'pipe' });
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.toString().trim() || 'Spike’s Like helper is unavailable');
+  }
+  const status: unknown = JSON.parse(result.stdout.toString());
+  if (
+    typeof status !== 'object' ||
+    status === null ||
+    Reflect.get(status, 'accessibilityTrusted') !== true
+  ) {
+    throw new Error(`Accessibility is not approved for Spike’s Like helper:\n${helper}`);
+  }
+};
+
 const openFullDiskAccessSettings = (): void => {
   Bun.spawnSync([
     'open',
@@ -57,5 +75,27 @@ const openFullDiskAccessSettings = (): void => {
   ]);
 };
 
-export { bunVersionSupported, openFullDiskAccessSettings, requestMessagesAutomation, runPreflight };
+const openAccessibilitySettings = (): void => {
+  Bun.spawnSync([
+    'open',
+    'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+  ]);
+};
+
+const openAutomationSettings = (): void => {
+  Bun.spawnSync([
+    'open',
+    'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
+  ]);
+};
+
+export {
+  bunVersionSupported,
+  openAccessibilitySettings,
+  openAutomationSettings,
+  openFullDiskAccessSettings,
+  requestAccessibility,
+  requestMessagesAutomation,
+  runPreflight,
+};
 export type { PreflightReport };

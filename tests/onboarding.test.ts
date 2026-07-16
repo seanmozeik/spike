@@ -7,6 +7,7 @@ import { Effect } from 'effect';
 import { afterEach, expect, it } from 'vitest';
 
 import { loadSpikeConfig } from '../src/app-config';
+import { ConversationDiscoveryError } from '../src/onboarding/conversation';
 import { prepareInstallation, removeInstalledConfiguration } from '../src/onboarding/install';
 import type { OnboardingPrompts } from '../src/onboarding/prompts';
 import { runOnboarding, type OnboardingServices } from '../src/onboarding/run';
@@ -49,8 +50,10 @@ const fakePrompts = (events: string[]): OnboardingPrompts => ({
       ? Promise.reject(new Error('missing candidate'))
       : Promise.resolve(candidate),
   confirmApply: (): Promise<boolean> => Promise.resolve(true),
+  confirmRetryAuthentication: (): Promise<boolean> => Promise.resolve(false),
   confirmRetryConversation: (): Promise<boolean> => Promise.resolve(false),
   confirmRetryFullDiskAccess: (): Promise<boolean> => Promise.resolve(false),
+  confirmRetryPermission: (): Promise<boolean> => Promise.resolve(false),
   context: (): Promise<string> => Promise.resolve('Sean builds trusted power tools.'),
   finish: (message: string): void => {
     events.push(`finish:${message}`);
@@ -80,6 +83,12 @@ const fakeAuthenticate: OnboardingServices['authenticate'] = async (
 
 const fakeServices = (events: string[]): OnboardingServices => ({
   authenticate: fakeAuthenticate,
+  checkAccessibility: (): void => {
+    events.push('accessibility');
+  },
+  checkAutomation: (): void => {
+    events.push('automation');
+  },
   discoverConversations: (): readonly ConversationCandidate[] => [conversation],
   discoverModels: (): ReturnType<OnboardingServices['discoverModels']> => [
     {
@@ -95,6 +104,12 @@ const fakeServices = (events: string[]): OnboardingServices => ({
     events.push('doctor');
     return Promise.resolve({ healthy: true });
   },
+  openAccessibility: (): void => {
+    events.push('open-accessibility');
+  },
+  openAutomation: (): void => {
+    events.push('open-automation');
+  },
   openFullDiskAccess: (): void => {
     events.push('fda');
   },
@@ -106,14 +121,14 @@ const fakeServices = (events: string[]): OnboardingServices => ({
   prepare: prepareInstallation,
   removeLaunchAgent: (): Promise<void> => Promise.resolve(),
   removeRoot: removeInstalledConfiguration,
-  requestAutomation: (): void => {
-    events.push('automation');
-  },
   start: (): Promise<void> => {
     events.push('start');
     return Promise.resolve();
   },
   stop: (): Promise<void> => Promise.resolve(),
+  validateCodex: (): void => {
+    events.push('codex-valid');
+  },
   waitForRoundTrip: (): Promise<void> => {
     events.push('round-trip');
     return Promise.resolve();
@@ -149,6 +164,7 @@ it('installs and verifies a complete isolated onboarding flow', async () => {
   expect(events).toContain('start');
   expect(events).toContain('doctor');
   expect(events).toContain('round-trip');
+  expect(events).toContain('codex-valid');
   expect(events.at(-1)).toContain('installed, healthy, and replying');
 });
 
@@ -164,4 +180,92 @@ it('rolls back the virgin install when post-launch verification fails', async ()
     }),
   ).rejects.toThrow('spike doctor');
   expect(existsSync(paths.root)).toBe(false);
+});
+
+it('writes nothing when the review is declined', async () => {
+  const paths = makeTarget();
+  const events: string[] = [];
+  await runOnboarding({
+    paths,
+    prompts: {
+      ...fakePrompts(events),
+      confirmApply: (): Promise<boolean> => Promise.resolve(false),
+    },
+    services: fakeServices(events),
+  });
+  expect(existsSync(paths.root)).toBe(false);
+  expect(events.at(-1)).toBe('finish:Nothing changed.');
+});
+
+it('retries the real conversation query after Full Disk Access is approved', async () => {
+  const paths = makeTarget();
+  const events: string[] = [];
+  let discoveries = 0;
+  const services = fakeServices(events);
+  await runOnboarding({
+    paths,
+    prompts: {
+      ...fakePrompts(events),
+      confirmRetryFullDiskAccess: (): Promise<boolean> => Promise.resolve(true),
+    },
+    services: {
+      ...services,
+      discoverConversations: (): readonly ConversationCandidate[] => {
+        discoveries += 1;
+        if (discoveries === 1) {
+          throw new ConversationDiscoveryError('permission', 'operation not permitted');
+        }
+        return [conversation];
+      },
+    },
+  });
+  expect(discoveries).toBe(2);
+  expect(events).toContain('fda');
+});
+
+it('retries Automation and Accessibility before writing configuration', async () => {
+  const paths = makeTarget();
+  const events: string[] = [];
+  let automationAttempts = 0;
+  let accessibilityAttempts = 0;
+  let authenticationAttempts = 0;
+  const services = fakeServices(events);
+  const prompts = fakePrompts(events);
+  await runOnboarding({
+    paths,
+    prompts: {
+      ...prompts,
+      confirmRetryAuthentication: (): Promise<boolean> => Promise.resolve(true),
+      confirmRetryPermission: (): Promise<boolean> => Promise.resolve(true),
+      personality: (): Promise<PersonalityAnswers> =>
+        Promise.resolve({ ...personality, likeAcknowledgements: true }),
+    },
+    services: {
+      ...services,
+      authenticate: async (executable, codexHome, log): Promise<void> => {
+        authenticationAttempts += 1;
+        if (authenticationAttempts === 1) {
+          throw new Error('device login interrupted');
+        }
+        await fakeAuthenticate(executable, codexHome, log);
+      },
+      checkAccessibility: (): void => {
+        accessibilityAttempts += 1;
+        if (accessibilityAttempts === 1) {
+          throw new Error('Accessibility denied');
+        }
+      },
+      checkAutomation: (): void => {
+        automationAttempts += 1;
+        if (automationAttempts === 1) {
+          throw new Error('Automation denied');
+        }
+      },
+    },
+  });
+  expect(automationAttempts).toBe(2);
+  expect(accessibilityAttempts).toBe(2);
+  expect(authenticationAttempts).toBe(2);
+  expect(events).toContain('open-automation');
+  expect(events).toContain('open-accessibility');
 });

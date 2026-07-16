@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -9,7 +9,12 @@ import { loadSpikeConfig } from '../app-config';
 import { ensureRuntimeLayout } from '../config-files';
 import { spikePaths, type SpikePaths } from '../paths';
 import { DEFAULT_USER_CONTEXT } from '../system-prompt';
-import { type authenticateCodex, renderCodexConfig, seedDefaultAccount } from './codex';
+import {
+  type authenticateCodex,
+  renderCodexConfig,
+  seedDefaultAccount,
+  type validateCodexConfiguration,
+} from './codex';
 import type { OnboardingPlan } from './types';
 
 interface InstallOptions {
@@ -18,6 +23,7 @@ interface InstallOptions {
   readonly log: (message: string) => void;
   readonly paths: SpikePaths;
   readonly plan: OnboardingPlan;
+  readonly validateCodex: typeof validateCodexConfiguration;
 }
 
 interface PreparedInstallation {
@@ -62,6 +68,18 @@ const assertVirginInstall = (paths: SpikePaths): void => {
   }
 };
 
+const installSignalCleanup = (stageRoot: string): (() => void) => {
+  const cleanup = (): void => {
+    rmSync(stageRoot, { force: true, recursive: true });
+  };
+  process.once('SIGINT', cleanup);
+  process.once('SIGTERM', cleanup);
+  return () => {
+    process.off('SIGINT', cleanup);
+    process.off('SIGTERM', cleanup);
+  };
+};
+
 const prepareInstallation = async (options: InstallOptions): Promise<PreparedInstallation> => {
   assertVirginInstall(options.paths);
   const stageRoot = path.join(
@@ -69,6 +87,7 @@ const prepareInstallation = async (options: InstallOptions): Promise<PreparedIns
     `.${path.basename(options.paths.root)}-init-${randomUUID()}`,
   );
   const stage = spikePaths(stageRoot);
+  const releaseSignalCleanup = installSignalCleanup(stageRoot);
   try {
     await Effect.runPromise(ensureRuntimeLayout(stage));
     const codexConfig = await renderCodexConfig(
@@ -87,6 +106,7 @@ const prepareInstallation = async (options: InstallOptions): Promise<PreparedIns
       writeFile(stage.prompt, `${prompt.trim()}\n`, 'utf8'),
     ]);
     await chmod(stage.config, PRIVATE_FILE_MODE);
+    options.validateCodex(options.codexExecutable, stage.codexHome);
     if (options.plan.codex.kind !== 'custom') {
       await options.authenticate(options.codexExecutable, stage.codexHome, options.log);
       await seedDefaultAccount(stage.codexHome, stage.accounts);
@@ -96,6 +116,8 @@ const prepareInstallation = async (options: InstallOptions): Promise<PreparedIns
   } catch (error) {
     await rm(stageRoot, { force: true, recursive: true });
     throw error;
+  } finally {
+    releaseSignalCleanup();
   }
   return {
     commit: async () => {

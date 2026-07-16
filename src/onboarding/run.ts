@@ -1,28 +1,39 @@
-import { rm } from 'node:fs/promises';
-
 import type { SpikePaths } from '../paths';
-import { authenticateCodex, discoverCodexModels } from './codex';
-import { discoverDirectConversations, normalizePeerHandle } from './conversation';
-import { assertVirginInstall, prepareInstallation, removeInstalledConfiguration } from './install';
-import { openFullDiskAccessSettings, requestMessagesAutomation, runPreflight } from './preflight';
+import type { authenticateCodex, validateCodexConfiguration } from './codex';
+import {
+  ConversationDiscoveryError,
+  type discoverDirectConversations,
+  normalizePeerHandle,
+} from './conversation';
+import {
+  assertVirginInstall,
+  type prepareInstallation,
+  type PreparedInstallation,
+  type removeInstalledConfiguration,
+} from './install';
+import type { runPreflight } from './preflight';
 import type { OnboardingPrompts } from './prompts';
-import { waitForRoundTrip } from './round-trip';
+import type { waitForRoundTrip } from './round-trip';
 import type { CodexModelOption, ConversationCandidate, OnboardingPlan } from './types';
 
 interface OnboardingServices {
   readonly authenticate: typeof authenticateCodex;
+  readonly checkAccessibility: () => void;
+  readonly checkAutomation: () => void;
   readonly discoverConversations: typeof discoverDirectConversations;
   readonly discoverModels: (executable: string) => readonly CodexModelOption[];
   readonly doctor: () => Promise<{ readonly healthy: boolean }>;
+  readonly openAccessibility: () => void;
+  readonly openAutomation: () => void;
   readonly openFullDiskAccess: () => void;
   readonly prepare: typeof prepareInstallation;
   readonly preflight: typeof runPreflight;
   readonly removeLaunchAgent: () => Promise<void>;
   readonly removeRoot: typeof removeInstalledConfiguration;
-  readonly requestAutomation: () => void;
   readonly start: () => Promise<unknown>;
   readonly stop: () => Promise<unknown>;
   readonly waitForRoundTrip: typeof waitForRoundTrip;
+  readonly validateCodex: typeof validateCodexConfiguration;
 }
 
 interface RunOnboardingOptions {
@@ -43,6 +54,9 @@ const discoverConversation = async (
     try {
       candidates = services.discoverConversations(databasePath, handle);
     } catch (error) {
+      if (!(error instanceof ConversationDiscoveryError) || error.kind !== 'permission') {
+        throw error;
+      }
       services.openFullDiskAccess();
       const retry = await prompts.confirmRetryFullDiskAccess(
         bunExecutable,
@@ -55,10 +69,12 @@ const discoverConversation = async (
     }
     if (candidates.length === 0) {
       const message = `No direct iMessage conversation was found for ${handle}. Start one in Messages, then retry.`;
-      if (await prompts.confirmRetryConversation(message)) {return attempt();}
+      if (await prompts.confirmRetryConversation(message)) {
+        return attempt();
+      }
       throw new Error(message);
     }
-    return  prompts.chooseConversation(candidates);
+    return prompts.chooseConversation(candidates);
   };
   return attempt();
 };
@@ -78,6 +94,47 @@ const summarize = (plan: OnboardingPlan): string => {
     `Permissions   ${plan.approvalPolicy} · ${plan.sandboxMode}`,
     `Likes         ${plan.personality.likeAcknowledgements ? 'on' : 'off'}`,
   ].join('\n');
+};
+
+const ensurePermission = async (
+  prompts: OnboardingPrompts,
+  name: string,
+  check: () => void,
+  openSettings: () => void,
+): Promise<void> => {
+  try {
+    check();
+  } catch (error) {
+    openSettings();
+    const retry = await prompts.confirmRetryPermission(
+      name,
+      error instanceof Error ? error.message : String(error),
+    );
+    if (!retry) {
+      throw error;
+    }
+    await ensurePermission(prompts, name, check, openSettings);
+  }
+};
+
+const authenticateWithRetry = async (
+  prompts: OnboardingPrompts,
+  authenticate: typeof authenticateCodex,
+  executable: string,
+  codexHome: string,
+  log: (message: string) => void,
+): Promise<void> => {
+  try {
+    await authenticate(executable, codexHome, log);
+  } catch (error) {
+    const retry = await prompts.confirmRetryAuthentication(
+      error instanceof Error ? error.message : String(error),
+    );
+    if (!retry) {
+      throw error;
+    }
+    await authenticateWithRetry(prompts, authenticate, executable, codexHome, log);
+  }
 };
 
 const collectPlan = async (
@@ -134,6 +191,49 @@ const rollback = async (options: RunOnboardingOptions): Promise<void> => {
   await options.services.removeRoot(options.paths).catch(reportRollbackFailure('config cleanup'));
 };
 
+const ensureRequiredPermissions = async (
+  options: RunOnboardingOptions,
+  plan: OnboardingPlan,
+): Promise<void> => {
+  await ensurePermission(
+    options.prompts,
+    'Messages Automation',
+    options.services.checkAutomation,
+    options.services.openAutomation,
+  );
+  if (plan.personality.likeAcknowledgements) {
+    await ensurePermission(
+      options.prompts,
+      'Accessibility',
+      options.services.checkAccessibility,
+      options.services.openAccessibility,
+    );
+  }
+};
+
+const prepareOnboarding = (
+  options: RunOnboardingOptions,
+  codexExecutable: string,
+  plan: OnboardingPlan,
+): Promise<PreparedInstallation> =>
+  options.prompts.runTask('Preparing Spike', (log) =>
+    options.services.prepare({
+      authenticate: (executable, codexHome, output) =>
+        authenticateWithRetry(
+          options.prompts,
+          options.services.authenticate,
+          executable,
+          codexHome,
+          output,
+        ),
+      codexExecutable,
+      log,
+      paths: options.paths,
+      plan,
+      validateCodex: options.services.validateCodex,
+    }),
+  );
+
 const runOnboarding = async (options: RunOnboardingOptions): Promise<void> => {
   assertVirginInstall(options.paths);
   options.prompts.intro();
@@ -142,21 +242,13 @@ const runOnboarding = async (options: RunOnboardingOptions): Promise<void> => {
     options.prompts.finish('Nothing changed.');
     return;
   }
+  await ensureRequiredPermissions(options, plan);
   const startedAt = new Date();
-  const prepared = await options.prompts.runTask('Preparing Spike', (log) =>
-    options.services.prepare({
-      authenticate: options.services.authenticate,
-      codexExecutable,
-      log,
-      paths: options.paths,
-      plan,
-    }),
-  );
+  const prepared = await prepareOnboarding(options, codexExecutable, plan);
   let committed = false;
   try {
     await prepared.commit();
     committed = true;
-    options.services.requestAutomation();
     await options.prompts.runTask('Starting Spike and running diagnostics', async (log) => {
       await options.services.start();
       log('LaunchAgent started');
@@ -179,26 +271,5 @@ const runOnboarding = async (options: RunOnboardingOptions): Promise<void> => {
   options.prompts.finish('Spike is installed, healthy, and replying in iMessage.');
 };
 
-const defaultServices = (
-  start: () => Promise<unknown>,
-  stop: () => Promise<unknown>,
-  doctor: () => Promise<{ readonly healthy: boolean }>,
-  paths: SpikePaths,
-): OnboardingServices => ({
-  authenticate: authenticateCodex,
-  discoverConversations: discoverDirectConversations,
-  discoverModels: discoverCodexModels,
-  doctor,
-  openFullDiskAccess: openFullDiskAccessSettings,
-  preflight: runPreflight,
-  prepare: prepareInstallation,
-  removeLaunchAgent: (): Promise<void> => rm(paths.launchAgent, { force: true }),
-  removeRoot: removeInstalledConfiguration,
-  requestAutomation: requestMessagesAutomation,
-  start,
-  stop,
-  waitForRoundTrip,
-});
-
-export { collectPlan, defaultServices, runOnboarding, summarize };
+export { collectPlan, runOnboarding, summarize };
 export type { OnboardingServices, RunOnboardingOptions };

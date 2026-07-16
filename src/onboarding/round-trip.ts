@@ -20,6 +20,7 @@ const ROUND_TRIP_QUERY = `SELECT inbound.ROWID AS inbound_rowid, outbound.ROWID 
     ON outbound_join.message_id = outbound.ROWID AND outbound_join.chat_id = c.ROWID
   WHERE c.guid = ? AND lower(h.id) = lower(?)
     AND inbound.is_from_me = 0 AND inbound.service = 'iMessage'
+    AND outbound.service = 'iMessage'
     AND ((inbound.date / 1000000.0) + 978307200000.0) >= ?
   ORDER BY outbound.ROWID DESC LIMIT 1`;
 

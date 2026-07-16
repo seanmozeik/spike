@@ -26,7 +26,9 @@ const customProvider = async (codexHome: string): Promise<null | string> => {
   const config: unknown = Bun.TOML.parse(
     await readFile(path.join(codexHome, 'config.toml'), 'utf8'),
   );
-  if (!isObject(config)) {return null;}
+  if (!isObject(config)) {
+    return null;
+  }
   const provider = config['model_provider'];
   return typeof provider === 'string' && provider !== '' && provider !== 'openai' ? provider : null;
 };
@@ -220,7 +222,9 @@ const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime
       catch: (cause) => runtimeError('provider/read', cause),
       try: () => customProvider(config.codexHome),
     });
-    if (provider === null) {return yield* selection.error;}
+    if (provider === null) {
+      return yield* selection.error;
+    }
     accountId = `provider:${provider}`;
   }
   const userContext = yield* Effect.tryPromise({

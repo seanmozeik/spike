@@ -21,8 +21,10 @@ interface OnboardingPrompts {
     candidates: readonly ConversationCandidate[],
   ) => Promise<ConversationCandidate>;
   readonly confirmApply: (summary: string) => Promise<boolean>;
+  readonly confirmRetryAuthentication: (error: string) => Promise<boolean>;
   readonly confirmRetryConversation: (message: string) => Promise<boolean>;
   readonly confirmRetryFullDiskAccess: (bunExecutable: string, error: string) => Promise<boolean>;
+  readonly confirmRetryPermission: (permission: string, error: string) => Promise<boolean>;
   readonly context: () => Promise<string>;
   readonly finish: (message: string) => void;
   readonly intro: () => void;
@@ -118,6 +120,19 @@ const confirmRetryConversationPrompt = async (message: string): Promise<boolean>
   return unwrap(await clack.confirm({ message: 'Retry conversation discovery?' }));
 };
 
+const confirmRetryAuthenticationPrompt = async (error: string): Promise<boolean> => {
+  clack.log.warn(error);
+  return unwrap(await clack.confirm({ message: 'Retry isolated Codex authentication?' }));
+};
+
+const confirmRetryPermissionPrompt = async (
+  permission: string,
+  error: string,
+): Promise<boolean> => {
+  clack.log.warn(error);
+  return unwrap(await clack.confirm({ message: `Retry after approving ${permission}?` }));
+};
+
 const contextPrompt = async (): Promise<string> =>
   unwrap(
     await clack.multiline({
@@ -190,8 +205,10 @@ const realPrompts = (): OnboardingPrompts => ({
   chooseCodex: chooseCodexPrompt,
   chooseConversation: chooseConversationPrompt,
   confirmApply: confirmApplyPrompt,
+  confirmRetryAuthentication: confirmRetryAuthenticationPrompt,
   confirmRetryConversation: confirmRetryConversationPrompt,
   confirmRetryFullDiskAccess: confirmRetryPrompt,
+  confirmRetryPermission: confirmRetryPermissionPrompt,
   context: contextPrompt,
   finish: (message: string): void => {
     clack.outro(message);

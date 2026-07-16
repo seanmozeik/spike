@@ -13,7 +13,7 @@ const belongsToConversation = (
   const untrusted: Record<string, unknown> = { ...message };
   return (
     message.chatGuid === conversation.chatGuid &&
-    message.handle.toLocaleLowerCase() === conversation.handle.toLocaleLowerCase() &&
+    message.handle.toLowerCase() === conversation.handle.toLowerCase() &&
     untrusted['isFromMe'] === false &&
     untrusted['service'] === 'iMessage'
   );
