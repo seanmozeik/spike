@@ -5,6 +5,8 @@ import { outputMode } from './cli-flags';
 import { emit, toMode } from './cli-shared';
 import { serveDaemon } from './daemon';
 import { SpikeRuntimeError } from './errors';
+import { realPrompts } from './onboarding/prompts';
+import { defaultServices, runOnboarding } from './onboarding/run';
 import {
   accounts,
   doctor,
@@ -67,6 +69,26 @@ const doctorCommand = command(
 );
 const logsCommand = command('logs', 'Read the daemon log', readLogs);
 const accountsCommand = command('accounts', 'Show configured Codex accounts', accounts);
+const initCommand = Command.make('init').pipe(
+  Command.withDescription('Interactively configure and verify a new Spike installation'),
+  Command.withHandler(() => {
+    const paths = spikePaths();
+    return Effect.tryPromise({
+      catch: (cause) =>
+        new SpikeRuntimeError({
+          cause,
+          message: cause instanceof Error ? cause.message : String(cause),
+          operation: 'cli/init',
+        }),
+      try: () =>
+        runOnboarding({
+          paths,
+          prompts: realPrompts(),
+          services: defaultServices(startService, stopService, doctor, paths),
+        }),
+    });
+  }),
+);
 const serveCommand = Command.make('serve').pipe(
   Command.withDescription('Run the foreground daemon for launchd'),
   Command.withHandler(() => serveDaemon(spikePaths())),
@@ -75,6 +97,7 @@ const serveCommand = Command.make('serve').pipe(
 export {
   accountsCommand,
   doctorCommand,
+  initCommand,
   logsCommand,
   restartCommand,
   serveCommand,

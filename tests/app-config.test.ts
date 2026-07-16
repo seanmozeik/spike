@@ -37,7 +37,6 @@ emoji = "off"
 final_punctuation = "natural"
 swearing = "filthy"
 wit = "playful"
-seed_auth_path = "${root}/auth.json"
 messages_database = "${root}/chat.db"
 like_acknowledgements = false
 `,
@@ -53,7 +52,6 @@ like_acknowledgements = false
       likeAcknowledgements: false,
       messagesDatabase: `${root}/chat.db`,
       promptPath: `${root}/custom-prompt.md`,
-      seedAuthPath: `${root}/auth.json`,
       swearing: 'filthy',
       wit: 'playful',
       workingDirectory: '/tmp/example-workspace',
@@ -67,6 +65,13 @@ it.effect('loads personality defaults and rejects unknown modes', () =>
     roots.push(root);
     const paths = spikePaths(root);
     yield* ensureRuntimeLayout(paths);
+    writeFileSync(
+      paths.config,
+      `chat_guid = "any;-;+15555550199"
+handle = "+15555550199"
+working_directory = "/tmp/example-workspace"
+`,
+    );
     expect(yield* loadSpikeConfig(paths)).toMatchObject({
       casing: 'lowercase',
       emoji: 'after_user',

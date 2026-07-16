@@ -40,7 +40,6 @@ const SpikeConfigFile = Schema.Struct({
   like_acknowledgements: Schema.optionalKey(Schema.Boolean),
   messages_database: Schema.optionalKey(NonEmptyString),
   prompt_path: Schema.optionalKey(NonEmptyString),
-  seed_auth_path: Schema.optionalKey(NonEmptyString),
   swearing: Schema.optionalKey(SwearingMode),
   wit: Schema.optionalKey(WitMode),
   working_directory: NonEmptyString,
@@ -57,7 +56,6 @@ interface SpikeConfig {
   readonly likeAcknowledgements: boolean;
   readonly messagesDatabase: string;
   readonly promptPath: string;
-  readonly seedAuthPath: string;
   readonly swearing: SwearingMode;
   readonly wit: WitMode;
   readonly workingDirectory: string;
@@ -100,9 +98,6 @@ const loadSpikeConfig = (paths: SpikePaths): Effect.Effect<SpikeConfig, SpikeRun
         decoded.messages_database ?? path.join(homedir(), 'Library', 'Messages', 'chat.db'),
       ),
       promptPath: expandPath(decoded.prompt_path ?? paths.prompt),
-      seedAuthPath: expandPath(
-        decoded.seed_auth_path ?? path.join(homedir(), '.codex', 'auth.json'),
-      ),
       swearing: decoded.swearing ?? 'tasteful',
       wit: decoded.wit ?? 'dry',
       workingDirectory: expandPath(decoded.working_directory),

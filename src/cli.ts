@@ -7,6 +7,7 @@ import pkg from '../package.json' with { type: 'json' };
 import {
   accountsCommand,
   doctorCommand,
+  initCommand,
   logsCommand,
   restartCommand,
   serveCommand,
@@ -24,6 +25,7 @@ const app = Command.make('spike').pipe(
     restartCommand,
     statusCommand,
     doctorCommand,
+    initCommand,
     logsCommand,
     accountsCommand,
     serveCommand,

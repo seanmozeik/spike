@@ -221,11 +221,13 @@ const makeStatusSnapshot = async (
   ]);
   const { like, scheduler } = readDatabaseStatus(database);
   const limits = readRateLimits(live.rateLimits);
+  const providerActive = runtime?.accountId.startsWith('provider:') === true;
+  const effectiveCounts = providerActive ? { configured: 1, eligible: 1 } : counts;
   return {
     account: {
       active: runtime?.accountId ?? null,
-      availability: counts.eligible > 0 ? 'available' : 'unavailable',
-      ...counts,
+      availability: effectiveCounts.eligible > 0 ? 'available' : 'unavailable',
+      ...effectiveCounts,
     },
     appServer: { healthy: live.healthy },
     codex: { ...limits, rawUsage: live.usage },

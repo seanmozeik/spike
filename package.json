@@ -48,6 +48,7 @@
     "verify": "bun run check && bun run test && bun run build -- --no-formula"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@effect/platform-bun": "4.0.0-beta.98",
     "effect": "4.0.0-beta.98",
     "smol-toml": "^1.6.1",

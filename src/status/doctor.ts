@@ -1,12 +1,12 @@
-import { Database } from 'bun:sqlite';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { Effect } from 'effect';
+import { Effect, Result } from 'effect';
 
 import { loadSpikeConfig, type SpikeConfig } from '../app-config';
 import { inspectJournal } from '../database';
 import { guiDomain, launchAgentLabel, runLaunchctl } from '../launchd';
+import { openMessagesInbox } from '../messages-inbox';
 import type { SpikePaths } from '../paths';
 import { checkHooks } from './hooks-check';
 
@@ -90,7 +90,14 @@ const journalCheck = (paths: SpikePaths): DiagnosticCheck => {
   }
 };
 
-const durableAccountCheck = async (paths: SpikePaths): Promise<DiagnosticCheck> => {
+const durableAccountCheck = async (
+  paths: SpikePaths,
+  codex: Record<string, unknown> | null,
+): Promise<DiagnosticCheck> => {
+  const provider = codex?.['model_provider'];
+  if (typeof provider === 'string' && provider !== '' && provider !== 'openai') {
+    return check('accounts', 'pass', `custom provider: ${provider}`);
+  }
   try {
     const entries = await readdir(paths.accounts, { withFileTypes: true });
     const accounts = entries.filter((entry) => entry.isDirectory());
@@ -106,31 +113,33 @@ const durableAccountCheck = async (paths: SpikePaths): Promise<DiagnosticCheck> 
   }
 };
 
-const messagesChecks = (app: SpikeConfig | null): readonly DiagnosticCheck[] => {
-  const expectedGuid = app?.chatGuid ?? '';
-  const chatDatabase = app?.messagesDatabase ?? 'unconfigured';
+const messagesChecks = async (app: SpikeConfig | null): Promise<readonly DiagnosticCheck[]> => {
+  if (app === null) {
+    return [
+      check('chat.db FDA', 'fail', 'unconfigured'),
+      check('configured conversation', 'fail', 'unconfigured'),
+    ];
+  }
   const checks: DiagnosticCheck[] = [];
-  try {
-    const database = new Database(chatDatabase, { readonly: true, strict: true });
-    try {
-      checks.push(check('chat.db FDA', 'pass', chatDatabase));
-      const row = database
-        .query<{ guid: string }, [string]>('SELECT guid FROM chat WHERE guid = ? LIMIT 1')
-        .get(expectedGuid);
-      checks.push(
-        check(
-          'configured conversation',
-          row?.guid === expectedGuid && expectedGuid !== '' ? 'pass' : 'fail',
-          row?.guid ?? `not found: ${expectedGuid === '' ? 'unconfigured' : expectedGuid}`,
-        ),
-      );
-    } finally {
-      database.close();
-    }
-  } catch (error) {
+  const opened = await Effect.runPromise(
+    Effect.result(
+      openMessagesInbox({
+        chatGuid: app.chatGuid,
+        databasePath: app.messagesDatabase,
+        handle: app.handle,
+      }),
+    ),
+  );
+  if (Result.isSuccess(opened)) {
+    opened.success.close();
     checks.push(
-      check('chat.db FDA', 'fail', error instanceof Error ? error.message : String(error)),
-      check('configured conversation', 'fail', 'chat.db unavailable'),
+      check('chat.db FDA', 'pass', app.messagesDatabase),
+      check('configured conversation', 'pass', `${app.handle} / ${app.chatGuid}`),
+    );
+  } else {
+    checks.push(
+      check('chat.db FDA', 'fail', opened.failure.message),
+      check('configured conversation', 'fail', opened.failure.message),
     );
   }
   const automation = Bun.spawnSync(['osascript', '-e', 'tell application "Messages" to get name'], {
@@ -150,7 +159,10 @@ const messagesChecks = (app: SpikeConfig | null): readonly DiagnosticCheck[] => 
   return checks;
 };
 
-const accessibilityChecks = (helperPath: string): readonly DiagnosticCheck[] => {
+const accessibilityChecks = (helperPath: string, enabled: boolean): readonly DiagnosticCheck[] => {
+  if (!enabled) {
+    return [check('Accessibility', 'pass', 'Likes disabled')];
+  }
   try {
     const result = Bun.spawnSync([helperPath, '--status'], { stderr: 'pipe', stdout: 'pipe' });
     if (result.exitCode !== 0) {
@@ -214,12 +226,12 @@ const makeDoctorReport = async (
 ): Promise<DoctorReport> => {
   const status = isObject(controlStatus) ? controlStatus : {};
   const config = await loadDiagnosticConfig(paths);
-  const [configuration, launchd, durableAccounts] = await Promise.all([
+  const [configuration, launchd, durableAccounts, messages] = await Promise.all([
     configChecks(config),
     launchdCheck(paths, config.app),
-    durableAccountCheck(paths),
+    durableAccountCheck(paths, config.codex),
+    messagesChecks(config.app),
   ]);
-  const messages = messagesChecks(config.app);
   const journal = journalCheck(paths);
   const appServer = isObject(status['appServer']) ? status['appServer'] : {};
   const account = isObject(status['account']) ? status['account'] : {};
@@ -239,7 +251,7 @@ const makeDoctorReport = async (
     ),
     accounts,
     ...messages,
-    ...accessibilityChecks(helperPath),
+    ...accessibilityChecks(helperPath, config.app?.likeAcknowledgements === true),
     launchd,
   ];
   return { checks, healthy: !checks.some((item) => item.state === 'fail'), ok: true };

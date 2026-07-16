@@ -1,4 +1,5 @@
 import { mkdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { Effect, Result } from 'effect';
 
@@ -20,6 +21,15 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 const HEALTH_RPC_TIMEOUT_MS = 700;
 const STATUS_RPC_TIMEOUT_MS = 2000;
+
+const customProvider = async (codexHome: string): Promise<null | string> => {
+  const config: unknown = Bun.TOML.parse(
+    await readFile(path.join(codexHome, 'config.toml'), 'utf8'),
+  );
+  if (!isObject(config)) {return null;}
+  const provider = config['model_provider'];
+  return typeof provider === 'string' && provider !== '' && provider !== 'openai' ? provider : null;
+};
 
 const runtimeError = (operation: string, cause: unknown): CodexRuntimeError =>
   new CodexRuntimeError({ cause, message: `Codex ${operation} failed`, operation });
@@ -197,14 +207,22 @@ const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime
   const accountOptions = {
     accountsDirectory: paths.accounts,
     codexHome: config.codexHome,
-    seedAuthPath: config.seedAuthPath,
+    seedAuthPath: path.join(config.codexHome, 'auth.json'),
   };
   const accounts = yield* discoverAccounts(accountOptions);
   const selection = selectAccount(accounts, new Date());
-  if (selection.kind !== 'Selected') {
-    return yield* selection.error;
+  let accountId: string;
+  if (selection.kind === 'Selected') {
+    yield* activateAccount(accountOptions, selection.account);
+    accountId = selection.account.id;
+  } else {
+    const provider = yield* Effect.tryPromise({
+      catch: (cause) => runtimeError('provider/read', cause),
+      try: () => customProvider(config.codexHome),
+    });
+    if (provider === null) {return yield* selection.error;}
+    accountId = `provider:${provider}`;
   }
-  yield* activateAccount(accountOptions, selection.account);
   const userContext = yield* Effect.tryPromise({
     catch: (cause) => runtimeError('prompt/read', cause),
     try: () => readFile(config.promptPath, 'utf8'),
@@ -222,7 +240,7 @@ const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime
     stderrLog: paths.daemonLog,
   });
   yield* initializeRpc(handle).pipe(Effect.tapError(() => Effect.promise(() => handle.close())));
-  return makeCodexRuntime(handle, prompt, selection.account.id, config.workingDirectory);
+  return makeCodexRuntime(handle, prompt, accountId, config.workingDirectory);
 });
 
 const restartCodexRuntime = Effect.fn('SpikeCodex.restart')(function* restartCodexRuntime(

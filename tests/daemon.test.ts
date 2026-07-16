@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -6,6 +6,7 @@ import { it } from '@effect/vitest';
 import { Effect, Fiber } from 'effect';
 import { afterEach, expect, vi } from 'vitest';
 
+import { ensureRuntimeLayout } from '../src/config-files';
 import { requestControl, startControlSocket } from '../src/control-socket';
 import { serveDaemon } from '../src/daemon';
 import { spikePaths } from '../src/paths';
@@ -24,6 +25,16 @@ it.effect('serves status and releases the journal and socket on control shutdown
     const root = mkdtempSync(path.join(tmpdir(), 'spike-daemon-'));
     roots.push(root);
     const paths = spikePaths(root);
+    yield* ensureRuntimeLayout(paths);
+    writeFileSync(
+      paths.config,
+      `chat_guid = "any;-;+15555550199"
+handle = "+15555550199"
+working_directory = "/tmp"
+like_acknowledgements = false
+`,
+    );
+    writeFileSync(paths.codexConfig, 'approval_policy = "never"\n', 'utf8');
     const fiber = yield* Effect.forkChild(serveDaemon(paths, { codex: false }));
     for (let attempt = 0; attempt < 50 && !existsSync(paths.socket); attempt += 1) {
       yield* Effect.promise(() => Bun.sleep(10));
