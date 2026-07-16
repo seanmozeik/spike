@@ -157,7 +157,10 @@ it.effect('starts the isolated configured thread and sends xhigh Fast turns and 
     yield* runtime.interruptTurn(threadId, turnId);
     yield* runtime.archiveThread(threadId);
     expect(fake.requests).toMatchObject([
-      { method: 'thread/start', params: { baseInstructions: 'Spike prompt', cwd: '/workspace' } },
+      {
+        method: 'thread/start',
+        params: { baseInstructions: 'Spike prompt', cwd: '/workspace', historyMode: 'legacy' },
+      },
       { method: 'turn/start', params: { clientUserMessageId: 'attempt' } },
       {
         method: 'turn/steer',

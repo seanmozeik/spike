@@ -106,7 +106,6 @@ const threadStartParams = (prompt: string, workingDirectory: string): Record<str
   baseInstructions: prompt,
   cwd: workingDirectory,
   historyMode: 'legacy',
-  sessionStartSource: 'clear',
 });
 
 const textInput = (text: string): readonly Record<string, unknown>[] => [
