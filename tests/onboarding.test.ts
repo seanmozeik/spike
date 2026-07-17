@@ -9,6 +9,7 @@ import { afterEach, expect, it } from 'vitest';
 import { loadSpikeConfig } from '../src/app-config';
 import { ConversationDiscoveryError } from '../src/onboarding/conversation';
 import { prepareInstallation, removeInstalledConfiguration } from '../src/onboarding/install';
+import { runOnboardingPreview } from '../src/onboarding/preview';
 import type { OnboardingPrompts } from '../src/onboarding/prompts';
 import { runOnboarding, type OnboardingServices } from '../src/onboarding/run';
 import type { ConversationCandidate, PersonalityAnswers } from '../src/onboarding/types';
@@ -195,6 +196,65 @@ it('writes nothing when the review is declined', async () => {
   });
   expect(existsSync(paths.root)).toBe(false);
   expect(events.at(-1)).toBe('finish:Nothing changed.');
+});
+
+it('previews every configuration prompt without exposing live-system services', async () => {
+  const paths = makeTarget();
+  const events: string[] = [];
+  const prompts = fakePrompts(events);
+  let reviewed = '';
+  await runOnboardingPreview({
+    ...prompts,
+    approvalPolicy: () => {
+      events.push('approval');
+      return Promise.resolve('never');
+    },
+    chooseCodex: (models) => {
+      events.push(`models:${models.length}`);
+      return prompts.chooseCodex(models);
+    },
+    confirmApply: (summary) => {
+      reviewed = summary;
+      events.push('review');
+      return Promise.resolve(true);
+    },
+    context: () => {
+      events.push('context');
+      return prompts.context();
+    },
+    peerHandle: () => {
+      events.push('peer');
+      return prompts.peerHandle();
+    },
+    personality: () => {
+      events.push('personality');
+      return prompts.personality();
+    },
+    sandboxMode: () => {
+      events.push('sandbox');
+      return prompts.sandboxMode();
+    },
+    workingDirectory: () => {
+      events.push('workspace');
+      return prompts.workingDirectory();
+    },
+  });
+
+  expect(existsSync(paths.root)).toBe(false);
+  expect(events).toEqual([
+    'intro',
+    'peer',
+    'workspace',
+    'personality',
+    'models:2',
+    'approval',
+    'sandbox',
+    'context',
+    'review',
+    'finish:Preview complete. Nothing was changed.',
+  ]);
+  expect(reviewed).toContain('spike@icloud.com');
+  expect(reviewed).toContain('gpt-test · high');
 });
 
 it('retries the real conversation query after Full Disk Access is approved', async () => {

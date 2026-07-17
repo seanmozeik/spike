@@ -1,10 +1,11 @@
 import { Effect } from 'effect';
-import { Command } from 'effect/unstable/cli';
+import { Command, Flag } from 'effect/unstable/cli';
 
 import { outputMode } from './cli-flags';
 import { emit, toMode } from './cli-shared';
 import { serveDaemon } from './daemon';
 import { SpikeRuntimeError } from './errors';
+import { runOnboardingPreview } from './onboarding/preview';
 import { realPrompts } from './onboarding/prompts';
 import { runOnboarding } from './onboarding/run';
 import { defaultServices } from './onboarding/services';
@@ -70,10 +71,12 @@ const doctorCommand = command(
 );
 const logsCommand = command('logs', 'Read the daemon log', readLogs);
 const accountsCommand = command('accounts', 'Show configured Codex accounts', accounts);
-const initCommand = Command.make('init').pipe(
+const previewFlag = Flag.boolean('preview').pipe(
+  Flag.withDescription('Walk through every prompt without preflight, permissions, or writes'),
+);
+const initCommand = Command.make('init', { preview: previewFlag }).pipe(
   Command.withDescription('Interactively configure and verify a new Spike installation'),
-  Command.withHandler(() => {
-    const paths = spikePaths();
+  Command.withHandler(({ preview }) => {
     return Effect.tryPromise({
       catch: (cause) =>
         new SpikeRuntimeError({
@@ -81,12 +84,17 @@ const initCommand = Command.make('init').pipe(
           message: cause instanceof Error ? cause.message : String(cause),
           operation: 'cli/init',
         }),
-      try: () =>
-        runOnboarding({
+      try: () => {
+        if (preview) {
+          return runOnboardingPreview(realPrompts('preview'));
+        }
+        const paths = spikePaths();
+        return runOnboarding({
           paths,
           prompts: realPrompts(),
           services: defaultServices(startService, stopService, doctor, paths),
-        }),
+        });
+      },
     });
   }),
 );

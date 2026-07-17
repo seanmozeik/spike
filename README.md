@@ -28,6 +28,16 @@ Run:
 spike init
 ```
 
+To inspect the complete prompt flow without preflight checks, permission requests, authentication,
+filesystem writes, LaunchAgent changes, or Messages access, run:
+
+```nu
+spike init --preview
+```
+
+Preview uses a synthetic conversation and clearly labelled static models. It ends at the review
+screen and is safe to run on an already configured Mac.
+
 The Clack flow asks for the exact conversation, working directory, six personality choices, Codex model and reasoning settings, service tier, approval policy, sandbox, and optional personal context. OpenAI authentication uses device login inside Spike's isolated Codex home. It does not copy your main Codex authentication or configuration.
 
 Spike recommends `approval_policy = "never"` and `sandbox_mode = "danger-full-access"` for a headless personal agent. All sandbox modes are available. Permission prompting is still deferred, so `never` is currently the only operational approval policy shown by onboarding.

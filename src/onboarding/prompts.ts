@@ -14,6 +14,8 @@ import type {
   PersonalityAnswers,
 } from './types';
 
+type OnboardingPromptMode = 'install' | 'preview';
+
 interface OnboardingPrompts {
   readonly approvalPolicy: () => Promise<'never'>;
   readonly chooseCodex: (models: readonly CodexModelOption[]) => Promise<CodexSetup>;
@@ -105,9 +107,20 @@ const chooseConversationPrompt = async (
   );
 };
 
-const confirmApplyPrompt = async (summary: string): Promise<boolean> => {
-  clack.box(summary, 'Spike will install', { width: 76 });
-  return unwrap(await clack.confirm({ initialValue: true, message: 'Apply this configuration?' }));
+const confirmApplyPrompt = async (
+  summary: string,
+  mode: OnboardingPromptMode = 'install',
+): Promise<boolean> => {
+  const preview = mode === 'preview';
+  clack.box(summary, preview ? 'Preview only · nothing will be written' : 'Spike will install', {
+    width: 76,
+  });
+  return unwrap(
+    await clack.confirm({
+      initialValue: true,
+      message: preview ? 'Finish preview?' : 'Apply this configuration?',
+    }),
+  );
 };
 
 const confirmRetryPrompt = async (bunExecutable: string, error: string): Promise<boolean> => {
@@ -191,20 +204,18 @@ const waitForFirstMessagePrompt = async (): Promise<boolean> =>
 
 const workingDirectoryPrompt = async (): Promise<string> =>
   unwrap(
-    await clack.path({
-      directory: true,
+    await clack.text({
       initialValue: process.cwd(),
       message: 'Where should Spike work by default?',
-      root: process.cwd(),
       validate: Schema.toStandardSchemaV1(ExistingDirectory),
     }),
   );
 
-const realPrompts = (): OnboardingPrompts => ({
+const realPrompts = (mode: OnboardingPromptMode = 'install'): OnboardingPrompts => ({
   approvalPolicy: approvalPolicyPrompt,
   chooseCodex: chooseCodexPrompt,
   chooseConversation: chooseConversationPrompt,
-  confirmApply: confirmApplyPrompt,
+  confirmApply: (summary): Promise<boolean> => confirmApplyPrompt(summary, mode),
   confirmRetryAuthentication: confirmRetryAuthenticationPrompt,
   confirmRetryConversation: confirmRetryConversationPrompt,
   confirmRetryFullDiskAccess: confirmRetryPrompt,
@@ -214,7 +225,7 @@ const realPrompts = (): OnboardingPrompts => ({
     clack.outro(message);
   },
   intro: (): void => {
-    clack.intro('Spike onboarding');
+    clack.intro(mode === 'preview' ? 'Spike onboarding preview' : 'Spike onboarding');
   },
   peerHandle: peerHandlePrompt,
   personality: personalityPrompt,

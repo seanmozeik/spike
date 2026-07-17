@@ -14,6 +14,7 @@ import {
 import type { runPreflight } from './preflight';
 import type { OnboardingPrompts } from './prompts';
 import type { waitForRoundTrip } from './round-trip';
+import { summarizeOnboardingPlan } from './summary';
 import type { CodexModelOption, ConversationCandidate, OnboardingPlan } from './types';
 
 interface OnboardingServices {
@@ -77,23 +78,6 @@ const discoverConversation = async (
     return prompts.chooseConversation(candidates);
   };
   return attempt();
-};
-
-const summarize = (plan: OnboardingPlan): string => {
-  let codex = 'default Codex config';
-  if (plan.codex.kind === 'openai') {
-    codex = `${plan.codex.model} · ${plan.codex.reasoning}`;
-  } else if (plan.codex.kind === 'custom') {
-    codex = `custom config · ${plan.codex.configPath}`;
-  }
-  return [
-    `Conversation  ${plan.conversation.handle}`,
-    `Chat GUID     ${plan.conversation.chatGuid}`,
-    `Workspace     ${plan.workingDirectory}`,
-    `Codex         ${codex}`,
-    `Permissions   ${plan.approvalPolicy} · ${plan.sandboxMode}`,
-    `Likes         ${plan.personality.likeAcknowledgements ? 'on' : 'off'}`,
-  ].join('\n');
 };
 
 const ensurePermission = async (
@@ -238,7 +222,7 @@ const runOnboarding = async (options: RunOnboardingOptions): Promise<void> => {
   assertVirginInstall(options.paths);
   options.prompts.intro();
   const { codexExecutable, plan } = await collectPlan(options.prompts, options.services);
-  if (!(await options.prompts.confirmApply(summarize(plan)))) {
+  if (!(await options.prompts.confirmApply(summarizeOnboardingPlan(plan)))) {
     options.prompts.finish('Nothing changed.');
     return;
   }
@@ -271,5 +255,5 @@ const runOnboarding = async (options: RunOnboardingOptions): Promise<void> => {
   options.prompts.finish('Spike is installed, healthy, and replying in iMessage.');
 };
 
-export { collectPlan, runOnboarding, summarize };
+export { collectPlan, runOnboarding };
 export type { OnboardingServices, RunOnboardingOptions };
