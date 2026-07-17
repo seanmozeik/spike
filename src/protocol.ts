@@ -5,6 +5,7 @@ import { ControlProtocolError } from './errors';
 const ControlRequest = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('status') }),
   Schema.Struct({ kind: Schema.Literal('doctor') }),
+  Schema.Struct({ kind: Schema.Literal('approvals') }),
   Schema.Struct({ kind: Schema.Literal('shutdown') }),
 ]);
 type ControlRequest = typeof ControlRequest.Type;

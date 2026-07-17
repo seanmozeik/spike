@@ -9,6 +9,7 @@ import { ensureRuntimeLayout } from './config-files';
 import { requestControl } from './control-socket';
 import { guiDomain, launchAgentLabel, runLaunchctl, writeLaunchAgent } from './launchd';
 import { spikePaths } from './paths';
+import { inspectApprovalList } from './status/approvals';
 import { isDoctorReport, makeDoctorReport } from './status/doctor';
 
 const LOG_TAIL_LINES = 200;
@@ -124,6 +125,16 @@ const doctor = async (): ReturnType<typeof makeDoctorReport> => {
   return makeDoctorReport(paths, { ok: false }, helper);
 };
 
+const approvals = async (): Promise<unknown> => {
+  try {
+    return await requestControl(paths.socket, { kind: 'approvals' });
+  } catch {
+    return (await exists(paths.database))
+      ? inspectApprovalList(paths.database)
+      : { approvals: [], ok: true };
+  }
+};
+
 const readLogs = async (): Promise<unknown> => {
   try {
     const handle = await open(paths.daemonLog, 'r');
@@ -178,4 +189,13 @@ const accounts = async (): Promise<unknown> => {
   return { accounts: configured, active: active ?? null, observations, ok: true };
 };
 
-export { accounts, doctor, readLogs, restartService, serviceStatus, startService, stopService };
+export {
+  accounts,
+  approvals,
+  doctor,
+  readLogs,
+  restartService,
+  serviceStatus,
+  startService,
+  stopService,
+};

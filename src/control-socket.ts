@@ -15,12 +15,28 @@ const writeResponse = (socket: Socket, value: unknown): void => {
   socket.end(encodeFrame(value));
 };
 
+const readRequest = (
+  kind: 'approvals' | 'doctor' | 'status',
+  status: () => Promise<ServiceStatus>,
+  doctor: () => Promise<unknown>,
+  approvals: () => Promise<unknown>,
+): Promise<unknown> => {
+  if (kind === 'doctor') {
+    return doctor();
+  }
+  if (kind === 'approvals') {
+    return approvals();
+  }
+  return status();
+};
+
 const respondToFrame = async (
   socket: Socket,
   frame: string,
   onShutdown: () => void,
   status: () => Promise<ServiceStatus>,
   doctor: () => Promise<unknown>,
+  approvals: () => Promise<unknown>,
 ): Promise<void> => {
   try {
     const request = parseControlRequest(frame);
@@ -29,7 +45,7 @@ const respondToFrame = async (
       onShutdown();
       return;
     }
-    writeResponse(socket, await (request.kind === 'doctor' ? doctor() : status()));
+    writeResponse(socket, await readRequest(request.kind, status, doctor, approvals));
   } catch (error) {
     writeResponse(socket, { error: String(error), ok: false });
   }
@@ -50,6 +66,7 @@ const startControlSocket = async (
       startedAt,
     }),
   doctor: () => Promise<unknown> = status,
+  approvals: () => Promise<unknown> = status,
 ): Promise<Server> => {
   await rm(paths.socket, { force: true });
   const server = createServer((socket) => {
@@ -67,7 +84,7 @@ const startControlSocket = async (
       }
       Effect.runFork(
         Effect.promise(() =>
-          respondToFrame(socket, buffer.slice(0, newline), onShutdown, status, doctor),
+          respondToFrame(socket, buffer.slice(0, newline), onShutdown, status, doctor, approvals),
         ),
       );
     });

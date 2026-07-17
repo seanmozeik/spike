@@ -1,7 +1,13 @@
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { CodexModelOption, CodexSetup, ReasoningOption, ServiceTierOption } from './types';
+import type {
+  CodexModelOption,
+  CodexSetup,
+  OnboardingPlan,
+  ReasoningOption,
+  ServiceTierOption,
+} from './types';
 
 const stringValue = (value: unknown, fallback = ''): string =>
   typeof value === 'string' ? value : fallback;
@@ -105,7 +111,7 @@ const applyPolicy = (config: string, policy: string): string => {
 
 const renderCodexConfig = async (
   setup: CodexSetup,
-  approvalPolicy: 'never',
+  approvalPolicy: OnboardingPlan['approvalPolicy'],
   sandboxMode: 'danger-full-access' | 'read-only' | 'workspace-write',
 ): Promise<string> => {
   const policy = `approval_policy = ${tomlString(approvalPolicy)}\nsandbox_mode = ${tomlString(sandboxMode)}`;

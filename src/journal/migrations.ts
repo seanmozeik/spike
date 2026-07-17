@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const DELIVERY_FRONTIER_VERSION = 5;
 const CANONICAL_GENERATION_THREAD_VERSION = 7;
 const BROKEN_GENERATION_STATE_VERSION = 8;
@@ -210,6 +210,48 @@ const migrationStatements = [
     command TEXT NOT NULL CHECK(command IN ('/new','/status')),
     handled_at TEXT NOT NULL
   ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS approval_requests (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    rpc_request_id_json TEXT NOT NULL,
+    method TEXT NOT NULL CHECK(method IN (
+      'applyPatchApproval','execCommandApproval','item/commandExecution/requestApproval',
+      'item/fileChange/requestApproval','item/permissions/requestApproval'
+    )),
+    thread_id TEXT,
+    turn_id TEXT,
+    logical_turn_id TEXT REFERENCES logical_turns(id) ON DELETE RESTRICT,
+    item_id TEXT,
+    operation TEXT NOT NULL CHECK(operation IN ('Command','FileChange','Permissions')),
+    params_json TEXT NOT NULL,
+    available_decisions_json TEXT,
+    command_text TEXT,
+    cwd TEXT,
+    file_paths_json TEXT NOT NULL,
+    reason TEXT,
+    state TEXT NOT NULL CHECK(state IN (
+      'Pending','Approved','Denied','Expired','Cancelled','Orphaned'
+    )),
+    requested_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    delivery_attempted_at TEXT,
+    delivered_at TEXT,
+    resolved_at TEXT,
+    responded_at TEXT,
+    resolving_inbound_message_id TEXT REFERENCES inbound_messages(id) ON DELETE RESTRICT,
+    response_json TEXT,
+    delivery_error TEXT,
+    UNIQUE(connection_id, rpc_request_id_json)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS approval_pending_fifo
+    ON approval_requests(state, delivered_at, requested_at)`,
+  `CREATE TABLE IF NOT EXISTS handled_approval_messages (
+    inbound_message_id TEXT PRIMARY KEY REFERENCES inbound_messages(id) ON DELETE RESTRICT,
+    approval_id TEXT REFERENCES approval_requests(id) ON DELETE RESTRICT,
+    command TEXT NOT NULL CHECK(command IN ('/yes','/no','invalid')),
+    outcome TEXT NOT NULL CHECK(outcome IN ('Resolved','NoPending','Invalid')),
+    handled_at TEXT NOT NULL
+  ) STRICT`,
 ] as const;
 
 const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
@@ -252,22 +294,4 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   }
 };
 
-export const applyMigrations = (database: Database): void => {
-  const migrate = database.transaction(() => {
-    const [schemaMeta, ...domainStatements] = migrationStatements;
-    database.run(schemaMeta);
-    const previousVersion =
-      database
-        .query<{ version: number | null }, []>('SELECT MAX(version) AS version FROM schema_meta')
-        .get()?.version ?? 0;
-    for (const statement of domainStatements) {
-      database.run(statement);
-    }
-    applyVersionedMigrations(database, previousVersion);
-    database.run(
-      `INSERT OR IGNORE INTO schema_meta(version, applied_at)
-       VALUES (${SCHEMA_VERSION}, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
-    );
-  });
-  migrate();
-};
+export { applyVersionedMigrations, migrationStatements, SCHEMA_VERSION };

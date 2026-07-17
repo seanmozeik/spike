@@ -51,7 +51,7 @@ type CodexSetup =
   | { readonly kind: 'skip' };
 
 interface OnboardingPlan {
-  readonly approvalPolicy: 'never';
+  readonly approvalPolicy: 'never' | 'on-request';
   readonly codex: CodexSetup;
   readonly context: string;
   readonly conversation: ConversationCandidate;

@@ -19,6 +19,12 @@ interface StatusSnapshot {
     readonly eligible: number;
   };
   readonly appServer: { readonly healthy: boolean };
+  readonly approvals: {
+    readonly displayed: number;
+    readonly orphaned: number;
+    readonly pending: number;
+    readonly recentlyResolved: number;
+  };
   readonly codex: {
     readonly fiveHour: RateLimitWindow | null;
     readonly rawUsage: unknown;
@@ -161,7 +167,32 @@ const readLiveCodex = async (
 
 const readDatabaseStatus = (
   database: Database,
-): { readonly like: LikeStatusRow | null; readonly scheduler: SchedulerStatusRow | null } => ({
+): {
+  readonly approvals: StatusSnapshot['approvals'];
+  readonly like: LikeStatusRow | null;
+  readonly scheduler: SchedulerStatusRow | null;
+} => ({
+  approvals: ((): StatusSnapshot['approvals'] => {
+    const row = database
+      .query<
+        { displayed: number; orphaned: number; pending: number; recently_resolved: number },
+        []
+      >(
+        `SELECT
+           SUM(CASE WHEN state = 'Pending' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN state = 'Pending' AND delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS displayed,
+           SUM(CASE WHEN state = 'Orphaned' THEN 1 ELSE 0 END) AS orphaned,
+           SUM(CASE WHEN state != 'Pending' AND resolved_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS recently_resolved
+         FROM approval_requests`,
+      )
+      .get();
+    return {
+      displayed: row?.displayed ?? 0,
+      orphaned: row?.orphaned ?? 0,
+      pending: row?.pending ?? 0,
+      recentlyResolved: row?.recently_resolved ?? 0,
+    };
+  })(),
   like:
     database
       .query<LikeStatusRow, []>(
@@ -219,7 +250,7 @@ const makeStatusSnapshot = async (
     configStatus(paths),
     readLiveCodex(runtime),
   ]);
-  const { like, scheduler } = readDatabaseStatus(database);
+  const { approvals, like, scheduler } = readDatabaseStatus(database);
   const limits = readRateLimits(live.rateLimits);
   const providerActive = runtime?.accountId.startsWith('provider:') === true;
   const effectiveCounts = providerActive ? { configured: 1, eligible: 1 } : counts;
@@ -230,6 +261,7 @@ const makeStatusSnapshot = async (
       ...effectiveCounts,
     },
     appServer: { healthy: live.healthy },
+    approvals,
     codex: { ...limits, rawUsage: live.usage },
     config,
     like: {

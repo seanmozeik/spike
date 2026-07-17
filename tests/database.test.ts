@@ -29,7 +29,10 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
       synchronous: 2,
     });
     journal.close();
-    expect(inspectJournal(databasePath)).toStrictEqual({ journalMode: 'wal', migrationVersion: 9 });
+    expect(inspectJournal(databasePath)).toStrictEqual({
+      journalMode: 'wal',
+      migrationVersion: 10,
+    });
   }),
 );
 
@@ -59,7 +62,7 @@ it.effect('migrates a version 6 scheduler journal to the canonical generation th
 
     expect(columns).not.toContain('codex_thread_id');
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(9);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(10);
   }),
 );
 
@@ -87,7 +90,7 @@ it.effect('migrates a version 7 journal to durable broken-generation state', () 
     migrated.close();
 
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(9);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(10);
   }),
 );
 
@@ -121,6 +124,6 @@ it.effect('migrates failed logical turns to terminal Codex attempts', () =>
     migrated.close();
 
     expect(attempt).toStrictEqual({ finished_at: '2026-07-15T00:01:00.000Z', state: 'Failed' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(9);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(10);
   }),
 );

@@ -11,6 +11,7 @@ import { runOnboarding } from './onboarding/run';
 import { defaultServices } from './onboarding/services';
 import {
   accounts,
+  approvals,
   doctor,
   readLogs,
   restartService,
@@ -19,6 +20,7 @@ import {
   stopService,
 } from './operations';
 import { spikePaths } from './paths';
+import { isApprovalList } from './status/approvals';
 import { isDoctorReport } from './status/doctor';
 import { formatDoctor, formatStatus } from './status/format';
 import { isStatusSnapshot } from './status/snapshot';
@@ -71,6 +73,23 @@ const doctorCommand = command(
 );
 const logsCommand = command('logs', 'Read the daemon log', readLogs);
 const accountsCommand = command('accounts', 'Show configured Codex accounts', accounts);
+const formatApprovals = (value: unknown): string => {
+  if (!isApprovalList(value)) {
+    return JSON.stringify(value);
+  }
+  if (value.approvals.length === 0) {
+    return 'No approvals.';
+  }
+  return value.approvals
+    .map((item) => `${item.state} · ${item.operation} · ${item.method} · ${item.id}`)
+    .join('\n');
+};
+const approvalsCommand = command(
+  'approvals',
+  'List pending and recently resolved approvals',
+  approvals,
+  formatApprovals,
+);
 const previewFlag = Flag.boolean('preview').pipe(
   Flag.withDescription('Walk through every prompt without preflight, permissions, or writes'),
 );
@@ -105,6 +124,7 @@ const serveCommand = Command.make('serve').pipe(
 
 export {
   accountsCommand,
+  approvalsCommand,
   doctorCommand,
   initCommand,
   logsCommand,

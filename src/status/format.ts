@@ -49,6 +49,7 @@ const formatStatus = (status: StatusSnapshot): string => {
     `Account ${status.account.active ?? '—'} · ${String(status.account.eligible)}/${String(status.account.configured)} eligible · ${status.account.availability}`,
     `5h ${limit(status.codex.fiveHour)} · weekly ${limit(status.codex.weekly)}`,
     `Turn ${status.turn.state} · pooled ${String(status.turn.pooledMessages)} · thread ${duration(status.turn.threadAgeSeconds)}`,
+    `Approvals ${String(status.approvals.pending)} pending · ${String(status.approvals.displayed)} displayed · ${String(status.approvals.orphaned)} orphaned`,
     `Ack ${relativeTime(status.turn.lastWorkAcknowledgementAt)} · final ${relativeTime(status.turn.lastFinalAt)}`,
     `Mac ${duration(status.system.uptimeSeconds)} up · load ${String(status.system.cpuLoad)} · pressure ${String(status.system.memoryPressurePercent)}% · ${like}`,
   ].join('\n');

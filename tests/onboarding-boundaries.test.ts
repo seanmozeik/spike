@@ -122,6 +122,14 @@ it('overrides policy in a custom Codex config without duplicate TOML keys', asyn
   expect(rendered.match(/approval_policy/gu)).toHaveLength(1);
 });
 
+it('renders the interactive approval policy selected during onboarding', async () => {
+  const rendered = await renderCodexConfig({ kind: 'skip' }, 'on-request', 'workspace-write');
+  expect(Bun.TOML.parse(rendered)).toMatchObject({
+    approval_policy: 'on-request',
+    sandbox_mode: 'workspace-write',
+  });
+});
+
 it('enforces the Bun 1.3 engine floor', () => {
   expect(bunVersionSupported('1.2.99')).toBe(false);
   expect(bunVersionSupported('1.3.0')).toBe(true);

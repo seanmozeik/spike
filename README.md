@@ -40,11 +40,13 @@ screen and is safe to run on an already configured Mac.
 
 The Clack flow asks for the exact conversation, working directory, six personality choices, Codex model and reasoning settings, service tier, approval policy, sandbox, and optional personal context. OpenAI authentication uses device login inside Spike's isolated Codex home. It does not copy your main Codex authentication or configuration.
 
-Spike recommends `approval_policy = "never"` and `sandbox_mode = "danger-full-access"` for a headless personal agent. All sandbox modes are available. Permission prompting is still deferred, so `never` is currently the only operational approval policy shown by onboarding.
+Spike recommends `approval_policy = "never"` and `sandbox_mode = "danger-full-access"` for a fully unattended personal agent. Choose `on-request` if you want Codex tool permissions routed to the configured iMessage conversation. Spike shows one request at a time; reply with exactly `/yes` or `/no`. Replies never contain or require an approval ID, and extra text is rejected.
 
 Nothing is installed before the review screen is confirmed. Spike stages and validates the complete configuration, installs the LaunchAgent, runs `spike doctor`, then waits for a real message and reply in the configured conversation. A failed apply or verification removes the virgin installation.
 
 `spike init` is only for a new installation. Use `spike doctor` for read-only diagnostics if an existing installation is unhealthy; reconfiguration and repair are separate workflows.
+
+Pending and recent permission requests are visible through `spike approvals`. `spike status` includes compact approval counts, and `spike doctor` reports queued, orphaned, or incorrectly concurrent prompts. Requests expire after ten minutes, fail closed if delivery or the Codex connection fails, and do not create session-wide grants.
 
 ## Conversation boundary
 

@@ -7,6 +7,7 @@ import { parseMemoryPressure, type StatusSnapshot } from '../src/status/snapshot
 const snapshot = (): StatusSnapshot => ({
   account: { active: 'default', availability: 'available', configured: 1, eligible: 1 },
   appServer: { healthy: true },
+  approvals: { displayed: 1, orphaned: 0, pending: 2, recentlyResolved: 3 },
   codex: {
     fiveHour: { remainingPercent: 80, resetsAt: '2026-07-14T22:00:00.000Z' },
     rawUsage: null,
@@ -69,11 +70,12 @@ describe('compact status', () => {
 
   it('renders one compact bubble with every operator signal', () => {
     const output = formatStatus(snapshot());
-    expect(output.split('\n')).toHaveLength(7);
+    expect(output.split('\n')).toHaveLength(8);
     expect(output).toContain('example-model · medium · low · Fast on');
     expect(output).toContain('5h 80% left');
     expect(output).toContain('weekly 65% left');
     expect(output).toContain('Turn running · pooled 2 · thread 1h');
+    expect(output).toContain('Approvals 2 pending · 1 displayed · 0 orphaned');
     expect(output).toContain('pressure 42.5% · Like degraded (locked)');
   });
 

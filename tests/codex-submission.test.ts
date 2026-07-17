@@ -29,6 +29,9 @@ const makeRuntime = (
   startTurn: CodexRuntime['startTurn'],
 ): CodexRuntime => ({
   accountId: 'default',
+  addConnectionCloseListener: (): (() => void) => (): void => undefined,
+  addNotificationListener: (): (() => void) => (): void => undefined,
+  addServerRequestListener: (): (() => void) => (): void => undefined,
   archiveThread: (): Effect.Effect<void> => Effect.void,
   close: (): Promise<void> => Promise.resolve(),
   health: Effect.void,
@@ -36,6 +39,7 @@ const makeRuntime = (
   loadedThreads: Effect.succeed([CodexThreadId.make('thread')]),
   rateLimits: Effect.succeed({}),
   readThread,
+  respondToServerRequest: (): Promise<void> => Promise.resolve(),
   resumeThread: (): Effect.Effect<void> => Effect.void,
   startThread: Effect.succeed(CodexThreadId.make('thread')),
   startTurn,

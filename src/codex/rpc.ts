@@ -3,28 +3,15 @@ import { appendFile } from 'node:fs/promises';
 import { Effect } from 'effect';
 
 import { CodexRuntimeError } from '../errors';
-import {
-  makeNotificationRegistry,
-  type JsonRpcNotification,
-  type NotificationRegistry,
-} from './notification-registry';
+import { makeNotificationRegistry, type NotificationRegistry } from './notification-registry';
 import { routeServerRequest } from './rpc-server-request';
-
-type JsonRpcId = number | string;
+import type { JsonRpcId, RpcHandle, SpawnRpcOptions } from './rpc-types';
+import { makeServerRequestRegistry, type ServerRequestRegistry } from './server-request-registry';
 
 interface PendingRequest {
   readonly reject: (reason?: unknown) => void;
   readonly resolve: (value: unknown) => void;
   readonly timeout: ReturnType<typeof setTimeout>;
-}
-
-interface RpcHandle {
-  readonly addNotificationListener: (
-    listener: (notification: JsonRpcNotification) => void,
-  ) => () => void;
-  readonly close: () => Promise<void>;
-  readonly notify: (method: string, params?: unknown) => Promise<void>;
-  readonly request: (method: string, params?: unknown, timeoutMs?: number) => Promise<unknown>;
 }
 
 interface RpcRuntime {
@@ -33,17 +20,15 @@ interface RpcRuntime {
   readonly pending: Map<JsonRpcId, PendingRequest>;
 }
 
-interface SpawnRpcOptions {
-  readonly codexExecutable: string;
-  readonly codexHome: string;
-  readonly stderrLog: string;
-  readonly timeoutMs?: number;
-}
-
 interface ChildWriter {
   readonly enqueue: (value: unknown) => void;
   readonly tail: () => Promise<void>;
   readonly write: (value: unknown) => Promise<void>;
+}
+
+interface CloseRegistry {
+  readonly publish: () => void;
+  readonly subscribe: (listener: () => void) => () => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -148,6 +133,42 @@ const makeWriter = (stdin: Bun.FileSink): ChildWriter => {
   return { enqueue, tail: (): Promise<void> => tail, write };
 };
 
+const makeCloseRegistry = (): CloseRegistry => {
+  const listeners = new Set<() => void>();
+  let published = false;
+  return {
+    publish: (): void => {
+      if (published) {
+        return;
+      }
+      published = true;
+      for (const listener of listeners) {
+        listener();
+      }
+    },
+    subscribe: (listener): (() => void) => {
+      listeners.add(listener);
+      if (published) {
+        queueMicrotask(listener);
+      }
+      return (): void => {
+        listeners.delete(listener);
+      };
+    },
+  };
+};
+
+const watchChild = async (
+  exited: Promise<number>,
+  runtime: RpcRuntime,
+  publishClose: () => void,
+): Promise<void> => {
+  const code = await exited;
+  runtime.childExited = true;
+  rejectPending(runtime, new Error(`codex app-server exited with ${String(code)}`));
+  publishClose();
+};
+
 const makeRequest =
   (
     runtime: RpcRuntime,
@@ -179,13 +200,18 @@ const makeRequest =
   };
 
 const makeLineHandler =
-  (runtime: RpcRuntime, notifications: NotificationRegistry, enqueue: (value: unknown) => void) =>
+  (
+    runtime: RpcRuntime,
+    notifications: NotificationRegistry,
+    serverRequests: ServerRequestRegistry,
+    enqueue: (value: unknown) => void,
+  ) =>
   (line: string): void => {
     const message = parseLine(line);
     if (message === null || routeResponse(message, runtime.pending)) {
       return;
     }
-    if (routeServerRequest(message, enqueue)) {
+    if (routeServerRequest(message, serverRequests.publish, enqueue)) {
       return;
     }
     routeNotification(message, notifications);
@@ -194,6 +220,8 @@ const makeLineHandler =
 const spawnRpcHandle = (options: SpawnRpcOptions): RpcHandle => {
   const runtime: RpcRuntime = { childExited: false, nextId: 1, pending: new Map() };
   const notifications = makeNotificationRegistry(MAX_RECENT_NOTIFICATIONS);
+  const serverRequests = makeServerRequestRegistry();
+  const closeRegistry = makeCloseRegistry();
   const child = Bun.spawn([options.codexExecutable, 'app-server', '--listen', 'stdio://'], {
     env: { ...process.env, CODEX_HOME: options.codexHome },
     stderr: 'pipe',
@@ -202,7 +230,10 @@ const spawnRpcHandle = (options: SpawnRpcOptions): RpcHandle => {
   });
   const writer = makeWriter(child.stdin);
   const stderrWrites: Promise<void>[] = [];
-  const stdout = readLines(child.stdout, makeLineHandler(runtime, notifications, writer.enqueue));
+  const stdout = readLines(
+    child.stdout,
+    makeLineHandler(runtime, notifications, serverRequests, writer.enqueue),
+  );
   const stderr = readLines(child.stderr, (line) => {
     const write = async (): Promise<void> => {
       try {
@@ -213,23 +244,25 @@ const spawnRpcHandle = (options: SpawnRpcOptions): RpcHandle => {
     };
     stderrWrites.push(write());
   });
-  const watchExit = async (): Promise<void> => {
-    const code = await child.exited;
-    runtime.childExited = true;
-    rejectPending(runtime, new Error(`codex app-server exited with ${String(code)}`));
-  };
-  const exited = watchExit();
+  const exited = watchChild(child.exited, runtime, closeRegistry.publish);
   return {
+    addConnectionCloseListener: closeRegistry.subscribe,
     addNotificationListener: notifications.subscribe,
+    addServerRequestListener: serverRequests.subscribe,
     close: async () => {
       runtime.childExited = true;
       rejectPending(runtime, new Error('codex app-server closed'));
+      closeRegistry.publish();
       child.kill();
       await Promise.allSettled([child.exited, writer.tail(), stdout, stderr, exited]);
       await Promise.allSettled(stderrWrites);
     },
     notify: (method, params) => writer.write({ jsonrpc: '2.0', method, params }),
     request: makeRequest(runtime, writer.write, options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    respondToServerRequest: async (id, result) => {
+      serverRequests.resolve(id);
+      await writer.write({ id, jsonrpc: '2.0', result });
+    },
   };
 };
 
@@ -256,4 +289,5 @@ const initializeRpc = Effect.fn('SpikeCodex.initialize')((handle: RpcHandle) =>
 
 export { initializeRpc, spawnRpcHandle };
 export type { JsonRpcNotification } from './notification-registry';
-export type { RpcHandle, SpawnRpcOptions };
+export type { CodexServerRequest } from './server-request-registry';
+export type { JsonRpcId, RpcHandle, SpawnRpcOptions } from './rpc-types';

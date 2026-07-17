@@ -24,6 +24,7 @@ const makeHandle = (missingThread = false, unloadedThread = false): FakeHandle =
   const requests: RequestRecord[] = [];
   let threadReads = 0;
   const handle: RpcHandle = {
+    addConnectionCloseListener: () => (): void => undefined,
     addNotificationListener: (listener) => {
       listeners.push(listener);
       return () => {
@@ -33,6 +34,7 @@ const makeHandle = (missingThread = false, unloadedThread = false): FakeHandle =
         }
       };
     },
+    addServerRequestListener: () => (): void => undefined,
     close: () => Promise.resolve(),
     notify: () => Promise.resolve(),
     request: (method, params, timeoutMs) => {
@@ -62,6 +64,7 @@ const makeHandle = (missingThread = false, unloadedThread = false): FakeHandle =
       }
       return Promise.resolve({});
     },
+    respondToServerRequest: () => Promise.resolve(),
   };
   return {
     emit: (notification: JsonRpcNotification): void => {

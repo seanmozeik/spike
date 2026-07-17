@@ -6,6 +6,7 @@ import { CliError, Command } from 'effect/unstable/cli';
 import pkg from '../package.json' with { type: 'json' };
 import {
   accountsCommand,
+  approvalsCommand,
   doctorCommand,
   initCommand,
   logsCommand,
@@ -28,6 +29,7 @@ const app = Command.make('spike').pipe(
     initCommand,
     logsCommand,
     accountsCommand,
+    approvalsCommand,
     serveCommand,
   ]),
 );

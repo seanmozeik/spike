@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { Effect } from 'effect';
 
 import { SpikeRuntimeError } from './errors';
-import { applyMigrations } from './journal/migrations';
+import { applyMigrations } from './journal/migrations-runner';
 
 interface JournalHandle {
   readonly database: Database;

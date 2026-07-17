@@ -20,6 +20,7 @@ import { makeLikeNativeRunner } from './like/native-runner';
 import { openMessagesInbox, type MessagesInboxHandle } from './messages-inbox';
 import type { SpikePaths } from './paths';
 import { makeSpikeEngine, type SpikeEngine } from './service/engine';
+import { readApprovalList } from './status/approvals';
 import { makeDoctorReport } from './status/doctor';
 import { formatStatus } from './status/format';
 import { makeStatusSnapshot } from './status/snapshot';
@@ -87,7 +88,8 @@ const releaseInbox = (inbox: MessagesInboxHandle): Effect.Effect<void> => Effect
 const releaseTransport = (transport: MessagesTransport): Effect.Effect<void> =>
   Effect.sync(transport.close);
 
-const releaseEngine = (engine: SpikeEngine): Effect.Effect<void> => Effect.sync(engine.close);
+const releaseEngine = (engine: SpikeEngine): Effect.Effect<void> =>
+  engine.shutdown.pipe(Effect.catchCause(() => Effect.void));
 
 const likeHelperPath = (): string =>
   process.env['SPIKE_LIKE_HELPER'] ??
@@ -193,6 +195,7 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
             },
             status,
             async () => makeDoctorReport(paths, await status(), likeHelperPath()),
+            () => Promise.resolve(readApprovalList(journal.database)),
           ),
         ),
         (server) => releaseServer(server, paths),

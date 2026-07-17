@@ -35,6 +35,22 @@ const check = (name: string, state: CheckState, detail: string): DiagnosticCheck
   state,
 });
 
+const numericField = (value: Record<string, unknown>, key: string): number =>
+  typeof value[key] === 'number' ? value[key] : 0;
+
+const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
+  const displayed = numericField(value, 'displayed');
+  const orphaned = numericField(value, 'orphaned');
+  const pending = numericField(value, 'pending');
+  let state: CheckState = 'pass';
+  if (displayed > 1) {
+    state = 'fail';
+  } else if (orphaned > 0) {
+    state = 'warn';
+  }
+  return check('approvals', state, `${String(pending)} pending, ${String(orphaned)} orphaned`);
+};
+
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
@@ -235,6 +251,7 @@ const makeDoctorReport = async (
   const journal = journalCheck(paths);
   const appServer = isObject(status['appServer']) ? status['appServer'] : {};
   const account = isObject(status['account']) ? status['account'] : {};
+  const approvals = isObject(status['approvals']) ? status['approvals'] : {};
   const liveEligible = typeof account['eligible'] === 'number' ? account['eligible'] : null;
   const accounts =
     liveEligible === null
@@ -249,6 +266,7 @@ const makeDoctorReport = async (
       appServer['healthy'] === true ? 'pass' : 'fail',
       appServer['healthy'] === true ? 'responsive' : 'unavailable',
     ),
+    approvalCheck(approvals),
     accounts,
     ...messages,
     ...accessibilityChecks(helperPath, config.app?.likeAcknowledgements === true),

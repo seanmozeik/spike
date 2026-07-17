@@ -40,3 +40,6 @@ export const PromptVersion = Schema.String.pipe(Schema.brand('PromptVersion'));
 export type PromptVersion = typeof PromptVersion.Type;
 export const ConfigVersion = Schema.String.pipe(Schema.brand('ConfigVersion'));
 export type ConfigVersion = typeof ConfigVersion.Type;
+
+export const ApprovalId = Schema.String.pipe(Schema.brand('ApprovalId'));
+export type ApprovalId = typeof ApprovalId.Type;

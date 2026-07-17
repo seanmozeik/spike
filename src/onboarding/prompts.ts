@@ -17,7 +17,7 @@ import type {
 type OnboardingPromptMode = 'install' | 'preview';
 
 interface OnboardingPrompts {
-  readonly approvalPolicy: () => Promise<'never'>;
+  readonly approvalPolicy: () => Promise<OnboardingPlan['approvalPolicy']>;
   readonly chooseCodex: (models: readonly CodexModelOption[]) => Promise<CodexSetup>;
   readonly chooseConversation: (
     candidates: readonly ConversationCandidate[],
@@ -66,7 +66,7 @@ const ExistingDirectory = Schema.String.pipe(
   ),
 );
 
-const approvalPolicyPrompt = async (): Promise<'never'> => {
+const approvalPolicyPrompt = async (): Promise<OnboardingPlan['approvalPolicy']> => {
   const answer = unwrap(
     await clack.select({
       initialValue: 'never' as const,
@@ -74,17 +74,13 @@ const approvalPolicyPrompt = async (): Promise<'never'> => {
       options: [
         { hint: 'recommended for headless use', label: 'Without asking', value: 'never' as const },
         {
-          disabled: true,
-          hint: 'coming in MTA-317',
-          label: 'Ask when needed',
+          hint: 'reply /yes or /no over iMessage',
+          label: 'Ask over iMessage',
           value: 'on-request' as const,
         },
       ],
     }),
   );
-  if (answer !== 'never') {
-    throw new Error('permission prompting is not available yet');
-  }
   return answer;
 };
 

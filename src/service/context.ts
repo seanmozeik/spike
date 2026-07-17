@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
+import type { ApprovalManager } from '../approval/manager';
 import type { CodexRuntime } from '../codex/runtime';
 import { compactError, type DeliveryService } from '../delivery/service';
 import type { ChatGuid } from '../domain/ids';
@@ -16,6 +17,7 @@ import type { SchedulerController } from '../scheduler/controller';
 import type { PooledMessage, SchedulerEvent } from '../scheduler/model';
 
 interface SpikeEngineOptions {
+  readonly approvalExpiryMs?: number;
   readonly chatGuid: ChatGuid;
   readonly database: Database;
   readonly delivery: DeliveryService;
@@ -29,6 +31,7 @@ interface SpikeEngineOptions {
 }
 
 interface EngineContext {
+  approval: ApprovalManager | null;
   readonly closing: { value: boolean };
   readonly codexJournal: CodexJournal;
   readonly controllerReady: PromiseWithResolvers<SchedulerController>;

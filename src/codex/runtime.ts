@@ -163,6 +163,9 @@ const makeCodexRuntime = (
 ): CodexRuntime => ({
   ...threadMethods(handle, workingDirectory),
   accountId,
+  addConnectionCloseListener: handle.addConnectionCloseListener,
+  addNotificationListener: handle.addNotificationListener,
+  addServerRequestListener: handle.addServerRequestListener,
   archiveThread: (threadId): Effect.Effect<void, CodexRuntimeError> =>
     request(handle, 'thread/archive', { threadId }).pipe(Effect.asVoid),
   close: (): Promise<void> => handle.close(),
@@ -173,6 +176,7 @@ const makeCodexRuntime = (
     request(handle, 'turn/interrupt', { threadId, turnId }).pipe(Effect.asVoid),
   loadedThreads: request(handle, 'thread/loaded/list', {}).pipe(Effect.flatMap(parseLoadedThreads)),
   rateLimits: request(handle, 'account/rateLimits/read', undefined, STATUS_RPC_TIMEOUT_MS),
+  respondToServerRequest: handle.respondToServerRequest,
   startThread: request(handle, 'thread/start', threadStartParams(prompt, workingDirectory)).pipe(
     Effect.flatMap((response) => responseId('thread/start', response, 'thread')),
     Effect.map((id) => CodexThreadId.make(id)),

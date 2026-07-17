@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
+import { makeApprovalManager } from '../approval/manager';
 import { GenerationId, type InboundMessageId, LogicalTurnId } from '../domain/ids';
 import { type GenerationBroken, isGenerationBroken } from '../errors';
 import { makeCodexJournal } from '../journal/codex-journal';
@@ -21,6 +22,7 @@ interface SpikeEngine {
   readonly pollOnce: Effect.Effect<void, unknown>;
   readonly redactNow: (now: Date) => Effect.Effect<number, unknown>;
   readonly run: Effect.Effect<never>;
+  readonly shutdown: Effect.Effect<void, unknown>;
   readonly snapshot: Effect.Effect<SchedulerState>;
 }
 
@@ -137,6 +139,9 @@ const pollOnce = (
         observed,
       );
     }
+    if (context.approval !== null) {
+      yield* context.approval.poll;
+    }
     const at = context.now();
     const pending = yield* context.journal.listPendingInbound;
     const dispatched = yield* Effect.result(dispatchPending(context, controller, pending, at));
@@ -167,6 +172,7 @@ const seedInboxCursor = (context: EngineContext): Effect.Effect<void, unknown> =
   });
 
 const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContext => ({
+  approval: null,
   closing: { value: false },
   codexJournal: makeCodexJournal(options.database),
   controllerReady: Promise.withResolvers<SchedulerController>(),
@@ -179,6 +185,19 @@ const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContex
   timers: new Set(),
 });
 
+const makeCycle = (
+  context: EngineContext,
+  once: Effect.Effect<void, unknown>,
+  interval: number,
+): Effect.Effect<void> =>
+  Effect.gen(function* cycle() {
+    const result = yield* Effect.result(once);
+    if (Result.isFailure(result)) {
+      report(context, result.failure);
+    }
+    yield* Effect.promise(() => Bun.sleep(interval));
+  });
+
 const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
   options: SpikeEngineOptions,
 ) {
@@ -187,6 +206,13 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
   yield* seedInboxCursor(context);
   const initial = yield* context.schedulerJournal.loadOrCreate(now());
   yield* options.delivery.recover;
+  context.approval = yield* makeApprovalManager({
+    database: options.database,
+    delivery: options.delivery,
+    ...(options.approvalExpiryMs === undefined ? {} : { expiryMs: options.approvalExpiryMs }),
+    now,
+    runtime: options.runtime,
+  });
   const controller = yield* makeSchedulerController(
     initial,
     context.schedulerJournal,
@@ -195,13 +221,7 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
   context.controllerReady.resolve(controller);
   const once = pollOnce(context, controller);
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const cycle = Effect.gen(function* cycle() {
-    const result = yield* Effect.result(once);
-    if (Result.isFailure(result)) {
-      report(context, result.failure);
-    }
-    yield* Effect.promise(() => Bun.sleep(interval));
-  });
+  const cycle = makeCycle(context, once, interval);
   return {
     close: (): void => {
       closeEngine(context);
@@ -216,6 +236,12 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
         at,
       ),
     run: Effect.forever(cycle),
+    shutdown: Effect.gen(function* shutdownEngine() {
+      closeEngine(context);
+      if (context.approval !== null) {
+        yield* context.approval.close;
+      }
+    }),
     snapshot: controller.snapshot,
   } satisfies SpikeEngine;
 });
