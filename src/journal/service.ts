@@ -11,6 +11,7 @@ import { makeListPendingControls, type PendingControl } from './control-recovery
 import { makeInitializeInboxCursor } from './cursor';
 import { makeListPendingInbound, type PendingInboundMessage } from './inbound-recovery';
 import { newestMessage } from './observed-messages';
+import { makeRedact } from './retention';
 
 interface InboxCursor {
   readonly chatGuid: string;
@@ -71,7 +72,6 @@ interface Journal {
 type PersistAttachments = (inboundId: string, message: ObservedMessage, observedAt: string) => void;
 type PersistMessage = (message: ObservedMessage, observedAt: string) => number;
 type IngestTransaction = (observedAt: string, messages: readonly ObservedMessage[]) => number;
-type RedactTransaction = (cutoff: string, redactedAt: string) => number;
 
 const INSERT_MESSAGE = `INSERT OR IGNORE INTO inbound_messages(
   id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
@@ -89,23 +89,6 @@ const UPSERT_CURSOR = `INSERT INTO inbox_cursor(chat_guid, last_rowid, last_mess
       ELSE inbox_cursor.last_message_guid
     END,
     updated_at = excluded.updated_at`;
-const REDACT_INBOUND = `UPDATE inbound_messages
-  SET text = NULL, payload_redacted_at = ?
-  WHERE payload_redacted_at IS NULL AND observed_at < ? AND id IN (
-    SELECT ibm.inbound_message_id FROM input_batch_messages ibm
-    JOIN input_batches ib ON ib.id = ibm.input_batch_id
-    JOIN logical_turns lt ON lt.id = ib.logical_turn_id
-    WHERE lt.state IN ('Completed','Failed','Superseded') AND NOT EXISTS (
-      SELECT 1 FROM outbound_messages om WHERE om.logical_turn_id = lt.id
-      AND om.state NOT IN ('Delivered','Failed','Superseded')
-    )
-  )`;
-const REDACT_ATTACHMENTS = `UPDATE attachments
-  SET filename = NULL, transfer_name = NULL, source_path = NULL, staged_path = NULL,
-      state = 'Redacted', payload_redacted_at = ?
-  WHERE payload_redacted_at IS NULL AND inbound_message_id IN (
-    SELECT id FROM inbound_messages WHERE payload_redacted_at = ?
-  )`;
 const REDACTION_ERROR = 'failed to redact terminal payloads';
 
 const makePersistAttachments = (database: Database): PersistAttachments => {
@@ -247,13 +230,6 @@ const readInbound = (database: Database): readonly PersistedInboundMessage[] =>
       rowId: row.messages_rowid,
       text: row.text,
     }));
-
-const makeRedact = (database: Database): RedactTransaction =>
-  database.transaction((cutoff: string, redactedAt: string): number => {
-    const result = database.run(REDACT_INBOUND, [redactedAt, cutoff]);
-    database.run(REDACT_ATTACHMENTS, [redactedAt, redactedAt]);
-    return result.changes;
-  });
 
 const makeJournal = (database: Database, conversation: ConfiguredConversation): Journal => {
   const ingest = makeIngest(database, conversation);

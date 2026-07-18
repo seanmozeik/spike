@@ -3,8 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { it } from '@effect/vitest';
-import { Clock, Effect, Result } from 'effect';
-import { TestClock } from 'effect/testing';
+import { Effect, Result } from 'effect';
 import { afterEach, expect } from 'vitest';
 
 import { openJournal } from '../src/database';
@@ -93,65 +92,6 @@ it.effect('rejects a message from another handle before it reaches scheduling', 
     expect(yield* journal.listInbound).toStrictEqual([]);
     handle.close();
   }),
-);
-
-it.effect(
-  'redacts copied payloads after 30 terminal days while preserving identity and state',
-  () =>
-    Effect.gen(function* retentionFixture() {
-      const handle = yield* openJournal(makeDatabasePath());
-      const journal = makeJournal(handle.database, { chatGuid: CHAT_GUID, handle: HANDLE });
-      const startedAt = yield* Clock.currentTimeMillis;
-      yield* journal.ingestObservedMessages(CHAT_GUID, new Date(startedAt), [
-        observed(1, 'private'),
-      ]);
-      const [inbound] = yield* journal.listInbound;
-      expect(inbound).toBeDefined();
-      if (inbound === undefined) {
-        throw new Error('expected persisted inbound message');
-      }
-      handle.database.run(
-        "INSERT INTO generations(id, sequence, state, created_at) VALUES ('generation', 1, 'Current', ?)",
-        [new Date(startedAt).toISOString()],
-      );
-      handle.database.run(
-        "INSERT INTO logical_turns VALUES ('turn', 'generation', 1, 'Running', 'correlation', ?, NULL, NULL)",
-        [new Date(startedAt).toISOString()],
-      );
-      handle.database.run(
-        "INSERT INTO input_batches VALUES ('batch', 'turn', 'Initial', 'fingerprint', ?)",
-        [new Date(startedAt).toISOString()],
-      );
-      handle.database.run('INSERT INTO input_batch_messages VALUES (?, ?, 0)', [
-        'batch',
-        inbound.id,
-      ]);
-      yield* TestClock.adjust('31 days');
-      const now = yield* Clock.currentTimeMillis;
-      const cutoff = new Date(now - 30 * 24 * 60 * 60 * 1000);
-      const redactedAt = new Date(now);
-      expect(yield* journal.redactTerminalPayloads(cutoff, redactedAt)).toBe(0);
-      handle.database.run(
-        "UPDATE logical_turns SET state = 'Completed', completed_at = ? WHERE id = 'turn'",
-        [redactedAt.toISOString()],
-      );
-      handle.database.run(
-        `INSERT INTO outbound_messages(
-          id, logical_turn_id, source_kind, source_id, message_kind, text, state, created_at
-        ) VALUES ('outbound', 'turn', 'LogicalTurn', 'turn', 'Final', 'done', 'Prepared', ?)`,
-        [redactedAt.toISOString()],
-      );
-      expect(yield* journal.redactTerminalPayloads(cutoff, redactedAt)).toBe(0);
-      handle.database.run(
-        "UPDATE outbound_messages SET state = 'Delivered', delivered_at = ? WHERE id = 'outbound'",
-        [redactedAt.toISOString()],
-      );
-      expect(yield* journal.redactTerminalPayloads(cutoff, redactedAt)).toBe(1);
-      expect(yield* journal.listInbound).toMatchObject([
-        { messageGuid: 'guid-1', rowId: 1, text: null },
-      ]);
-      handle.close();
-    }),
 );
 
 it.effect('enforces one current generation and one batch assignment per inbound row', () =>

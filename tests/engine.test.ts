@@ -54,7 +54,7 @@ const seedAcceptedAttempt = (database: Database): void => {
 
 it.effect('runs a quick direct-conversation turn with only one final bubble', () =>
   Effect.gen(function* quickTurn() {
-    const fixture = yield* makeEngineFixture({ finalAnswer: 'Quick answer.' });
+    const fixture = yield* makeEngineFixture({ behavior: { finalAnswer: 'Quick answer.' } });
     fixture.push(inbound(1, 'hello Spike'));
     yield* settle(fixture.engine);
     expect(fixture.sent).toStrictEqual(['Quick answer']);
@@ -69,7 +69,7 @@ it.effect('runs a quick direct-conversation turn with only one final bubble', ()
 
 it.effect('/new keeps its pre-bound thread unread until the first turn materializes it', () =>
   Effect.gen(function* newThenFirstTurn() {
-    const fixture = yield* makeEngineFixture({ finalAnswer: 'First answer.' });
+    const fixture = yield* makeEngineFixture({ behavior: { finalAnswer: 'First answer.' } });
     fixture.push(inbound(1, '/new'));
     yield* settle(fixture.engine);
     expect(fixture.sent).toStrictEqual(['New chat started']);
@@ -85,7 +85,9 @@ it.effect('/new keeps its pre-bound thread unread until the first turn materiali
 
 it.effect('turns a status render failure into one terminal control reply', () =>
   Effect.gen(function* failedStatus() {
-    const fixture = yield* makeEngineFixture({ statusFailure: 'status snapshot unavailable' });
+    const fixture = yield* makeEngineFixture({
+      behavior: { statusFailure: 'status snapshot unavailable' },
+    });
     fixture.push(inbound(1, '/status'));
     yield* settle(fixture.engine);
     yield* settle(fixture.engine);
@@ -102,8 +104,10 @@ it.effect('turns a status render failure into one terminal control reply', () =>
 it.effect('delivers one work acknowledgement before forwarding a later turn failure', () =>
   Effect.gen(function* failedLongTurn() {
     const fixture = yield* makeEngineFixture({
-      acknowledgement: 'Looking into it now.',
-      failure: 'app-server connection dropped',
+      behavior: {
+        acknowledgement: 'Looking into it now.',
+        failure: 'app-server connection dropped',
+      },
     });
     fixture.push(inbound(1, 'investigate this deeply'));
     yield* settle(fixture.engine);
@@ -120,9 +124,11 @@ it.effect('delivers one work acknowledgement before forwarding a later turn fail
 it.effect('delivers one compacting notice before the final answer', () =>
   Effect.gen(function* compactingNotice() {
     const fixture = yield* makeEngineFixture({
-      acknowledgement: 'Looking into it now.',
-      compactions: ['compact-1'],
-      finalAnswer: 'Finished.',
+      behavior: {
+        acknowledgement: 'Looking into it now.',
+        compactions: ['compact-1'],
+        finalAnswer: 'Finished.',
+      },
     });
     fixture.push(inbound(1, 'investigate this deeply'));
     yield* settle(fixture.engine);
@@ -133,7 +139,9 @@ it.effect('delivers one compacting notice before the final answer', () =>
 
 it.effect('advances a turn to failed after its bounded delivery path is exhausted', () =>
   Effect.gen(function* terminalDeliveryFailure() {
-    const fixture = yield* makeEngineFixture({ deliveryFailure: 'chat.db unavailable' });
+    const fixture = yield* makeEngineFixture({
+      behavior: { deliveryFailure: 'chat.db unavailable' },
+    });
     fixture.push(inbound(1, 'hello Spike'));
     yield* settle(fixture.engine);
     yield* settle(fixture.engine);
@@ -155,7 +163,9 @@ it.effect('advances a turn to failed after its bounded delivery path is exhauste
 
 it.effect('terminates a fresh submission after its one reconciliation retry', () =>
   Effect.gen(function* boundedSubmissionFailure() {
-    const fixture = yield* makeEngineFixture({ startFailure: 'turn start unavailable' });
+    const fixture = yield* makeEngineFixture({
+      behavior: { startFailure: 'turn start unavailable' },
+    });
     fixture.push(inbound(1, 'hello Spike'));
     yield* settle(fixture.engine);
     yield* settle(fixture.engine);
@@ -174,7 +184,7 @@ it.effect('terminates a fresh submission after its one reconciliation retry', ()
 
 it.effect('redispatches a durably ingested message after a crash advanced the inbox cursor', () =>
   Effect.gen(function* replayInbound() {
-    const fixture = yield* makeEngineFixture({ finalAnswer: 'Recovered.' });
+    const fixture = yield* makeEngineFixture({ behavior: { finalAnswer: 'Recovered.' } });
     const journal = makeJournal(fixture.database, { chatGuid: CHAT_GUID, handle: '+15555550199' });
     yield* journal.ingestObservedMessages(CHAT_GUID, new Date('2026-07-14T12:00:00.000Z'), [
       inbound(1, 'survive restart'),
@@ -188,7 +198,7 @@ it.effect('redispatches a durably ingested message after a crash advanced the in
 
 it.effect('seeds a fresh journal at the current chat frontier without replaying history', () =>
   Effect.gen(function* freshInstall() {
-    const fixture = yield* makeEngineFixture({}, undefined, undefined, [inbound(391, 'old chat')]);
+    const fixture = yield* makeEngineFixture({ preexisting: [inbound(391, 'old chat')] });
     yield* settle(fixture.engine);
     expect(fixture.sent).toStrictEqual([]);
     expect(fixture.turnsStarted).toStrictEqual([]);
@@ -201,9 +211,55 @@ it.effect('seeds a fresh journal at the current chat frontier without replaying 
   }),
 );
 
+it.effect('retries a failed due redaction before advancing its six-hour watermark', () =>
+  Effect.gen(function* periodicRedaction() {
+    let currentTime = new Date('2026-08-15T12:00:00.000Z');
+    const fixture = yield* makeEngineFixture({
+      now: () => currentTime,
+      prepare: (database) =>
+        Effect.sync(() => {
+          database.run(
+            `INSERT INTO failures(correlation_id, operation, error_tag, message, created_at)
+             VALUES ('old-private-failure', 'test', 'PrivateFailure', 'old private failure',
+                     '2026-06-01T00:00:00.000Z')`,
+          );
+        }),
+    });
+
+    yield* fixture.engine.pollOnce;
+    expect(
+      fixture.database.query<{ count: number }, []>('SELECT COUNT(*) AS count FROM failures').get()
+        ?.count,
+    ).toBe(1);
+
+    currentTime = new Date('2026-08-15T18:00:00.000Z');
+    fixture.database.run(
+      `CREATE TEMP TRIGGER fail_redaction BEFORE DELETE ON failures
+       BEGIN SELECT RAISE(ABORT, 'one-shot redaction failure'); END`,
+    );
+    yield* fixture.engine.pollOnce;
+    expect(
+      fixture.database
+        .query<{ message: string }, []>('SELECT message FROM failures ORDER BY id')
+        .all()
+        .map(({ message }) => message),
+    ).toContain('old private failure');
+
+    fixture.database.run('DROP TRIGGER fail_redaction');
+    yield* fixture.engine.pollOnce;
+    expect(
+      fixture.database
+        .query<{ message: string }, []>('SELECT message FROM failures ORDER BY id')
+        .all()
+        .map(({ message }) => message),
+    ).not.toContain('old private failure');
+    fixture.remove();
+  }),
+);
+
 it.effect('submits attachment-only inbound content without attempting a text Like', () =>
   Effect.gen(function* attachmentTurn() {
-    const fixture = yield* makeEngineFixture({ finalAnswer: 'Image received.' });
+    const fixture = yield* makeEngineFixture({ behavior: { finalAnswer: 'Image received.' } });
     fixture.push({
       ...inbound(1, ''),
       attachments: [
@@ -252,9 +308,11 @@ it.effect('pools an active-turn follow-up into one steer without duplicating the
   Effect.gen(function* pooledSteer() {
     const gate = Promise.withResolvers<undefined>();
     const fixture = yield* makeEngineFixture({
-      acknowledgement: 'Looking into it now.',
-      finalAnswer: 'Finished.',
-      gate: gate.promise,
+      behavior: {
+        acknowledgement: 'Looking into it now.',
+        finalAnswer: 'Finished.',
+        gate: gate.promise,
+      },
     });
     fixture.push(inbound(1, 'first request'));
     yield* fixture.engine.pollOnce;
@@ -272,9 +330,12 @@ it.effect('pools an active-turn follow-up into one steer without duplicating the
 
 it.effect('resumes and completes a turn whose terminal notification was lost before restart', () =>
   Effect.gen(function* recoveredCompletion() {
-    const fixture = yield* makeEngineFixture(
-      {},
-      {
+    const fixture = yield* makeEngineFixture({
+      prepare: (database) =>
+        Effect.sync(() => {
+          seedActiveTurn(database);
+        }),
+      snapshot: {
         id: 'thread-1',
         turns: [
           {
@@ -291,11 +352,7 @@ it.effect('resumes and completes a turn whose terminal notification was lost bef
           },
         ],
       },
-      (database) =>
-        Effect.sync(() => {
-          seedActiveTurn(database);
-        }),
-    );
+    });
     yield* settle(fixture.engine);
     expect(fixture.resumed).toStrictEqual(['thread-1']);
     expect(fixture.sent).toStrictEqual(['Recovered terminal answer']);
@@ -310,11 +367,13 @@ it.effect(
   'forwards a lost-thread error and requires /new before accepting a clean generation',
   () =>
     Effect.gen(function* lostThreadReset() {
-      const fixture = yield* makeEngineFixture({}, { id: 'thread-1', turns: [] }, (database) =>
-        Effect.sync(() => {
-          seedActiveTurn(database);
-        }),
-      );
+      const fixture = yield* makeEngineFixture({
+        prepare: (database) =>
+          Effect.sync(() => {
+            seedActiveTurn(database);
+          }),
+        snapshot: { id: 'thread-1', turns: [] },
+      });
       yield* settle(fixture.engine);
       expect(fixture.sent[0]).toContain('turn is missing; send /new');
       fixture.push(inbound(1, '/new'));
@@ -329,15 +388,14 @@ it.effect(
 
 it.effect('fails a missing persisted rollout once and remains idle until /new', () =>
   Effect.gen(function* missingRolloutReset() {
-    const fixture = yield* makeEngineFixture(
-      { resumeFailure: 'Codex thread is missing; send /new' },
-      undefined,
-      (database) =>
+    const fixture = yield* makeEngineFixture({
+      behavior: { resumeFailure: 'Codex thread is missing; send /new' },
+      prepare: (database) =>
         Effect.sync(() => {
           seedActiveTurn(database);
           seedAcceptedAttempt(database);
         }),
-    );
+    });
     yield* settle(fixture.engine);
     expect(fixture.resumed).toStrictEqual(['thread-1']);
     expect(fixture.sent).toStrictEqual(['Spike hit an error: Codex thread is missing; send /new']);
@@ -363,14 +421,13 @@ it.effect('fails a missing persisted rollout once and remains idle until /new', 
 
 it.effect('terminates a non-generation startup recovery failure after one attempt', () =>
   Effect.gen(function* boundedRecoveryFailure() {
-    const fixture = yield* makeEngineFixture(
-      { resumeRuntimeFailure: 'app-server unavailable' },
-      undefined,
-      (database) =>
+    const fixture = yield* makeEngineFixture({
+      behavior: { resumeRuntimeFailure: 'app-server unavailable' },
+      prepare: (database) =>
         Effect.sync(() => {
           seedActiveTurn(database);
         }),
-    );
+    });
     yield* settle(fixture.engine);
     yield* settle(fixture.engine);
     expect(fixture.resumed).toStrictEqual(['thread-1']);
@@ -384,9 +441,17 @@ it.effect('terminates a non-generation startup recovery failure after one attemp
 
 it.effect('replaces an unused bound thread after the bind-before-first-turn crash window', () =>
   Effect.gen(function* replaceUnusedThread() {
-    const fixture = yield* makeEngineFixture(
-      { finalAnswer: 'Recovered first turn.', resumeFailure: 'Codex thread is missing; send /new' },
-      {
+    const fixture = yield* makeEngineFixture({
+      behavior: {
+        finalAnswer: 'Recovered first turn.',
+        resumeFailure: 'Codex thread is missing; send /new',
+      },
+      prepare: (database) =>
+        Effect.sync(() => {
+          seedActiveTurn(database);
+          database.run('UPDATE scheduler_state SET active_codex_turn_id = NULL');
+        }),
+      snapshot: {
         id: 'thread-new',
         turns: [
           {
@@ -403,12 +468,7 @@ it.effect('replaces an unused bound thread after the bind-before-first-turn cras
           },
         ],
       },
-      (database) =>
-        Effect.sync(() => {
-          seedActiveTurn(database);
-          database.run('UPDATE scheduler_state SET active_codex_turn_id = NULL');
-        }),
-    );
+    });
     yield* settle(fixture.engine);
     expect({
       attempts: fixture.database

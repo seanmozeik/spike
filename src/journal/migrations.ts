@@ -1,10 +1,4 @@
-import type { Database } from 'bun:sqlite';
-
-const SCHEMA_VERSION = 10;
-const DELIVERY_FRONTIER_VERSION = 5;
-const CANONICAL_GENERATION_THREAD_VERSION = 7;
-const BROKEN_GENERATION_STATE_VERSION = 8;
-const TERMINAL_ATTEMPT_STATE_VERSION = 9;
+const SCHEMA_VERSION = 11;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -241,6 +235,7 @@ const migrationStatements = [
     resolving_inbound_message_id TEXT REFERENCES inbound_messages(id) ON DELETE RESTRICT,
     response_json TEXT,
     delivery_error TEXT,
+    payload_redacted_at TEXT,
     UNIQUE(connection_id, rpc_request_id_json)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS approval_pending_fifo
@@ -254,44 +249,4 @@ const migrationStatements = [
   ) STRICT`,
 ] as const;
 
-const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
-  if (previousVersion === 1) {
-    database.run('ALTER TABLE generations ADD COLUMN codex_thread_id TEXT');
-    database.run('ALTER TABLE generations ADD COLUMN prompt_version TEXT');
-    database.run('ALTER TABLE generations ADD COLUMN config_version TEXT');
-    database.run('ALTER TABLE codex_attempts ADD COLUMN input_fingerprint TEXT');
-    database.run('ALTER TABLE codex_attempts ADD COLUMN frontier_json TEXT');
-    database.run(
-      "ALTER TABLE codex_attempts ADD COLUMN submission_kind TEXT CHECK(submission_kind IN ('Start','Steer'))",
-    );
-    database.run(
-      'CREATE UNIQUE INDEX IF NOT EXISTS generations_codex_thread ON generations(codex_thread_id)',
-    );
-  }
-  if (previousVersion === 1 || previousVersion === 2) {
-    database.run('ALTER TABLE logical_turns ADD COLUMN acknowledged_at TEXT');
-  }
-  if (previousVersion > 0 && previousVersion < DELIVERY_FRONTIER_VERSION) {
-    database.run('ALTER TABLE delivery_attempts ADD COLUMN frontier_rowid INTEGER');
-  }
-  if (previousVersion > 0 && previousVersion < CANONICAL_GENERATION_THREAD_VERSION) {
-    database.run('ALTER TABLE scheduler_state DROP COLUMN codex_thread_id');
-  }
-  if (previousVersion > 0 && previousVersion < BROKEN_GENERATION_STATE_VERSION) {
-    database.run(
-      'ALTER TABLE scheduler_state ADD COLUMN generation_broken INTEGER NOT NULL DEFAULT 0 CHECK(generation_broken IN (0,1))',
-    );
-  }
-  if (previousVersion > 0 && previousVersion < TERMINAL_ATTEMPT_STATE_VERSION) {
-    database.run(
-      `UPDATE codex_attempts SET state = 'Failed', finished_at = COALESCE(
-           finished_at,
-           (SELECT completed_at FROM logical_turns WHERE logical_turns.id = codex_attempts.logical_turn_id),
-           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         ) WHERE state IN ('Prepared','Submitted','SubmissionUnknown','Accepted')
-           AND logical_turn_id IN (SELECT id FROM logical_turns WHERE state = 'Failed')`,
-    );
-  }
-};
-
-export { applyVersionedMigrations, migrationStatements, SCHEMA_VERSION };
+export { migrationStatements, SCHEMA_VERSION };

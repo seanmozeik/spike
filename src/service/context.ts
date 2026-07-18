@@ -36,6 +36,7 @@ interface EngineContext {
   readonly codexJournal: CodexJournal;
   readonly controllerReady: PromiseWithResolvers<SchedulerController>;
   readonly journal: Journal;
+  readonly lastRedactionAt: { value: Date };
   readonly monitors: Map<string, Promise<void>>;
   readonly now: () => Date;
   readonly options: SpikeEngineOptions;

@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite';
 
-import { applyVersionedMigrations, migrationStatements, SCHEMA_VERSION } from './migrations';
+import { migrationStatements, SCHEMA_VERSION } from './migrations';
+import { applyVersionedMigrations } from './versioned-migrations';
 
 const applyMigrations = (database: Database): void => {
   const migrate = database.transaction(() => {

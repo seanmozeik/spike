@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { chmodSync, existsSync } from 'node:fs';
 
 import { Effect } from 'effect';
 
@@ -10,6 +11,16 @@ interface JournalHandle {
   readonly close: () => void;
 }
 
+const OWNER_ONLY_FILE_MODE = 0o600;
+
+const secureJournalFiles = (path: string): void => {
+  for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
+    if (existsSync(candidate)) {
+      chmodSync(candidate, OWNER_ONLY_FILE_MODE);
+    }
+  }
+};
+
 const openJournal = Effect.fn('SpikeJournal.open')(function* openJournal(path: string) {
   return yield* Effect.try({
     catch: (cause) =>
@@ -20,10 +31,12 @@ const openJournal = Effect.fn('SpikeJournal.open')(function* openJournal(path: s
       }),
     try: () => {
       const database = new Database(path, { create: true, strict: true });
+      secureJournalFiles(path);
       database.run('PRAGMA journal_mode = WAL;');
       database.run('PRAGMA foreign_keys = ON;');
       database.run('PRAGMA synchronous = FULL;');
       applyMigrations(database);
+      secureJournalFiles(path);
       return {
         close: (): void => {
           database.close();

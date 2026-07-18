@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Effect, Result } from 'effect';
+import { Duration, Effect, Result } from 'effect';
 
 import { makeApprovalManager } from '../approval/manager';
 import { GenerationId, type InboundMessageId, LogicalTurnId } from '../domain/ids';
@@ -29,6 +29,41 @@ interface SpikeEngine {
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const RETENTION_DAYS = 30;
 const MILLISECONDS_PER_DAY = 86_400_000;
+const REDACTION_INTERVAL_MS = Duration.toMillis('6 hours');
+
+const redactAt = Effect.fn('SpikeEngine.redactAt')(function* redactAt(
+  context: EngineContext,
+  at: Date,
+) {
+  return yield* context.journal.redactTerminalPayloads(
+    new Date(at.getTime() - RETENTION_DAYS * MILLISECONDS_PER_DAY),
+    at,
+  );
+});
+
+const redactNow = Effect.fn('SpikeEngine.redactNow')(function* redactNow(
+  context: EngineContext,
+  at: Date,
+) {
+  const count = yield* redactAt(context, at);
+  context.lastRedactionAt.value = at;
+  return count;
+});
+
+const redactIfDue = Effect.fn('SpikeEngine.redactIfDue')(function* redactIfDue(
+  context: EngineContext,
+) {
+  const at = context.now();
+  if (at.getTime() - context.lastRedactionAt.value.getTime() < REDACTION_INTERVAL_MS) {
+    return;
+  }
+  const result = yield* Effect.result(redactAt(context, at));
+  if (Result.isFailure(result)) {
+    report(context, result.failure);
+    return;
+  }
+  context.lastRedactionAt.value = at;
+});
 
 const runLike = (context: EngineContext, id: InboundMessageId, text: string, at: Date): void => {
   Effect.runFork(context.options.like.acknowledge(id, text, at));
@@ -177,6 +212,7 @@ const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContex
   codexJournal: makeCodexJournal(options.database),
   controllerReady: Promise.withResolvers<SchedulerController>(),
   journal: makeJournal(options.database, { chatGuid: options.chatGuid, handle: options.handle }),
+  lastRedactionAt: { value: now() },
   monitors: new Map(),
   now,
   options,
@@ -196,6 +232,18 @@ const makeCycle = (
       report(context, result.failure);
     }
     yield* Effect.promise(() => Bun.sleep(interval));
+  });
+
+const withPeriodicRedaction = (
+  context: EngineContext,
+  once: Effect.Effect<void, unknown>,
+): Effect.Effect<void, unknown> =>
+  Effect.gen(function* pollAndMaintain() {
+    const result = yield* Effect.result(once);
+    yield* redactIfDue(context);
+    if (Result.isFailure(result)) {
+      yield* Effect.fail(result.failure);
+    }
   });
 
 const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
@@ -219,7 +267,7 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
     makePorts(context),
   );
   context.controllerReady.resolve(controller);
-  const once = pollOnce(context, controller);
+  const once = withPeriodicRedaction(context, pollOnce(context, controller));
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const cycle = makeCycle(context, once, interval);
   return {
@@ -230,11 +278,7 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
       await Promise.all(context.monitors.values());
     }),
     pollOnce: once,
-    redactNow: (at): Effect.Effect<number, unknown> =>
-      context.journal.redactTerminalPayloads(
-        new Date(at.getTime() - RETENTION_DAYS * MILLISECONDS_PER_DAY),
-        at,
-      ),
+    redactNow: (at): Effect.Effect<number, unknown> => redactNow(context, at),
     run: Effect.forever(cycle),
     shutdown: Effect.gen(function* shutdownEngine() {
       closeEngine(context);

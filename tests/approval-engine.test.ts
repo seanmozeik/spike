@@ -129,7 +129,7 @@ it.effect('marks live approvals orphaned when the app-server connection closes',
 
 it.effect('expires a visible prompt and returns a fail-closed response', () =>
   Effect.gen(function* expirePrompt() {
-    const fixture = yield* makeEngineFixture({ approvalExpiryMs: 0 });
+    const fixture = yield* makeEngineFixture({ behavior: { approvalExpiryMs: 0 } });
     fixture.requestApproval(commandRequest(11, 'eventually-expired-command'));
     yield* settle(fixture.engine);
     expect(fixture.responses).toStrictEqual([{ id: 11, result: { decision: 'decline' } }]);
@@ -142,7 +142,7 @@ it.effect('expires a visible prompt and returns a fail-closed response', () =>
 
 it.effect('reports an orphan instead of approval when the upstream response write fails', () =>
   Effect.gen(function* failResponse() {
-    const fixture = yield* makeEngineFixture({ responseFailure: 'connection lost' });
+    const fixture = yield* makeEngineFixture({ behavior: { responseFailure: 'connection lost' } });
     fixture.requestApproval(commandRequest(12, 'write-after-disconnect'));
     yield* settle(fixture.engine);
     fixture.push(inbound(1, '/yes'));
@@ -159,7 +159,7 @@ it.effect('reports an orphan instead of approval when the upstream response writ
 
 it.effect('fails closed when the permission prompt cannot be delivered', () =>
   Effect.gen(function* failPromptDelivery() {
-    const fixture = yield* makeEngineFixture({ deliveryFailure: 'chat unavailable' });
+    const fixture = yield* makeEngineFixture({ behavior: { deliveryFailure: 'chat unavailable' } });
     fixture.requestApproval(commandRequest(13, 'undeliverable-command'));
     yield* settle(fixture.engine);
     expect(stateOf(fixture.database, 13)).toBe('Expired');
@@ -174,27 +174,28 @@ it.effect('fails closed when the permission prompt cannot be delivered', () =>
 it.effect('marks a crash-window decision orphaned when no response receipt was persisted', () =>
   Effect.gen(function* recoverUncertainResponse() {
     const { params } = commandRequest(14, 'crash-window-command');
-    const fixture = yield* makeEngineFixture({}, undefined, (database) =>
-      Effect.sync(() => {
-        database.run(
-          `INSERT INTO approval_requests(
-             id, connection_id, rpc_request_id_json, method, operation, params_json,
-             file_paths_json, state, requested_at, expires_at, delivered_at, response_json
-           ) VALUES (?, ?, ?, ?, 'Command', ?, '[]', 'Approved', ?, ?, ?, ?)`,
-          [
-            'approval-crash-window',
-            'old-connection',
-            '14',
-            'item/commandExecution/requestApproval',
-            JSON.stringify(params),
-            '2026-07-14T12:00:00.000Z',
-            '2026-07-14T12:10:00.000Z',
-            '2026-07-14T12:00:01.000Z',
-            JSON.stringify({ decision: 'accept' }),
-          ],
-        );
-      }),
-    );
+    const fixture = yield* makeEngineFixture({
+      prepare: (database) =>
+        Effect.sync(() => {
+          database.run(
+            `INSERT INTO approval_requests(
+               id, connection_id, rpc_request_id_json, method, operation, params_json,
+               file_paths_json, state, requested_at, expires_at, delivered_at, response_json
+             ) VALUES (?, ?, ?, ?, 'Command', ?, '[]', 'Approved', ?, ?, ?, ?)`,
+            [
+              'approval-crash-window',
+              'old-connection',
+              '14',
+              'item/commandExecution/requestApproval',
+              JSON.stringify(params),
+              '2026-07-14T12:00:00.000Z',
+              '2026-07-14T12:10:00.000Z',
+              '2026-07-14T12:00:01.000Z',
+              JSON.stringify({ decision: 'accept' }),
+            ],
+          );
+        }),
+    });
     expect(stateOf(fixture.database, 14)).toBe('Orphaned');
     expect(fixture.sent).toContain(
       'Permission request was cancelled because its Codex connection ended. Please retry the operation',

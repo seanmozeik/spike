@@ -38,6 +38,14 @@ interface EngineFixture {
   readonly turnsStarted: string[];
 }
 
+interface EngineFixtureOptions {
+  readonly behavior?: TurnBehavior;
+  readonly now?: () => Date;
+  readonly prepare?: (database: Database) => Effect.Effect<void, unknown>;
+  readonly preexisting?: readonly ObservedMessage[];
+  readonly snapshot?: ThreadSnapshot;
+}
+
 const CHAT_GUID = ChatGuid.make('any;-;+15555550199');
 
 const renderStatus = (behavior: TurnBehavior): Promise<string> =>
@@ -155,11 +163,15 @@ const buildFixture = ({
 });
 
 const makeEngineFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture(
-  behavior: TurnBehavior = {},
-  snapshot?: ThreadSnapshot,
-  prepare?: (database: Database) => Effect.Effect<void, unknown>,
-  preexisting?: readonly ObservedMessage[],
+  options: EngineFixtureOptions = {},
 ) {
+  const {
+    behavior = {},
+    now = (): Date => new Date('2026-07-14T12:00:00.000Z'),
+    prepare,
+    preexisting,
+    snapshot,
+  } = options;
   const root = mkdtempSync(path.join(tmpdir(), 'spike-engine-'));
   const handle = yield* openJournal(path.join(root, 'spike.db'));
   const likes: string[] = [],
@@ -180,7 +192,7 @@ const makeEngineFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixt
     handle: '+15555550199',
     inbox: makeInbox(queue),
     like: makeLike(likes),
-    now: () => new Date('2026-07-14T12:00:00.000Z'),
+    now,
     renderStatus: () => renderStatus(behavior),
     runtime,
   });
