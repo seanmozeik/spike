@@ -5,6 +5,7 @@ import { Effect, Result } from 'effect';
 
 import type { ApprovalManager } from '../approval/manager';
 import type { CodexRuntime } from '../codex/runtime';
+import type { ConversationPolicy } from '../conversation-policy';
 import { compactError, type DeliveryService } from '../delivery/service';
 import type { ChatGuid } from '../domain/ids';
 import { SpikeRuntimeError } from '../errors';
@@ -21,6 +22,7 @@ import type { TurnTerminalQueue } from './turn-terminal-model';
 interface SpikeEngineOptions {
   readonly approvalExpiryMs?: number;
   readonly chatGuid: ChatGuid;
+  readonly conversation: ConversationPolicy;
   readonly database: Database;
   readonly delivery: DeliveryService;
   readonly handle: string;
@@ -36,6 +38,7 @@ interface EngineContext {
   approval: ApprovalManager | null;
   readonly closing: { value: boolean };
   readonly codexJournal: CodexJournal;
+  readonly conversationReady: { value: boolean };
   readonly controllerReady: PromiseWithResolvers<SchedulerController>;
   readonly journal: Journal;
   readonly lastRedactionAt: { value: Date };

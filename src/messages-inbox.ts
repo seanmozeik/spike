@@ -1,4 +1,4 @@
-import { Database, type Statement } from 'bun:sqlite';
+import type { Database, Statement } from 'bun:sqlite';
 import { Buffer } from 'node:buffer';
 
 import { Effect } from 'effect';
@@ -6,19 +6,9 @@ import { Effect } from 'effect';
 import { ChatGuid, MessageGuid, MessagesRowId } from './domain/ids';
 import type { ObservedAttachment, ObservedMessage } from './domain/inbound';
 import { ConversationMismatchError, MessagesPermissionError, MessagesQueryError } from './errors';
+import { openValidatedMessagesDatabase, type MessagesDatabaseOptions } from './messages-database';
 
-interface MessagesInboxOptions {
-  readonly chatGuid: string;
-  readonly databasePath: string;
-  readonly handle: string;
-}
-
-interface ChatRow {
-  readonly guid: string;
-  readonly has_handle: number;
-  readonly participant_count: number;
-  readonly style: number;
-}
+type MessagesInboxOptions = MessagesDatabaseOptions;
 
 interface MessageRow {
   readonly attributed_body: null | Uint8Array;
@@ -46,6 +36,10 @@ interface MessagesInboxHandle {
   readonly observeAfter: (
     cursor: MessagesRowId,
   ) => Effect.Effect<readonly ObservedMessage[], MessagesPermissionError | MessagesQueryError>;
+  readonly refresh: Effect.Effect<
+    void,
+    ConversationMismatchError | MessagesPermissionError | MessagesQueryError
+  >;
 }
 
 interface TypedLength {
@@ -63,23 +57,12 @@ const FOUR_BYTES = 4;
 const EIGHT_BYTES = 8;
 const BYTE_BASE = 256;
 const PLUS_BYTE = 43;
-const DIRECT_CHAT_STYLE = 45;
 const ENCODED_LENGTH_BYTES = new Map<number, number>([
   [TWO_BYTE_LENGTH, TWO_BYTES],
   [FOUR_BYTE_LENGTH, FOUR_BYTES],
   [EIGHT_BYTE_LENGTH, EIGHT_BYTES],
 ]);
 
-const CHAT_QUERY = `SELECT c.guid, c.style, COUNT(chj_all.handle_id) AS participant_count,
-  EXISTS(
-    SELECT 1 FROM chat_handle_join chj
-    JOIN handle h ON h.ROWID = chj.handle_id
-    WHERE chj.chat_id = c.ROWID AND lower(h.id) = lower(?)
-  ) AS has_handle
-  FROM chat c
-  LEFT JOIN chat_handle_join chj_all ON chj_all.chat_id = c.ROWID
-  WHERE c.guid = ?
-  GROUP BY c.ROWID`;
 const ATTACHMENT_QUERY = `SELECT a.guid AS attachment_guid, a.filename, a.mime_type,
   a.transfer_name, a.uti, a.total_bytes
   FROM attachment a JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
@@ -174,23 +157,6 @@ const accessError = (
       })
     : queryError(operation, cause);
 
-const validateConfiguredConversation = (
-  database: Database,
-  options: MessagesInboxOptions,
-): void => {
-  const chat = database
-    .query<ChatRow, [string, string]>(CHAT_QUERY)
-    .get(options.handle, options.chatGuid);
-  if (chat?.style === DIRECT_CHAT_STYLE && chat.has_handle === 1 && chat.participant_count === 1) {
-    return;
-  }
-  throw new ConversationMismatchError({
-    chatGuid: options.chatGuid,
-    handle: options.handle,
-    message: 'configured chat must be a one-to-one iMessage chat containing the configured handle',
-  });
-};
-
 const mapMessage = (
   row: MessageRow,
   attachmentQuery: Statement<AttachmentRow, [number]>,
@@ -209,42 +175,97 @@ const mapMessage = (
   text: row.text ?? decodeAttributedBody(row.attributed_body),
 });
 
+interface InboxConnection {
+  readonly attachments: Statement<AttachmentRow, [number]>;
+  readonly database: Database;
+  readonly frontier: Statement<{ rowid: number }, [string, string]>;
+  readonly messages: Statement<MessageRow, [number, string, string]>;
+}
+
+interface InboxState {
+  closed: boolean;
+  connection: InboxConnection;
+}
+
+const makeConnection = (database: Database): InboxConnection => ({
+  attachments: database.prepare<AttachmentRow, [number]>(ATTACHMENT_QUERY),
+  database,
+  frontier: database.prepare<{ rowid: number }, [string, string]>(FRONTIER_QUERY),
+  messages: database.prepare<MessageRow, [number, string, string]>(MESSAGE_QUERY),
+});
+
+const openDatabase = (options: MessagesInboxOptions): Database =>
+  openValidatedMessagesDatabase(options);
+
+const makeRefresh = (
+  state: InboxState,
+  options: MessagesInboxOptions,
+): MessagesInboxHandle['refresh'] =>
+  Effect.try({
+    catch: (cause) =>
+      cause instanceof ConversationMismatchError
+        ? cause
+        : accessError(options, 'refresh-configured-conversation', cause),
+    try: () => {
+      if (state.closed) {
+        throw new Error('Messages inbox is closed');
+      }
+      const replacement = openDatabase(options);
+      try {
+        const next = makeConnection(replacement);
+        state.connection.database.close();
+        state.connection = next;
+      } catch (error) {
+        replacement.close();
+        throw error;
+      }
+    },
+  });
+
 const makeInbox = (database: Database, options: MessagesInboxOptions): MessagesInboxHandle => {
-  const attachments = database.prepare<AttachmentRow, [number]>(ATTACHMENT_QUERY);
-  const frontier = database.prepare<{ rowid: number }, [string, string]>(FRONTIER_QUERY);
-  const messages = database.prepare<MessageRow, [number, string, string]>(MESSAGE_QUERY);
+  const state: InboxState = { closed: false, connection: makeConnection(database) };
   const observeAfter = (
     cursor: MessagesRowId,
   ): Effect.Effect<readonly ObservedMessage[], MessagesPermissionError | MessagesQueryError> =>
     Effect.try({
       catch: (cause) => accessError(options, 'observe-after', cause),
       try: () =>
-        messages
+        state.connection.messages
           .all(cursor, options.chatGuid, options.handle)
-          .map((row) => mapMessage(row, attachments)),
+          .map((row) => mapMessage(row, state.connection.attachments)),
     });
   return {
     close: () => {
-      database.close();
+      if (state.closed) {
+        return;
+      }
+      state.closed = true;
+      state.connection.database.close();
     },
     frontier: Effect.try({
       catch: (cause) => accessError(options, 'frontier', cause),
-      try: () => MessagesRowId.make(frontier.get(options.chatGuid, options.handle)?.rowid ?? 0),
+      try: () =>
+        MessagesRowId.make(
+          state.connection.frontier.get(options.chatGuid, options.handle)?.rowid ?? 0,
+        ),
     }),
     observeAfter,
+    refresh: makeRefresh(state, options),
   };
 };
 
 const openMessagesInbox = Effect.fn('MessagesInbox.open')((options: MessagesInboxOptions) =>
   Effect.try({
     catch: (cause) =>
-      new MessagesPermissionError({
-        cause,
-        databasePath: options.databasePath,
-        message:
-          'Spike cannot open chat.db read-only. Grant Full Disk Access to the Bun executable that runs spike.',
-      }),
-    try: () => new Database(options.databasePath, { readonly: true, strict: true }),
+      cause instanceof ConversationMismatchError
+        ? cause
+        : new MessagesPermissionError({
+            cause,
+            databasePath: options.databasePath,
+            message:
+              'Spike cannot open chat.db read-only. Grant Full Disk Access to the Bun executable that runs spike.',
+          }),
+    try: () => openDatabase(options),
   }).pipe(
     Effect.flatMap((database) =>
       Effect.try({
@@ -255,7 +276,6 @@ const openMessagesInbox = Effect.fn('MessagesInbox.open')((options: MessagesInbo
             : accessError(options, 'validate-configured-conversation', cause);
         },
         try: () => {
-          validateConfiguredConversation(database, options);
           return makeInbox(database, options);
         },
       }),

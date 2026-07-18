@@ -70,7 +70,7 @@ it.effect('serializes concurrent inbound events and never starts two turns', () 
   }),
 );
 
-it.effect('re-arms a persisted pool when the controller restarts', () =>
+it.effect('re-arms a persisted pool once only after explicit activation', () =>
   Effect.gen(function* restartFixture() {
     const deadlines: Date[] = [];
     const pooledAt = new Date('2026-07-14T18:00:00Z');
@@ -90,7 +90,7 @@ it.effect('re-arms a persisted pool when the controller restarts', () =>
         }),
       steerTurn: (): Effect.Effect<void> => Effect.void,
     };
-    yield* makeSchedulerController(
+    const controller = yield* makeSchedulerController(
       {
         ...initial,
         active: {
@@ -105,6 +105,9 @@ it.effect('re-arms a persisted pool when the controller restarts', () =>
       journal(),
       ports,
     );
+    expect(deadlines).toStrictEqual([]);
+    yield* controller.activate;
+    yield* controller.activate;
     expect(deadlines).toEqual([new Date(pooledAt.getTime() + 3000)]);
   }),
 );

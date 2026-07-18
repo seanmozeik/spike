@@ -14,7 +14,9 @@ import { makeDeliveryService } from '../src/delivery/service';
 import type { SpikeRuntimeError } from '../src/errors';
 import {
   attributedBody,
+  replaceMessagesDatabase,
   TEST_CHAT_GUID,
+  TEST_HANDLE,
   type MessagesFixture,
   withMessagesFixture,
 } from './messages-fixture';
@@ -29,7 +31,10 @@ const withTransportFixture = <A, E, R>(
 ): Effect.Effect<A, E | MessagesDeliveryError, R> =>
   withMessagesFixture((messages) =>
     Effect.acquireUseRelease(
-      openMessagesTransport(messages.databasePath, TEST_CHAT_GUID),
+      openMessagesTransport(messages.databasePath, {
+        chatGuid: TEST_CHAT_GUID,
+        handle: TEST_HANDLE,
+      }),
       (transport) => use({ messages, transport }),
       (transport) => Effect.sync(transport.close),
     ),
@@ -80,6 +85,18 @@ it.effect('selects the configured-chat frontier from the real fixture database',
         text: 'sent',
       });
       expect(yield* transport.frontier).toBe(7);
+    }),
+  ),
+);
+
+it.effect('refreshes the transport read handle after Messages replaces its database', () =>
+  withTransportFixture(({ messages, transport }) =>
+    Effect.gen(function* replacementFixture() {
+      messages.insertMessage({ guid: 'old-database-row', isFromMe: true, rowId: 7, text: 'old' });
+      expect(yield* transport.frontier).toBe(7);
+      replaceMessagesDatabase(messages);
+      yield* transport.refresh;
+      expect(yield* transport.frontier).toBe(0);
     }),
   ),
 );
@@ -141,7 +158,10 @@ it.effect('returns typed open and reconciliation failures', () =>
   withTransportFixture(({ messages, transport }) =>
     Effect.gen(function* typedFailureFixture() {
       const openFailure = yield* Effect.result(
-        openMessagesTransport(path.join(messages.root, 'missing', 'chat.db'), TEST_CHAT_GUID),
+        openMessagesTransport(path.join(messages.root, 'missing', 'chat.db'), {
+          chatGuid: TEST_CHAT_GUID,
+          handle: TEST_HANDLE,
+        }),
       );
       expect(Result.isFailure(openFailure)).toBe(true);
       if (Result.isFailure(openFailure)) {

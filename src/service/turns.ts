@@ -3,7 +3,7 @@ import { Effect, Result } from 'effect';
 import type { CodexThreadId, CodexTurnId, LogicalTurnId } from '../domain/ids';
 import type { SchedulerControllerError, SchedulerPorts } from '../scheduler/controller';
 import type { PooledMessage, SchedulerState, TurnIdentity } from '../scheduler/model';
-import { controlReplyText, dispatch, report, type EngineContext } from './context';
+import { controlReplyText, report, type EngineContext } from './context';
 import { startMonitor } from './monitor';
 import { failTurn } from './turn-failure';
 import { ensureThread, loadPersistedBatch, submit } from './turn-submission';
@@ -30,12 +30,8 @@ const dispatchPoolTimer = Effect.fn('SpikeEngine.dispatchPoolTimer')(function* d
   deadlineAt: Date,
   identity: TurnIdentity | null,
 ) {
-  const dispatched = yield* Effect.result(
-    Effect.tryPromise({
-      catch: (error) => error,
-      try: () => dispatch(context, { deadlineAt, kind: 'PoolTimer' }),
-    }),
-  );
+  const controller = yield* Effect.promise(() => context.controllerReady.promise);
+  const dispatched = yield* Effect.result(controller.dispatch({ deadlineAt, kind: 'PoolTimer' }));
   if (Result.isFailure(dispatched)) {
     if (identity === null) {
       report(context, dispatched.failure);
@@ -53,7 +49,10 @@ const schedulePool = (
   const delay = Math.max(0, deadlineAt.getTime() - context.now().getTime());
   const timer = setTimeout(() => {
     context.timers.delete(timer);
-    Effect.runFork(dispatchPoolTimer(context, deadlineAt, identity));
+    const gatedDispatch = context.options.conversation.awaitAvailable.pipe(
+      Effect.andThen(dispatchPoolTimer(context, deadlineAt, identity)),
+    );
+    Effect.runFork(gatedDispatch);
   }, delay);
   context.timers.add(timer);
 };

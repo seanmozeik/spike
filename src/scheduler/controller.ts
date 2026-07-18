@@ -59,6 +59,7 @@ interface SchedulerPorts {
 }
 
 interface SchedulerController {
+  readonly activate: Effect.Effect<void, SchedulerControllerError>;
   readonly dispatch: (event: SchedulerEvent) => Effect.Effect<void, SchedulerControllerError>;
   readonly snapshot: Effect.Effect<SchedulerState>;
 }
@@ -130,10 +131,7 @@ const makeSchedulerController = Effect.fn('SpikeScheduler.make')(function* makeS
 ) {
   const state = yield* Ref.make(initial);
   const semaphore = yield* Semaphore.make(1);
-  const restartDeadline = poolDeadline(initial.pool);
-  if (restartDeadline !== null) {
-    yield* ports.schedulePool(restartDeadline, turnIdentity(initial));
-  }
+  let activated = false;
   const applyUnlocked = (event: SchedulerEvent): Effect.Effect<void, SchedulerControllerError> =>
     Effect.gen(function* applySchedulerEvent() {
       const previous = yield* Ref.get(state);
@@ -152,7 +150,20 @@ const makeSchedulerController = Effect.fn('SpikeScheduler.make')(function* makeS
     });
   const dispatch = (event: SchedulerEvent): Effect.Effect<void, SchedulerControllerError> =>
     semaphore.withPermits(1)(applyUnlocked(event));
-  return { dispatch, snapshot: Ref.get(state) } satisfies SchedulerController;
+  const activate = semaphore.withPermits(1)(
+    Effect.gen(function* activateScheduler() {
+      if (activated) {
+        return;
+      }
+      const current = yield* Ref.get(state);
+      const restartDeadline = poolDeadline(current.pool);
+      if (restartDeadline !== null) {
+        yield* ports.schedulePool(restartDeadline, turnIdentity(current));
+      }
+      activated = true;
+    }),
+  );
+  return { activate, dispatch, snapshot: Ref.get(state) } satisfies SchedulerController;
 });
 
 export { makeSchedulerController };

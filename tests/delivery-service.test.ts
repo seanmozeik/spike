@@ -61,6 +61,7 @@ const transport = (
   },
   findMatchingAfter,
   frontier: Effect.succeed(10),
+  refresh: Effect.void,
   send,
 });
 

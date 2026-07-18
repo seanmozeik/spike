@@ -7,6 +7,7 @@ import { ConversationMismatchError } from '../src/errors';
 import { decodeAttributedBody, openMessagesInbox } from '../src/messages-inbox';
 import {
   attributedBody,
+  replaceMessagesDatabase,
   TEST_CHAT_GUID as CHAT_GUID,
   TEST_HANDLE as HANDLE,
   type MessagesFixture,
@@ -122,6 +123,92 @@ it.effect('rejects a style-45 conversation with more than one participant', () =
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
         expect(result.failure).toBeInstanceOf(ConversationMismatchError);
+      }
+    }),
+  ),
+);
+
+it.effect('revalidates group, canonical handle, and service changes and recovers exactly', () =>
+  withMessagesFixture((fixture) =>
+    Effect.gen(function* changedBoundaryFixture() {
+      const inbox = yield* openMessagesInbox({
+        chatGuid: CHAT_GUID,
+        databasePath: fixture.databasePath,
+        handle: HANDLE,
+      });
+      const cases = [
+        {
+          invalidate: (): void => {
+            fixture.database.run('UPDATE chat SET style = 43 WHERE ROWID = 1');
+            fixture.database.run('INSERT INTO chat_handle_join VALUES (1, 2)');
+          },
+          restore: (): void => {
+            fixture.database.run(
+              'DELETE FROM chat_handle_join WHERE chat_id = 1 AND handle_id = 2',
+            );
+            fixture.database.run('UPDATE chat SET style = 45 WHERE ROWID = 1');
+          },
+        },
+        {
+          invalidate: (): void => {
+            fixture.database.run('UPDATE chat_handle_join SET handle_id = 2 WHERE chat_id = 1');
+          },
+          restore: (): void => {
+            fixture.database.run('UPDATE chat_handle_join SET handle_id = 1 WHERE chat_id = 1');
+          },
+        },
+        {
+          invalidate: (): void => {
+            fixture.database.run("UPDATE handle SET service = 'SMS' WHERE ROWID = 1");
+            fixture.database.run("UPDATE chat SET service_name = 'SMS' WHERE ROWID = 1");
+          },
+          restore: (): void => {
+            fixture.database.run("UPDATE handle SET service = 'iMessage' WHERE ROWID = 1");
+            fixture.database.run("UPDATE chat SET service_name = 'iMessage' WHERE ROWID = 1");
+          },
+        },
+      ] as const;
+      try {
+        for (const boundaryCase of cases) {
+          boundaryCase.invalidate();
+          const invalid = yield* Effect.result(inbox.refresh);
+          expect(Result.isFailure(invalid)).toBe(true);
+          if (Result.isFailure(invalid)) {
+            expect(invalid.failure).toBeInstanceOf(ConversationMismatchError);
+          }
+          boundaryCase.restore();
+          yield* inbox.refresh;
+        }
+      } finally {
+        inbox.close();
+      }
+    }),
+  ),
+);
+
+it.effect('reopens a replaced Messages database before accepting its boundary', () =>
+  withMessagesFixture((fixture) =>
+    Effect.gen(function* replacedDatabaseFixture() {
+      const inbox = yield* openMessagesInbox({
+        chatGuid: CHAT_GUID,
+        databasePath: fixture.databasePath,
+        handle: HANDLE,
+      });
+      try {
+        replaceMessagesDatabase(fixture, (database) => {
+          database.run('UPDATE chat SET style = 43 WHERE ROWID = 1');
+        });
+        const invalid = yield* Effect.result(inbox.refresh);
+        expect(Result.isFailure(invalid)).toBe(true);
+        if (Result.isFailure(invalid)) {
+          expect(invalid.failure).toBeInstanceOf(ConversationMismatchError);
+        }
+
+        replaceMessagesDatabase(fixture);
+        yield* inbox.refresh;
+        expect(yield* inbox.frontier).toBe(0);
+      } finally {
+        inbox.close();
       }
     }),
   ),

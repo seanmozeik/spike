@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 
 import { Duration, Effect, Result } from 'effect';
 
-import { makeApprovalManager } from '../approval/manager';
 import { GenerationId, type InboundMessageId, LogicalTurnId } from '../domain/ids';
 import { makeCodexJournal } from '../journal/codex-journal';
 import type { PendingControl } from '../journal/control-recovery';
@@ -12,6 +11,7 @@ import { cursorRowId, makeJournal } from '../journal/service';
 import { makeSchedulerController, type SchedulerController } from '../scheduler/controller';
 import type { SchedulerState } from '../scheduler/model';
 import { controlReplyText, report, type EngineContext, type SpikeEngineOptions } from './context';
+import { initializeConversation } from './conversation-lifecycle';
 import { failTurn, retryTurnTerminals } from './turn-failure';
 import { recoverActive } from './turn-recovery';
 import { makeTurnTerminalQueue } from './turn-terminal-model';
@@ -134,6 +134,10 @@ const pollOnce = (
   controller: SchedulerController,
 ): Effect.Effect<void, unknown> =>
   Effect.gen(function* pollMessages() {
+    if (!(yield* context.options.conversation.revalidateIfDue(context.now()))) {
+      return;
+    }
+    yield* initializeConversation(context);
     yield* retryTurnTerminals(context);
     if (context.recoveryPending.value) {
       context.recoveryPending.value = false;
@@ -151,6 +155,7 @@ const pollOnce = (
         }
       }
     }
+    yield* controller.activate;
     yield* recoverControlReplies(context);
     const cursor = yield* context.journal.inboxCursor(context.options.chatGuid);
     const observed = yield* context.options.inbox.observeAfter(cursorRowId(cursor));
@@ -171,30 +176,19 @@ const pollOnce = (
 
 const closeEngine = (context: EngineContext): void => {
   context.closing.value = true;
+  context.options.conversation.close();
   for (const timer of context.timers) {
     clearTimeout(timer);
   }
   context.timers.clear();
 };
 
-const seedInboxCursor = (context: EngineContext): Effect.Effect<void, unknown> =>
-  Effect.gen(function* seedCursor() {
-    const existing = yield* context.journal.inboxCursor(context.options.chatGuid);
-    if (existing === null) {
-      const frontier = yield* context.options.inbox.frontier;
-      yield* context.journal.initializeInboxCursor(
-        context.options.chatGuid,
-        frontier,
-        context.now(),
-      );
-    }
-  });
-
 const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContext => ({
   approval: null,
   closing: { value: false },
   codexJournal: makeCodexJournal(options.database),
   controllerReady: Promise.withResolvers<SchedulerController>(),
+  conversationReady: { value: false },
   journal: makeJournal(options.database, { chatGuid: options.chatGuid, handle: options.handle }),
   lastRedactionAt: { value: now() },
   monitors: new Map(),
@@ -237,16 +231,11 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
 ) {
   const now = options.now ?? ((): Date => new Date());
   const context = makeContext(options, now);
-  yield* seedInboxCursor(context);
+  const startupAvailable = yield* options.conversation.revalidate(now(), 'Startup');
   const initial = yield* context.schedulerJournal.loadOrCreate(now());
-  yield* options.delivery.recover;
-  context.approval = yield* makeApprovalManager({
-    database: options.database,
-    delivery: options.delivery,
-    ...(options.approvalExpiryMs === undefined ? {} : { expiryMs: options.approvalExpiryMs }),
-    now,
-    runtime: options.runtime,
-  });
+  if (startupAvailable) {
+    yield* initializeConversation(context);
+  }
   const controller = yield* makeSchedulerController(
     initial,
     context.schedulerJournal,

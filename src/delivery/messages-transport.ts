@@ -1,7 +1,10 @@
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 
 import { Effect } from 'effect';
 
+import type { ConversationAvailability } from '../conversation-policy';
+import type { ConfiguredMessagesConversation } from '../messages-conversation';
+import { openValidatedMessagesDatabase } from '../messages-database';
 import { decodeAttributedBody } from '../messages-inbox';
 import { MessagesDeliveryError } from './error';
 import { makeOsascriptSendBoundary, type SendBoundary } from './osascript-send';
@@ -18,6 +21,18 @@ interface OutboundRow {
   readonly text: null | string;
 }
 
+interface TransportState {
+  closed: boolean;
+  database: Database;
+}
+
+interface MessagesTransportOptions {
+  readonly chatGuid: string;
+  readonly database: Database;
+  readonly reopen?: () => Database;
+  readonly sendBoundary: SendBoundary;
+}
+
 interface MessagesTransport {
   readonly close: () => void;
   readonly findMatchingAfter: (
@@ -25,6 +40,7 @@ interface MessagesTransport {
     text: string,
   ) => Effect.Effect<DeliveryReceipt | null, MessagesDeliveryError>;
   readonly frontier: Effect.Effect<number, MessagesDeliveryError>;
+  readonly refresh: Effect.Effect<void, MessagesDeliveryError>;
   readonly send: (text: string) => Effect.Effect<void, MessagesDeliveryError>;
 }
 
@@ -95,47 +111,109 @@ const readFrontier = (database: Database, chatGuid: string): number =>
 
 const sendTextBoundary = makeOsascriptSendBoundary();
 
-const makeMessagesTransport = (
-  database: Database,
-  chatGuid: string,
-  sendBoundary: SendBoundary = sendTextBoundary,
-): MessagesTransport => ({
-  close: (): void => {
-    database.close();
-  },
-  findMatchingAfter: (
-    frontierRowId,
-    text,
-  ): Effect.Effect<DeliveryReceipt | null, MessagesDeliveryError> =>
-    Effect.try({
-      catch: (cause) => deliveryError('reconcile', cause),
-      try: (): DeliveryReceipt | null => findMatching(database, chatGuid, frontierRowId, text),
-    }),
-  frontier: Effect.try({
-    catch: (cause) => deliveryError('frontier', cause),
-    try: (): number => readFrontier(database, chatGuid),
-  }),
-  send: (text): Effect.Effect<void, MessagesDeliveryError> =>
-    sendBoundary(chatGuid, text).pipe(Effect.mapError((cause) => deliveryError('send', cause))),
-});
-
-const openMessagesTransport = (
-  databasePath: string,
-  chatGuid: string,
-): Effect.Effect<MessagesTransport, MessagesDeliveryError> =>
-  Effect.try({
-    catch: (cause) => deliveryError('open', cause),
+const makeRefresh = (
+  state: TransportState,
+  reopen: (() => Database) | undefined,
+): Effect.Effect<void, MessagesDeliveryError> => {
+  if (reopen === undefined) {
+    return Effect.void;
+  }
+  return Effect.try({
+    catch: (cause) => deliveryError('refresh', cause),
     try: () => {
-      const database = new Database(databasePath, { readonly: true, strict: true });
+      if (state.closed) {
+        throw new Error('Messages transport is closed');
+      }
+      const replacement = reopen();
       try {
-        database.query('SELECT ROWID FROM message LIMIT 1').get();
-        return makeMessagesTransport(database, chatGuid);
+        state.database.close();
+        state.database = replacement;
       } catch (error) {
-        database.close();
+        replacement.close();
         throw error;
       }
     },
   });
+};
 
-export { makeMessagesTransport, normalizeText, openMessagesTransport, textsMatch };
+const makeTransport = ({
+  chatGuid,
+  database,
+  reopen,
+  sendBoundary,
+}: MessagesTransportOptions): MessagesTransport => {
+  const state: TransportState = { closed: false, database };
+  return {
+    close: (): void => {
+      if (state.closed) {
+        return;
+      }
+      state.closed = true;
+      state.database.close();
+    },
+    findMatchingAfter: (
+      frontierRowId,
+      text,
+    ): Effect.Effect<DeliveryReceipt | null, MessagesDeliveryError> =>
+      Effect.try({
+        catch: (cause) => deliveryError('reconcile', cause),
+        try: (): DeliveryReceipt | null =>
+          findMatching(state.database, chatGuid, frontierRowId, text),
+      }),
+    frontier: Effect.try({
+      catch: (cause) => deliveryError('frontier', cause),
+      try: (): number => readFrontier(state.database, chatGuid),
+    }),
+    refresh: makeRefresh(state, reopen),
+    send: (text): Effect.Effect<void, MessagesDeliveryError> =>
+      sendBoundary(chatGuid, text).pipe(Effect.mapError((cause) => deliveryError('send', cause))),
+  };
+};
+
+const makeMessagesTransport = (
+  database: Database,
+  chatGuid: string,
+  sendBoundary: SendBoundary = sendTextBoundary,
+): MessagesTransport => makeTransport({ chatGuid, database, sendBoundary });
+
+const withConversationAvailability = (
+  transport: MessagesTransport,
+  availability: ConversationAvailability,
+): MessagesTransport => {
+  const wait = <A>(
+    effect: Effect.Effect<A, MessagesDeliveryError>,
+  ): Effect.Effect<A, MessagesDeliveryError> =>
+    availability.awaitAvailable.pipe(Effect.andThen(effect));
+  return {
+    close: transport.close,
+    findMatchingAfter: (frontierRowId, text) =>
+      wait(transport.findMatchingAfter(frontierRowId, text)),
+    frontier: wait(transport.frontier),
+    refresh: transport.refresh,
+    send: (text) => wait(transport.send(text)),
+  };
+};
+
+const openMessagesTransport = (
+  databasePath: string,
+  conversation: ConfiguredMessagesConversation,
+): Effect.Effect<MessagesTransport, MessagesDeliveryError> =>
+  Effect.try({
+    catch: (cause) => deliveryError('open', cause),
+    try: () =>
+      makeTransport({
+        chatGuid: conversation.chatGuid,
+        database: openValidatedMessagesDatabase({ databasePath, ...conversation }),
+        reopen: () => openValidatedMessagesDatabase({ databasePath, ...conversation }),
+        sendBoundary: sendTextBoundary,
+      }),
+  });
+
+export {
+  makeMessagesTransport,
+  normalizeText,
+  openMessagesTransport,
+  textsMatch,
+  withConversationAvailability,
+};
 export type { DeliveryReceipt, MessagesTransport };

@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -66,8 +66,11 @@ const attributedBody = (text: string): Uint8Array => {
 
 const createSchema = (database: Database): void => {
   for (const statement of [
-    'CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT NOT NULL, style INTEGER NOT NULL)',
-    'CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT NOT NULL)',
+    `CREATE TABLE chat (
+      ROWID INTEGER PRIMARY KEY, guid TEXT NOT NULL, style INTEGER NOT NULL,
+      chat_identifier TEXT NOT NULL, service_name TEXT NOT NULL
+    )`,
+    'CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT NOT NULL, service TEXT NOT NULL)',
     'CREATE TABLE chat_handle_join (chat_id INTEGER NOT NULL, handle_id INTEGER NOT NULL)',
     `CREATE TABLE message (
       ROWID INTEGER PRIMARY KEY, guid TEXT NOT NULL, text TEXT, attributedBody BLOB,
@@ -86,10 +89,17 @@ const createSchema = (database: Database): void => {
 };
 
 const seedConversations = (database: Database): void => {
-  database.run('INSERT INTO handle VALUES (1, ?), (2, ?)', [TEST_HANDLE, OTHER_HANDLE]);
+  database.run("INSERT INTO handle VALUES (1, ?, 'iMessage'), (2, ?, 'iMessage')", [
+    TEST_HANDLE,
+    OTHER_HANDLE,
+  ]);
   database.run(
-    "INSERT INTO chat VALUES (1, ?, 45), (2, 'chat-group', 43), (3, 'chat-other', 45), (4, 'chat-two-participants', 45)",
-    [TEST_CHAT_GUID],
+    `INSERT INTO chat VALUES
+      (1, ?, 45, ?, 'iMessage'),
+      (2, 'chat-group', 43, ?, 'iMessage'),
+      (3, 'chat-other', 45, ?, 'iMessage'),
+      (4, 'chat-two-participants', 45, ?, 'iMessage')`,
+    [TEST_CHAT_GUID, TEST_HANDLE, TEST_HANDLE, OTHER_HANDLE, TEST_HANDLE],
   );
   database.run('INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (3, 2), (4, 1), (4, 2)');
 };
@@ -97,6 +107,23 @@ const seedConversations = (database: Database): void => {
 const initializeDatabase = (database: Database): void => {
   createSchema(database);
   seedConversations(database);
+};
+
+const replaceMessagesDatabase = (
+  fixture: MessagesFixture,
+  mutate: (database: Database) => void = (_database): void => {
+    // A valid replacement needs no mutation.
+  },
+): void => {
+  const replacementPath = path.join(fixture.root, 'replacement.db');
+  const replacement = new Database(replacementPath, { create: true, strict: true });
+  try {
+    initializeDatabase(replacement);
+    mutate(replacement);
+  } finally {
+    replacement.close();
+  }
+  renameSync(replacementPath, fixture.databasePath);
 };
 
 const makeInsertMessage =
@@ -189,5 +216,13 @@ const withMessagesFixture = <A, E, R>(
     Effect.sync(fixture.close),
   );
 
-export { attributedBody, makeMessagesFixture, TEST_CHAT_GUID, TEST_HANDLE, withMessagesFixture };
+export {
+  attributedBody,
+  initializeDatabase,
+  makeMessagesFixture,
+  replaceMessagesDatabase,
+  TEST_CHAT_GUID,
+  TEST_HANDLE,
+  withMessagesFixture,
+};
 export type { FixtureAttachment, FixtureMessage, MessagesFixture };

@@ -171,6 +171,48 @@ it.effect('fails closed when the permission prompt cannot be delivered', () =>
   }),
 );
 
+it.effect(
+  'does not ingest or resolve approval replies while the conversation boundary is invalid',
+  () =>
+    Effect.gen(function* invalidConversationApproval() {
+      let valid = true;
+      const fixture = yield* makeEngineFixture({
+        conversationProbe: () =>
+          valid ? Effect.void : Effect.fail(new Error('configured conversation changed')),
+      });
+      fixture.requestApproval(commandRequest(15, 'boundary-sensitive-command'));
+      yield* settle(fixture.engine);
+      expect(stateOf(fixture.database, 15)).toBe('Pending');
+      const sentBeforeInvalidation = [...fixture.sent];
+
+      valid = false;
+      expect(
+        yield* fixture.conversation.revalidate(
+          new Date('2026-07-14T12:01:00.000Z'),
+          'DatabaseChanged',
+        ),
+      ).toBe(false);
+      fixture.push(inbound(1, '/yes'));
+      yield* settle(fixture.engine);
+      expect(stateOf(fixture.database, 15)).toBe('Pending');
+      expect(fixture.responses).toStrictEqual([]);
+      expect(fixture.sent).toStrictEqual(sentBeforeInvalidation);
+
+      valid = true;
+      expect(
+        yield* fixture.conversation.revalidate(
+          new Date('2026-07-14T12:02:00.000Z'),
+          'DatabaseChanged',
+        ),
+      ).toBe(true);
+      yield* settle(fixture.engine);
+      expect(stateOf(fixture.database, 15)).toBe('Approved');
+      expect(fixture.responses).toStrictEqual([{ id: 15, result: { decision: 'accept' } }]);
+      yield* fixture.engine.shutdown;
+      fixture.remove();
+    }),
+);
+
 it.effect('marks a crash-window decision orphaned when no response receipt was persisted', () =>
   Effect.gen(function* recoverUncertainResponse() {
     const { params } = commandRequest(14, 'crash-window-command');

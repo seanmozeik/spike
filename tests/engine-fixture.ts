@@ -7,20 +7,27 @@ import { Effect } from 'effect';
 
 import type { ThreadSnapshot } from '../src/codex/reconcile';
 import type { CodexServerRequest, JsonRpcId } from '../src/codex/server-request-registry';
-import { openJournal, type JournalHandle } from '../src/database';
+import { makeConversationPolicy, type ConversationPolicy } from '../src/conversation-policy';
+import type { JournalHandle } from '../src/database';
 import { MessagesDeliveryError } from '../src/delivery/error';
 import { makeDeliveryJournal } from '../src/delivery/journal';
-import type { MessagesTransport } from '../src/delivery/messages-transport';
+import {
+  type MessagesTransport,
+  withConversationAvailability,
+} from '../src/delivery/messages-transport';
 import { makeDeliveryService } from '../src/delivery/service';
 import { ChatGuid, MessageGuid, MessagesRowId } from '../src/domain/ids';
 import type { ObservedMessage } from '../src/domain/inbound';
+import { makeConversationDiagnostic } from '../src/journal/conversation-diagnostic';
 import type { LikeAcknowledgement } from '../src/like/adapter';
 import type { MessagesInboxHandle } from '../src/messages-inbox';
 import { makeSpikeEngine, type SpikeEngine } from '../src/service/engine';
+import { openFixtureJournal } from './engine-journal-fixture';
 import { makeRuntimeHarness, type RuntimeTrace, type TurnBehavior } from './fake-codex-runtime';
 
 interface EngineFixture {
   readonly closeCodexConnection: () => void;
+  readonly conversation: ConversationPolicy;
   readonly database: Database;
   readonly engine: SpikeEngine;
   readonly handle: JournalHandle;
@@ -40,6 +47,8 @@ interface EngineFixture {
 
 interface EngineFixtureOptions {
   readonly behavior?: TurnBehavior;
+  readonly conversationProbe?: () => Effect.Effect<void, unknown>;
+  readonly conversationValidationIntervalMs?: number;
   readonly now?: () => Date;
   readonly prepare?: (database: Database) => Effect.Effect<void, unknown>;
   readonly preexisting?: readonly ObservedMessage[];
@@ -78,6 +87,7 @@ const makeTransport = (sent: string[], behavior: TurnBehavior): MessagesTranspor
           }),
         ),
   frontier: Effect.succeed(0),
+  refresh: Effect.void,
   send: (text): Effect.Effect<void> =>
     Effect.sync(() => {
       sent.push(text);
@@ -88,8 +98,12 @@ const makeTestDelivery = (
   handle: JournalHandle,
   sent: string[],
   behavior: TurnBehavior,
+  conversation: ConversationPolicy,
 ): ReturnType<typeof makeDeliveryService> =>
-  makeDeliveryService(makeDeliveryJournal(handle.database), makeTransport(sent, behavior));
+  makeDeliveryService(
+    makeDeliveryJournal(handle.database),
+    withConversationAvailability(makeTransport(sent, behavior), conversation),
+  );
 
 const latestRowId = (queue: readonly ObservedMessage[]): MessagesRowId => {
   let latest = 0;
@@ -104,6 +118,7 @@ const makeInbox = (queue: ObservedMessage[]): MessagesInboxHandle => ({
   frontier: Effect.sync(() => latestRowId(queue)),
   observeAfter: (cursor): Effect.Effect<readonly ObservedMessage[]> =>
     Effect.succeed(queue.filter(({ rowId }) => rowId > cursor)),
+  refresh: Effect.void,
 });
 
 const makeLike = (likes: string[]): LikeAcknowledgement => ({
@@ -121,6 +136,7 @@ const makeLike = (likes: string[]): LikeAcknowledgement => ({
 });
 
 interface FixtureParts {
+  readonly conversation: ConversationPolicy;
   readonly engine: SpikeEngine;
   readonly handle: JournalHandle;
   readonly likes: string[];
@@ -133,6 +149,8 @@ interface FixtureParts {
 interface MakeFixtureOptions {
   readonly beforeOpen: ((databasePath: string) => void) | undefined;
   readonly behavior: TurnBehavior;
+  readonly conversationProbe: () => Effect.Effect<void, unknown>;
+  readonly conversationValidationIntervalMs: number | undefined;
   readonly now: () => Date;
   readonly prepare: ((database: Database) => Effect.Effect<void, unknown>) | undefined;
   readonly preexisting: readonly ObservedMessage[] | undefined;
@@ -140,6 +158,7 @@ interface MakeFixtureOptions {
 }
 
 const buildFixture = ({
+  conversation,
   engine,
   handle,
   likes,
@@ -153,6 +172,7 @@ const buildFixture = ({
       listener();
     }
   },
+  conversation,
   database: handle.database,
   engine,
   handle,
@@ -186,6 +206,8 @@ const buildFixture = ({
 const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
   beforeOpen,
   behavior,
+  conversationProbe,
+  conversationValidationIntervalMs,
   now,
   prepare,
   preexisting,
@@ -193,12 +215,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
 }: MakeFixtureOptions) {
   const root = mkdtempSync(path.join(tmpdir(), 'spike-engine-'));
   const databasePath = path.join(root, 'spike.db');
-  if (beforeOpen !== undefined) {
-    const bootstrap = yield* openJournal(databasePath);
-    bootstrap.close();
-    beforeOpen(databasePath);
-  }
-  const handle = yield* openJournal(databasePath);
+  const handle = yield* openFixtureJournal(databasePath, beforeOpen);
   const likes: string[] = [],
     sent: string[] = [];
   const queue: ObservedMessage[] = [...(preexisting ?? [])];
@@ -207,13 +224,22 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
   }
   const threadSnapshot = snapshot ?? { id: 'thread-1', turns: [] };
   const { runtime, trace } = makeRuntimeHarness(behavior, threadSnapshot);
+  const conversation = yield* makeConversationPolicy({
+    diagnostic: makeConversationDiagnostic(handle.database),
+    initialValidationAt: now(),
+    probe: conversationProbe,
+    ...(conversationValidationIntervalMs === undefined
+      ? {}
+      : { validationIntervalMs: conversationValidationIntervalMs }),
+  });
   const engine = yield* makeSpikeEngine({
     ...(behavior.approvalExpiryMs === undefined
       ? {}
       : { approvalExpiryMs: behavior.approvalExpiryMs }),
     chatGuid: CHAT_GUID,
+    conversation,
     database: handle.database,
-    delivery: makeTestDelivery(handle, sent, behavior),
+    delivery: makeTestDelivery(handle, sent, behavior, conversation),
     handle: '+15555550199',
     inbox: makeInbox(queue),
     like: makeLike(likes),
@@ -221,13 +247,15 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
     renderStatus: () => renderStatus(behavior),
     runtime,
   });
-  return buildFixture({ engine, handle, likes, queue, root, sent, trace });
+  return buildFixture({ conversation, engine, handle, likes, queue, root, sent, trace });
 });
 
 const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeof makeFixture> =>
   makeFixture({
     beforeOpen: undefined,
     behavior: options.behavior ?? {},
+    conversationProbe: options.conversationProbe ?? ((): Effect.Effect<void> => Effect.void),
+    conversationValidationIntervalMs: options.conversationValidationIntervalMs,
     now: options.now ?? ((): Date => new Date('2026-07-14T12:00:00.000Z')),
     preexisting: options.preexisting,
     prepare: options.prepare,
@@ -242,6 +270,8 @@ const makeMigratedEngineFixture = (
   makeFixture({
     beforeOpen,
     behavior,
+    conversationProbe: (): Effect.Effect<void> => Effect.void,
+    conversationValidationIntervalMs: undefined,
     now: (): Date => new Date('2026-07-14T12:00:00.000Z'),
     preexisting: undefined,
     prepare: undefined,

@@ -9,11 +9,17 @@ import { loadSpikeConfig, type SpikeConfig } from './app-config';
 import { openCodexRuntime, type CodexRuntime } from './codex/runtime';
 import { ensureRuntimeLayout } from './config-files';
 import { startControlSocket } from './control-socket';
+import { makeConversationPolicy } from './conversation-policy';
 import { openJournal, type JournalHandle } from './database';
 import { makeDeliveryJournal } from './delivery/journal';
-import { openMessagesTransport, type MessagesTransport } from './delivery/messages-transport';
+import {
+  openMessagesTransport,
+  type MessagesTransport,
+  withConversationAvailability,
+} from './delivery/messages-transport';
 import { makeDeliveryService } from './delivery/service';
 import { SpikeRuntimeError } from './errors';
+import { makeConversationDiagnostic } from './journal/conversation-diagnostic';
 import { makeDisabledLikeAcknowledgement, makeLikeAcknowledgement } from './like/adapter';
 import { makeLikeJournal } from './like/journal';
 import { makeLikeNativeRunner } from './like/native-runner';
@@ -122,7 +128,7 @@ const acquireTransport = (
   enabled: boolean,
 ): Effect.Effect<MessagesTransport | null, SpikeRuntimeError> =>
   enabled
-    ? openMessagesTransport(config.messagesDatabase, config.chatGuid).pipe(
+    ? openMessagesTransport(config.messagesDatabase, config).pipe(
         Effect.mapError(resourceError('open-transport', 'failed to open Messages transport')),
       )
     : Effect.succeed(null);
@@ -144,7 +150,15 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
   if (runtime === null || inbox === null || transport === null) {
     return null;
   }
-  const delivery = makeDeliveryService(makeDeliveryJournal(journal.database), transport);
+  const conversation = yield* makeConversationPolicy({
+    diagnostic: makeConversationDiagnostic(journal.database),
+    initialValidationAt: new Date(startedAt),
+    probe: () => inbox.refresh.pipe(Effect.andThen(transport.refresh)),
+  });
+  const delivery = makeDeliveryService(
+    makeDeliveryJournal(journal.database),
+    withConversationAvailability(transport, conversation),
+  );
   const likeJournal = makeLikeJournal(journal.database);
   const likeRunner = makeLikeNativeRunner(config.handle, likeHelperPath());
   const like = config.likeAcknowledgements
@@ -152,6 +166,7 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
     : makeDisabledLikeAcknowledgement(likeJournal);
   return yield* makeSpikeEngine({
     chatGuid: config.chatGuid,
+    conversation,
     database: journal.database,
     delivery,
     handle: config.handle,
