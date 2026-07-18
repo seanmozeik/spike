@@ -4,10 +4,7 @@ import { Effect } from 'effect';
 
 import { decodeAttributedBody } from '../messages-inbox';
 import { MessagesDeliveryError } from './error';
-
-const SEND_SCRIPT = `on run argv
-  tell application "Messages" to send (item 1 of argv) to chat id (item 2 of argv)
-end run`;
+import { makeOsascriptSendBoundary, type SendBoundary } from './osascript-send';
 
 interface DeliveryReceipt {
   readonly guid: string;
@@ -20,8 +17,6 @@ interface OutboundRow {
   readonly rowid: number;
   readonly text: null | string;
 }
-
-type SendBoundary = (chatGuid: string, text: string) => Promise<void>;
 
 interface MessagesTransport {
   readonly close: () => void;
@@ -98,22 +93,7 @@ const readFrontier = (database: Database, chatGuid: string): number =>
     )
     .get(chatGuid)?.rowid ?? 0;
 
-const sendText = (chatGuid: string, text: string): void => {
-  const result = Bun.spawnSync({
-    cmd: ['osascript', '-', text, chatGuid],
-    stderr: 'pipe',
-    stdin: Buffer.from(SEND_SCRIPT),
-    stdout: 'pipe',
-  });
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.toString().trim() || `osascript exit ${result.exitCode}`);
-  }
-};
-
-const sendTextBoundary: SendBoundary = (chatGuid, text) => {
-  sendText(chatGuid, text);
-  return Promise.resolve();
-};
+const sendTextBoundary = makeOsascriptSendBoundary();
 
 const makeMessagesTransport = (
   database: Database,
@@ -136,10 +116,7 @@ const makeMessagesTransport = (
     try: (): number => readFrontier(database, chatGuid),
   }),
   send: (text): Effect.Effect<void, MessagesDeliveryError> =>
-    Effect.tryPromise({
-      catch: (cause) => deliveryError('send', cause),
-      try: () => sendBoundary(chatGuid, text),
-    }),
+    sendBoundary(chatGuid, text).pipe(Effect.mapError((cause) => deliveryError('send', cause))),
 });
 
 const openMessagesTransport = (

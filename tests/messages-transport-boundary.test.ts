@@ -8,11 +8,7 @@ import { expect } from 'vitest';
 import { openJournal, type JournalHandle } from '../src/database';
 import { MessagesDeliveryError } from '../src/delivery/error';
 import { makeDeliveryJournal } from '../src/delivery/journal';
-import {
-  makeMessagesTransport,
-  openMessagesTransport,
-  type MessagesTransport,
-} from '../src/delivery/messages-transport';
+import { openMessagesTransport, type MessagesTransport } from '../src/delivery/messages-transport';
 import type { PreparedDelivery } from '../src/delivery/model';
 import { makeDeliveryService } from '../src/delivery/service';
 import type { SpikeRuntimeError } from '../src/errors';
@@ -22,9 +18,6 @@ import {
   type MessagesFixture,
   withMessagesFixture,
 } from './messages-fixture';
-
-const BLOCKING_SEND_MS = 50;
-const MINIMUM_BLOCKING_SEND_MS = 40;
 
 interface TransportFixture {
   readonly messages: MessagesFixture;
@@ -161,36 +154,6 @@ it.effect('returns typed open and reconciliation failures', () =>
       if (Result.isFailure(reconcileFailure)) {
         expect(reconcileFailure.failure).toBeInstanceOf(MessagesDeliveryError);
         expect(reconcileFailure.failure.operation).toBe('reconcile');
-      }
-    }),
-  ),
-);
-
-it.effect('reproduces the bounded synchronous send freeze through the sender seam', () =>
-  withMessagesFixture((messages) =>
-    Effect.gen(function* blockingSendFixture() {
-      const gate = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
-      const transport = makeMessagesTransport(messages.database, TEST_CHAT_GUID, () => {
-        const outcome = Atomics.wait(gate, 0, 0, BLOCKING_SEND_MS);
-        if (outcome !== 'timed-out') {
-          throw new Error(`unexpected blocking sender outcome: ${outcome}`);
-        }
-        return Promise.resolve();
-      });
-      let timerFired = false;
-      const timer = setTimeout(() => {
-        timerFired = true;
-      }, 1);
-      try {
-        const started = performance.now();
-        yield* transport.send('scripted boundary send');
-        const elapsed = performance.now() - started;
-        expect(elapsed).toBeGreaterThanOrEqual(MINIMUM_BLOCKING_SEND_MS);
-        expect(timerFired).toBe(false);
-        yield* Effect.promise(() => Bun.sleep(0));
-        expect(timerFired).toBe(true);
-      } finally {
-        clearTimeout(timer);
       }
     }),
   ),
