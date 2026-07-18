@@ -7,6 +7,7 @@ import { expect } from 'vitest';
 import type { CodexServerRequest } from '../src/codex/server-request-registry';
 import { ChatGuid, MessageGuid, MessagesRowId } from '../src/domain/ids';
 import type { ObservedMessage } from '../src/domain/inbound';
+import { ConversationMismatchError } from '../src/errors';
 import { makeEngineFixture, settle } from './engine-fixture';
 
 const inbound = (rowId: number, text: string): ObservedMessage => ({
@@ -178,7 +179,15 @@ it.effect(
       let valid = true;
       const fixture = yield* makeEngineFixture({
         conversationProbe: () =>
-          valid ? Effect.void : Effect.fail(new Error('configured conversation changed')),
+          valid
+            ? Effect.void
+            : Effect.fail(
+                new ConversationMismatchError({
+                  chatGuid: 'any;-;+15555550199',
+                  handle: '+15555550199',
+                  message: 'configured conversation changed',
+                }),
+              ),
       });
       fixture.requestApproval(commandRequest(15, 'boundary-sensitive-command'));
       yield* settle(fixture.engine);

@@ -30,7 +30,7 @@ interface ApprovalRow {
 
 const parseJson = (text: string): unknown => JSON.parse(text) as unknown;
 const decodeStrings = Schema.decodeUnknownSync(Schema.Array(Schema.String));
-const decodeRpcId = Schema.decodeUnknownSync(Schema.Union([Schema.String, Schema.Number]));
+const decodeRpcId = Schema.decodeUnknownSync(Schema.Union([Schema.String, Schema.Finite]));
 
 const parseRow = (row: ApprovalRow): ApprovalRecord => ({
   availableDecisions:

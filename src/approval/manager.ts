@@ -57,7 +57,7 @@ const deliverOutcome = (
     context,
     `${record.id}:outcome:${record.state}`,
     approvalOutcome(record.state),
-  ).pipe(Effect.catchCause(() => Effect.void));
+  ).pipe(Effect.ignoreCause);
 };
 
 const respond = Effect.fn('SpikeApproval.respond')(function* respond(
@@ -183,7 +183,7 @@ const resolveUpstream = Effect.fn('SpikeApproval.resolveUpstream')(function* res
       context,
       `${record.id}:upstream-resolved`,
       'Permission request was cancelled by Codex.',
-    ).pipe(Effect.catchCause(() => Effect.void));
+    ).pipe(Effect.ignoreCause);
   }
   yield* deliverNext(context);
 });

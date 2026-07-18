@@ -95,7 +95,7 @@ const releaseTransport = (transport: MessagesTransport): Effect.Effect<void> =>
   Effect.sync(transport.close);
 
 const releaseEngine = (engine: SpikeEngine): Effect.Effect<void> =>
-  engine.shutdown.pipe(Effect.catchCause(() => Effect.void));
+  engine.shutdown.pipe(Effect.ignoreCause);
 
 const likeHelperPath = (): string =>
   process.env['SPIKE_LIKE_HELPER'] ??

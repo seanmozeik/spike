@@ -12,7 +12,7 @@ import {
   type MessagesTransport,
   withConversationAvailability,
 } from '../src/delivery/messages-transport';
-import type { SpikeRuntimeError } from '../src/errors';
+import { ConversationMismatchError, type SpikeRuntimeError } from '../src/errors';
 import { makeConversationDiagnostic } from '../src/journal/conversation-diagnostic';
 
 interface PolicyFixture {
@@ -49,7 +49,15 @@ it.effect('checks only on schedule and deduplicates a content-free durable diagn
         probe: () =>
           Effect.suspend(() => {
             checks += 1;
-            return valid ? Effect.void : Effect.fail(new Error('fixture boundary changed'));
+            return valid
+              ? Effect.void
+              : Effect.fail(
+                  new ConversationMismatchError({
+                    chatGuid: 'any;-;+15555550199',
+                    handle: '+15555550199',
+                    message: 'fixture boundary changed',
+                  }),
+                );
           }),
         validationIntervalMs: 60_000,
       });

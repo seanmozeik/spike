@@ -97,7 +97,7 @@ const revalidateUnlocked = Effect.fn('ConversationPolicy.revalidate')(function* 
   const resolved = yield* Effect.result(runtime.options.diagnostic.resolve(at));
   if (Result.isFailure(resolved)) {
     runtime.state.status = 'Unavailable';
-    return yield* Effect.fail(resolved.failure);
+    return yield* resolved.failure;
   }
   if (isClosed(runtime)) {
     return false;

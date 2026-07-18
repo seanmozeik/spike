@@ -254,6 +254,61 @@ it.effect('fails an active turn when its persisted steer side effect fails', () 
   }),
 );
 
+it.effect('quarantines a generation when a pool-timer steer finds a legacy attempt', () =>
+  Effect.gen(function* quarantinedPoolTimerFailure() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({ behavior: { gate: gate.promise } });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    const { active } = yield* fixture.engine.snapshot;
+    const activeLogicalTurnId =
+      active === null
+        ? yield* Effect.die(new Error('expected an active turn before scheduling pooled input'))
+        : active.logicalTurnId;
+    fixture.database.run(
+      `INSERT INTO codex_attempts(
+         id, logical_turn_id, account_id, state, input_fingerprint, frontier_json,
+         submission_kind, started_at
+       ) VALUES (
+         'legacy-steer', ?, 'test-account', 'Prepared', 'legacy',
+         '{"itemIds":[],"turnIds":[]}', 'Steer', '2026-07-14T12:00:01.000Z'
+       )`,
+      [activeLogicalTurnId],
+    );
+
+    fixture.push(inbound(2, 'follow-up detail'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(3100));
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    expect(fixture.steers).toStrictEqual([]);
+    expect(fixture.sent).toStrictEqual([
+      'Spike hit an error: a legacy Codex attempt has no durable input batch identity; send /new',
+    ]);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Failed');
+    expect((yield* fixture.engine.snapshot).active).toBeNull();
+    expect((yield* fixture.engine.snapshot).generationBroken).toBe(true);
+
+    fixture.push(inbound(3, 'must remain quarantined'));
+    yield* fixture.engine.pollOnce;
+    expect(fixture.inputs).toStrictEqual(['first request']);
+    expect(fixture.turnsStarted).toStrictEqual(['turn-1']);
+    expect((yield* fixture.engine.snapshot).pool.map(({ text }) => text)).toStrictEqual([
+      'must remain quarantined',
+    ]);
+
+    gate.reject(new Error('monitor stopped after generation quarantine'));
+    yield* fixture.engine.drain;
+    expect(fixture.sent).toHaveLength(1);
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
 it.effect('/new suppresses a late failure from the superseded monitor', () =>
   Effect.gen(function* supersededMonitorFailure() {
     const gate = Promise.withResolvers<undefined>();

@@ -7,6 +7,7 @@ import { expect } from 'vitest';
 import { makeDeliveryJournal } from '../src/delivery/journal';
 import { MessageGuid, MessagesRowId } from '../src/domain/ids';
 import type { ObservedMessage } from '../src/domain/inbound';
+import { ConversationMismatchError } from '../src/errors';
 import { makeJournal } from '../src/journal/service';
 import { CHAT_GUID, makeEngineFixture, settle } from './engine-fixture';
 
@@ -61,7 +62,15 @@ it.effect(
       let valid = false;
       const fixture = yield* makeEngineFixture({
         conversationProbe: () =>
-          valid ? Effect.void : Effect.fail(new Error('startup conversation mismatch')),
+          valid
+            ? Effect.void
+            : Effect.fail(
+                new ConversationMismatchError({
+                  chatGuid: CHAT_GUID,
+                  handle: '+15555550199',
+                  message: 'startup conversation mismatch',
+                }),
+              ),
         now: () => STARTED_AT,
         preexisting: [inbound(1, 'do not ingest before startup validation')],
         prepare: (database) =>
@@ -104,7 +113,15 @@ it.effect('keeps a persisted active-turn pool inert until exact startup recovery
     const fixture = yield* makeEngineFixture({
       behavior: { gate: gate.promise },
       conversationProbe: () =>
-        valid ? Effect.void : Effect.fail(new Error('startup conversation mismatch')),
+        valid
+          ? Effect.void
+          : Effect.fail(
+              new ConversationMismatchError({
+                chatGuid: CHAT_GUID,
+                handle: '+15555550199',
+                message: 'startup conversation mismatch',
+              }),
+            ),
       now: () => STARTED_AT,
       prepare: (database) =>
         Effect.sync(() => {

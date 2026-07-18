@@ -10,7 +10,7 @@ const ApprovalMethod = Schema.Literals([
 
 const CurrentBase = {
   itemId: Schema.String,
-  startedAtMs: Schema.Number,
+  startedAtMs: Schema.Finite,
   threadId: Schema.String,
   turnId: Schema.String,
 } as const;

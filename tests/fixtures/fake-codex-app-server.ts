@@ -10,7 +10,7 @@ const SCRIPTED_ERROR_CODE = -32_000;
 const ORPHAN_RESPONSE_ID = 999_999;
 
 const RpcRequest = Schema.Struct({
-  id: Schema.Union([Schema.Number, Schema.String]),
+  id: Schema.Union([Schema.Finite, Schema.String]),
   jsonrpc: Schema.Literal('2.0'),
   method: Schema.String,
   params: Schema.optional(Schema.Unknown),
