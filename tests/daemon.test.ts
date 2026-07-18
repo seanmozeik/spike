@@ -20,6 +20,7 @@ import { ensureRuntimeLayout } from '../src/config-files';
 import { requestControl, startControlSocket } from '../src/control-socket';
 import { serveDaemon } from '../src/daemon';
 import { openJournal } from '../src/database';
+import { SpikeRuntimeError } from '../src/errors';
 import { spikePaths } from '../src/paths';
 import { isDoctorReport } from '../src/status/doctor';
 import {
@@ -32,6 +33,8 @@ const roots: string[] = [];
 const FAKE_CODEX_EXECUTABLE = fileURLToPath(
   new URL('fixtures/fake-codex-app-server.ts', import.meta.url),
 );
+const fixtureError = (message: string): SpikeRuntimeError =>
+  new SpikeRuntimeError({ cause: null, message, operation: 'test/daemon' });
 
 const prepareCodexDaemon = (
   paths: ReturnType<typeof spikePaths>,
@@ -57,7 +60,7 @@ const boundedDaemonJoin = (fiber: Fiber.Fiber<void, unknown>): Effect.Effect<voi
   Effect.race(
     Fiber.join(fiber),
     Effect.sleep(2000).pipe(
-      Effect.flatMap(() => Effect.fail(new Error('daemon did not stop after Codex child exit'))),
+      Effect.flatMap(() => Effect.fail(fixtureError('daemon did not stop after Codex child exit'))),
     ),
   );
 
@@ -125,7 +128,7 @@ const conversationUnavailable = (databasePath: string): boolean => {
 const mirrorPreparedOutbound = (
   paths: ReturnType<typeof spikePaths>,
   messages: MessagesFixture,
-): Effect.Effect<void, Error> =>
+): Effect.Effect<void, SpikeRuntimeError> =>
   Effect.gen(function* mirrorOutbound() {
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const text = preparedOutboundText(paths.database);
@@ -135,7 +138,7 @@ const mirrorPreparedOutbound = (
       }
       yield* Effect.promise(() => Bun.sleep(10));
     }
-    return yield* Effect.fail(new Error('daemon did not prepare an outbound failure message'));
+    return yield* fixtureError('daemon did not prepare an outbound failure message');
   });
 
 afterEach(() => {
@@ -195,7 +198,7 @@ it.effect('stops cleanly when the Codex child exits so launchd can restart it', 
         serveDaemon(paths),
         Effect.sleep(2000).pipe(
           Effect.flatMap(() =>
-            Effect.fail(new Error('daemon did not stop after Codex child exit')),
+            Effect.fail(fixtureError('daemon did not stop after Codex child exit')),
           ),
         ),
       );
