@@ -1,4 +1,4 @@
-import { Effect } from 'effect';
+import { Effect, Schema } from 'effect';
 
 const SEND_SCRIPT = `on run argv
   tell application "Messages" to send (item 1 of argv) to chat id (item 2 of argv)
@@ -24,6 +24,17 @@ interface SendProcessHandle {
   readonly process: SendProcess;
   readonly stderr: Promise<string>;
 }
+
+class OsascriptProcessError extends Schema.TaggedErrorClass<OsascriptProcessError>()(
+  'OsascriptProcessError',
+  { cause: Schema.Defect(), message: Schema.String },
+) {}
+
+const toProcessError = (cause: unknown): OsascriptProcessError =>
+  new OsascriptProcessError({
+    cause,
+    message: cause instanceof Error ? cause.message : String(cause),
+  });
 
 const waitForExit = async (process: SendProcess, timeoutMs: number): Promise<number | null> => {
   const deadline = Promise.withResolvers<null>();
@@ -75,9 +86,9 @@ const acquireProcess = (
   chatGuid: string,
   text: string,
   command: OsascriptCommand,
-): Effect.Effect<SendProcessHandle, unknown> =>
+): Effect.Effect<SendProcessHandle, OsascriptProcessError> =>
   Effect.try({
-    catch: (cause) => cause,
+    catch: toProcessError,
     try: () => {
       const process = Bun.spawn({
         cmd: [...command, '-', text, chatGuid],
@@ -93,14 +104,14 @@ const useProcess = (
   handle: SendProcessHandle,
   timeoutMs: number,
   terminationGraceMs: number,
-): Effect.Effect<void, unknown> =>
+): Effect.Effect<void, OsascriptProcessError> =>
   Effect.tryPromise({
-    catch: (cause) => cause,
+    catch: toProcessError,
     try: () => runProcess(handle, timeoutMs, terminationGraceMs),
   });
 
-const releaseProcess = (handle: SendProcessHandle): Effect.Effect<void, unknown> =>
-  Effect.tryPromise({ catch: (cause) => cause, try: () => hardKillAndReap(handle) });
+const releaseProcess = (handle: SendProcessHandle): Effect.Effect<void, OsascriptProcessError> =>
+  Effect.tryPromise({ catch: toProcessError, try: () => hardKillAndReap(handle) });
 
 const makeOsascriptSendBoundary = (options: OsascriptSendOptions = {}): SendBoundary => {
   const command = options.command ?? OSASCRIPT_COMMAND;
