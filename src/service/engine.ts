@@ -242,8 +242,9 @@ const withPeriodicRedaction = (
     const result = yield* Effect.result(once);
     yield* redactIfDue(context);
     if (Result.isFailure(result)) {
-      yield* Effect.fail(result.failure);
+      return yield* Effect.fail(result.failure);
     }
+    return yield* Effect.void;
   });
 
 const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
