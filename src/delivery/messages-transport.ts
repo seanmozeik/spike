@@ -21,6 +21,8 @@ interface OutboundRow {
   readonly text: null | string;
 }
 
+type SendBoundary = (chatGuid: string, text: string) => Promise<void>;
+
 interface MessagesTransport {
   readonly close: () => void;
   readonly findMatchingAfter: (
@@ -108,7 +110,16 @@ const sendText = (chatGuid: string, text: string): void => {
   }
 };
 
-const makeMessagesTransport = (database: Database, chatGuid: string): MessagesTransport => ({
+const sendTextBoundary: SendBoundary = (chatGuid, text) => {
+  sendText(chatGuid, text);
+  return Promise.resolve();
+};
+
+const makeMessagesTransport = (
+  database: Database,
+  chatGuid: string,
+  sendBoundary: SendBoundary = sendTextBoundary,
+): MessagesTransport => ({
   close: (): void => {
     database.close();
   },
@@ -125,11 +136,9 @@ const makeMessagesTransport = (database: Database, chatGuid: string): MessagesTr
     try: (): number => readFrontier(database, chatGuid),
   }),
   send: (text): Effect.Effect<void, MessagesDeliveryError> =>
-    Effect.try({
+    Effect.tryPromise({
       catch: (cause) => deliveryError('send', cause),
-      try: (): void => {
-        sendText(chatGuid, text);
-      },
+      try: () => sendBoundary(chatGuid, text),
     }),
 });
 
