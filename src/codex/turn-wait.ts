@@ -7,6 +7,7 @@ import type { JsonRpcNotification, RpcHandle } from './rpc';
 import type { TurnEventHandlers } from './runtime-types';
 
 const TURN_WAIT_TIMEOUT_MS = 3_600_000;
+const noOp = (): void => undefined;
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
@@ -56,6 +57,48 @@ const failedCompletion = (notification: JsonRpcNotification): CodexRuntimeError 
     operation: 'turn/completed',
   });
 
+const connectionClosedError = (turnId: CodexTurnId): CodexRuntimeError =>
+  new CodexRuntimeError({
+    cause: new Error(`Codex connection closed while waiting for turn ${turnId}`),
+    message: 'Codex turn/wait failed because the app-server connection closed',
+    operation: 'turn/wait',
+  });
+
+interface TurnWaitState {
+  acknowledged: boolean;
+  readonly compactions: Set<string>;
+  readonly notifications: CodexNotification[];
+}
+
+const recordNotification = (
+  state: TurnWaitState,
+  notification: JsonRpcNotification,
+  threadId: CodexThreadId,
+  turnId: CodexTurnId,
+  handlers: TurnEventHandlers,
+): Effect.Effect<ClassifiedOutput, CodexRuntimeError> | null => {
+  if (!belongsToTurn(notification, threadId, turnId)) {
+    return null;
+  }
+  state.notifications.push(notification);
+  const compacting = compactionItemId(notification);
+  if (compacting !== null && !state.compactions.has(compacting)) {
+    state.compactions.add(compacting);
+    handlers.onCompactionStarted(compacting);
+  }
+  const output = collectOutput(state.notifications, false);
+  if (!state.acknowledged && output.acknowledgement !== null) {
+    state.acknowledged = true;
+    handlers.onAcknowledgement(output.acknowledgement);
+  }
+  if (notification.method !== 'turn/completed') {
+    return null;
+  }
+  return turnSucceeded(notification)
+    ? Effect.succeed(collectOutput(state.notifications, true))
+    : Effect.fail(failedCompletion(notification));
+};
+
 const waitForTurn = (
   handle: RpcHandle,
   threadId: CodexThreadId,
@@ -63,46 +106,46 @@ const waitForTurn = (
   handlers: TurnEventHandlers,
 ): Effect.Effect<ClassifiedOutput, CodexRuntimeError> =>
   Effect.callback<ClassifiedOutput, CodexRuntimeError>((resume) => {
-    const notifications: CodexNotification[] = [];
-    const compactions = new Set<string>();
+    const state: TurnWaitState = {
+      acknowledged: false,
+      compactions: new Set<string>(),
+      notifications: [],
+    };
     const timer: { timeout?: ReturnType<typeof setTimeout> } = {};
-    let acknowledged = false;
     let settled = false;
-    const remove = handle.addNotificationListener((notification) => {
-      if (settled || !belongsToTurn(notification, threadId, turnId)) {
-        return;
-      }
-      notifications.push(notification);
-      const compacting = compactionItemId(notification);
-      if (compacting !== null && !compactions.has(compacting)) {
-        compactions.add(compacting);
-        handlers.onCompactionStarted(compacting);
-      }
-      const output = collectOutput(notifications, false);
-      if (!acknowledged && output.acknowledgement !== null) {
-        acknowledged = true;
-        handlers.onAcknowledgement(output.acknowledgement);
-      }
-      if (notification.method !== 'turn/completed') {
+    let removeNotifications = noOp;
+    let removeClose = noOp;
+    const cleanup = (): void => {
+      clearTimeout(timer.timeout);
+      removeNotifications();
+      removeClose();
+    };
+    const settle = (result: Effect.Effect<ClassifiedOutput, CodexRuntimeError>): void => {
+      if (settled) {
         return;
       }
       settled = true;
-      clearTimeout(timer.timeout);
-      remove();
-      resume(
-        turnSucceeded(notification)
-          ? Effect.succeed(collectOutput(notifications, true))
-          : Effect.fail(failedCompletion(notification)),
-      );
+      cleanup();
+      resume(result);
+    };
+    removeNotifications = handle.addNotificationListener((notification) => {
+      if (settled) {
+        return;
+      }
+      const result = recordNotification(state, notification, threadId, turnId, handlers);
+      if (result !== null) {
+        settle(result);
+      }
+    });
+    removeClose = handle.addConnectionCloseListener(() => {
+      settle(Effect.fail(connectionClosedError(turnId)));
     });
     timer.timeout = setTimeout(() => {
-      settled = true;
-      remove();
-      resume(Effect.fail(timeoutError(turnId)));
+      settle(Effect.fail(timeoutError(turnId)));
     }, TURN_WAIT_TIMEOUT_MS);
     return Effect.sync(() => {
-      clearTimeout(timer.timeout);
-      remove();
+      settled = true;
+      cleanup();
     });
   });
 

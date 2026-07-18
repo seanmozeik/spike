@@ -14,17 +14,26 @@ interface RequestRecord {
 }
 
 interface FakeHandle {
+  readonly closeListenerCount: () => number;
   readonly emit: (notification: JsonRpcNotification) => void;
+  readonly emitClose: () => void;
   readonly handle: RpcHandle;
+  readonly notificationListenerCount: () => number;
   readonly requests: RequestRecord[];
 }
 
 const makeHandle = (missingThread = false, unloadedThread = false): FakeHandle => {
+  const closeListeners = new Set<() => void>();
   const listeners: ((notification: JsonRpcNotification) => void)[] = [];
   const requests: RequestRecord[] = [];
   let threadReads = 0;
   const handle: RpcHandle = {
-    addConnectionCloseListener: () => (): void => undefined,
+    addConnectionCloseListener: (listener) => {
+      closeListeners.add(listener);
+      return () => {
+        closeListeners.delete(listener);
+      };
+    },
     addNotificationListener: (listener) => {
       listeners.push(listener);
       return () => {
@@ -67,12 +76,19 @@ const makeHandle = (missingThread = false, unloadedThread = false): FakeHandle =
     respondToServerRequest: () => Promise.resolve(),
   };
   return {
+    closeListenerCount: () => closeListeners.size,
     emit: (notification: JsonRpcNotification): void => {
       for (const listener of listeners) {
         listener(notification);
       }
     },
+    emitClose: (): void => {
+      for (const listener of closeListeners) {
+        listener();
+      }
+    },
     handle,
+    notificationListenerCount: () => listeners.length,
     requests,
   };
 };
@@ -136,6 +152,59 @@ it.effect('fails a turn whose completion notification never arrives', () =>
     const result = yield* Effect.result(Fiber.join(fiber));
     vi.useRealTimers();
     expect(Result.isFailure(result)).toBe(true);
+  }),
+);
+
+it.effect(
+  'fails an active turn promptly and cleans both listeners when the connection closes',
+  () =>
+    Effect.gen(function* closeTurnWait() {
+      const fake = makeHandle();
+      const runtime = makeCodexRuntime(fake.handle, 'prompt', 'default', '/workspace');
+      const fiber = yield* Effect.forkChild(
+        runtime.waitForTurn(CodexThreadId.make('thread'), CodexTurnId.make('turn'), {
+          onAcknowledgement: (): void => undefined,
+          onCompactionStarted: (): void => undefined,
+        }),
+      );
+      yield* Effect.promise(() => Bun.sleep(1));
+      expect(fake.closeListenerCount()).toBe(1);
+      expect(fake.notificationListenerCount()).toBe(1);
+
+      fake.emitClose();
+      const result = yield* Effect.result(Fiber.join(fiber));
+      if (Result.isSuccess(result)) {
+        throw new Error('connection-close turn wait unexpectedly succeeded');
+      }
+      expect(result.failure).toMatchObject({
+        message: 'Codex turn/wait failed because the app-server connection closed',
+        operation: 'turn/wait',
+      });
+      expect(String(result.failure.cause)).toContain(
+        'connection closed while waiting for turn turn',
+      );
+      expect(fake.closeListenerCount()).toBe(0);
+      expect(fake.notificationListenerCount()).toBe(0);
+    }),
+);
+
+it.effect('cleans both turn-wait listeners when the wait is interrupted', () =>
+  Effect.gen(function* interruptTurnWait() {
+    const fake = makeHandle();
+    const runtime = makeCodexRuntime(fake.handle, 'prompt', 'default', '/workspace');
+    const fiber = yield* Effect.forkChild(
+      runtime.waitForTurn(CodexThreadId.make('thread'), CodexTurnId.make('turn'), {
+        onAcknowledgement: (): void => undefined,
+        onCompactionStarted: (): void => undefined,
+      }),
+    );
+    yield* Effect.promise(() => Bun.sleep(1));
+    expect(fake.closeListenerCount()).toBe(1);
+    expect(fake.notificationListenerCount()).toBe(1);
+
+    yield* Fiber.interrupt(fiber);
+    expect(fake.closeListenerCount()).toBe(0);
+    expect(fake.notificationListenerCount()).toBe(0);
   }),
 );
 
@@ -247,5 +316,8 @@ it.effect('emits one acknowledgement and releases the final only after successfu
     });
     expect(acknowledgements).toEqual(['Looking into it now']);
     expect(compactions).toEqual(['compact-1']);
+    expect(fake.closeListenerCount()).toBe(0);
+    expect(fake.notificationListenerCount()).toBe(0);
+    fake.emitClose();
   }),
 );

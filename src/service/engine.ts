@@ -21,6 +21,7 @@ interface SpikeEngine {
   readonly close: () => void;
   readonly drain: Effect.Effect<void>;
   readonly pollOnce: Effect.Effect<void, unknown>;
+  readonly quiesce: () => void;
   readonly redactNow: (now: Date) => Effect.Effect<number, unknown>;
   readonly run: Effect.Effect<never>;
   readonly shutdown: Effect.Effect<void, unknown>;
@@ -174,13 +175,17 @@ const pollOnce = (
     yield* dispatchPending(context, controller, pending, at);
   });
 
-const closeEngine = (context: EngineContext): void => {
-  context.closing.value = true;
+const quiesceEngine = (context: EngineContext): void => {
   context.options.conversation.close();
   for (const timer of context.timers) {
     clearTimeout(timer);
   }
   context.timers.clear();
+};
+
+const closeEngine = (context: EngineContext): void => {
+  context.closing.value = true;
+  quiesceEngine(context);
 };
 
 const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContext => ({
@@ -254,6 +259,9 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
       await context.turnTerminals.tail;
     }),
     pollOnce: once,
+    quiesce: (): void => {
+      quiesceEngine(context);
+    },
     redactNow: (at): Effect.Effect<number, unknown> => redactNow(context, at),
     run: Effect.forever(cycle),
     shutdown: Effect.gen(function* shutdownEngine() {

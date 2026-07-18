@@ -3,7 +3,7 @@ import { appendFile, rm } from 'node:fs/promises';
 import type { Server } from 'node:net';
 import path from 'node:path';
 
-import { Deferred, Effect } from 'effect';
+import { Deferred, Effect, Fiber } from 'effect';
 
 import { loadSpikeConfig, type SpikeConfig } from './app-config';
 import { openCodexRuntime, type CodexRuntime } from './codex/runtime';
@@ -31,9 +31,11 @@ import { makeDoctorReport } from './status/doctor';
 import { formatStatus } from './status/format';
 import { makeStatusSnapshot } from './status/snapshot';
 
-const waitForSignal = Effect.callback<boolean>((resume) => {
+type DaemonStopReason = 'CodexConnectionClosed' | 'Control';
+
+const waitForSignal = Effect.callback<DaemonStopReason>((resume) => {
   const stop = (): void => {
-    resume(Effect.succeed(true));
+    resume(Effect.succeed('Control'));
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
@@ -66,6 +68,7 @@ const releaseServer = (server: Server, paths: SpikePaths): Effect.Effect<void> =
 
 interface ServeDaemonOptions {
   readonly codex?: boolean;
+  readonly conversationValidationIntervalMs?: number;
 }
 
 const acquireCodex = (
@@ -96,6 +99,64 @@ const releaseTransport = (transport: MessagesTransport): Effect.Effect<void> =>
 
 const releaseEngine = (engine: SpikeEngine): Effect.Effect<void> =>
   engine.shutdown.pipe(Effect.ignoreCause);
+
+const subscribeRuntimeStop = (
+  runtime: CodexRuntime | null,
+  stop: Deferred.Deferred<DaemonStopReason>,
+): Effect.Effect<() => void> =>
+  Effect.sync(() =>
+    runtime === null
+      ? (): void => undefined
+      : runtime.addConnectionCloseListener(() => {
+          Deferred.doneUnsafe(stop, Effect.succeed('CodexConnectionClosed'));
+        }),
+  );
+
+const drainAfterCodexClose = (
+  reason: DaemonStopReason,
+  engine: SpikeEngine | null,
+  paths: SpikePaths,
+): Effect.Effect<void> =>
+  reason === 'Control'
+    ? Effect.void
+    : Effect.gen(function* drainForRestart() {
+        yield* Effect.promise(() =>
+          appendFile(
+            paths.daemonLog,
+            `${new Date().toISOString()} codex app-server connection closed; stopping daemon\n`,
+            'utf8',
+          ),
+        );
+        if (engine !== null) {
+          yield* engine.drain;
+        }
+      });
+
+const runEngine = (engine: SpikeEngine | null): Effect.Effect<Fiber.Fiber<never> | null, unknown> =>
+  engine === null
+    ? Effect.succeed(null)
+    : Effect.gen(function* runPolling() {
+        yield* engine.redactNow(new Date());
+        return yield* Effect.forkChild(engine.run);
+      });
+
+const quiesceEngine = (
+  reason: DaemonStopReason,
+  engine: SpikeEngine | null,
+  run: Fiber.Fiber<never> | null,
+): Effect.Effect<void> =>
+  Effect.gen(function* stopPolling() {
+    if (run !== null) {
+      yield* Fiber.interrupt(run);
+    }
+    if (engine !== null) {
+      if (reason === 'Control') {
+        engine.close();
+      } else {
+        engine.quiesce();
+      }
+    }
+  });
 
 const likeHelperPath = (): string =>
   process.env['SPIKE_LIKE_HELPER'] ??
@@ -139,13 +200,15 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
   journal: JournalHandle,
   runtime: CodexRuntime | null,
   startedAt: string,
-  enabled: boolean,
+  options: ServeDaemonOptions,
 ) {
-  const inbox = yield* Effect.acquireRelease(acquireInbox(config, enabled), (resource) =>
-    resource === null ? Effect.void : releaseInbox(resource),
+  const inbox = yield* Effect.acquireRelease(
+    acquireInbox(config, options.codex !== false),
+    (resource) => (resource === null ? Effect.void : releaseInbox(resource)),
   );
-  const transport = yield* Effect.acquireRelease(acquireTransport(config, enabled), (resource) =>
-    resource === null ? Effect.void : releaseTransport(resource),
+  const transport = yield* Effect.acquireRelease(
+    acquireTransport(config, options.codex !== false),
+    (resource) => (resource === null ? Effect.void : releaseTransport(resource)),
   );
   if (runtime === null || inbox === null || transport === null) {
     return null;
@@ -154,6 +217,9 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
     diagnostic: makeConversationDiagnostic(journal.database),
     initialValidationAt: new Date(startedAt),
     probe: () => inbox.refresh.pipe(Effect.andThen(transport.refresh)),
+    ...(options.conversationValidationIntervalMs === undefined
+      ? {}
+      : { validationIntervalMs: options.conversationValidationIntervalMs }),
   });
   const delivery = makeDeliveryService(
     makeDeliveryJournal(journal.database),
@@ -190,14 +256,14 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
       );
       const startedAt = new Date().toISOString();
       const engine = yield* Effect.acquireRelease(
-        acquireEngine(paths, config, journal, runtime, startedAt, options.codex !== false),
+        acquireEngine(paths, config, journal, runtime, startedAt, options),
         (resource) => (resource === null ? Effect.void : releaseEngine(resource)),
       );
-      if (engine !== null) {
-        yield* engine.redactNow(new Date());
-        yield* Effect.forkChild(engine.run);
-      }
-      const controlStop = yield* Deferred.make<boolean>();
+      const stop = yield* Deferred.make<DaemonStopReason>();
+      yield* Effect.acquireRelease(subscribeRuntimeStop(runtime, stop), (unsubscribe) =>
+        Effect.sync(unsubscribe),
+      );
+      const engineRun = yield* runEngine(engine);
       const status = (): ReturnType<typeof makeStatusSnapshot> =>
         makeStatusSnapshot(journal.database, paths, startedAt, runtime);
       yield* Effect.acquireRelease(
@@ -206,7 +272,7 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
             paths,
             startedAt,
             () => {
-              Deferred.doneUnsafe(controlStop, Effect.succeed(true));
+              Deferred.doneUnsafe(stop, Effect.succeed('Control'));
             },
             status,
             async () => makeDoctorReport(paths, await status(), likeHelperPath()),
@@ -218,7 +284,9 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
       yield* Effect.promise(() =>
         appendFile(paths.daemonLog, `${startedAt} started pid=${process.pid}\n`, 'utf8'),
       );
-      yield* Effect.race(waitForSignal, Deferred.await(controlStop));
+      const reason = yield* Effect.race(waitForSignal, Deferred.await(stop));
+      yield* quiesceEngine(reason, engine, engineRun);
+      yield* drainAfterCodexClose(reason, engine, paths);
     }).pipe(Effect.scoped),
 );
 

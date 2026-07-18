@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Effect, Exit, Fiber, Scope } from 'effect';
+import { Effect, Exit, Fiber, Result, Scope } from 'effect';
 import { describe, expect, it, vi } from 'vitest';
 
 import { spawnRpcHandle, type RpcHandle } from '../src/codex/rpc';
@@ -175,7 +175,7 @@ describe('Codex RPC process boundary', () => {
     });
   });
 
-  it('leaves a real runtime turn wait pending after child death until its scope closes', async () => {
+  it('fails a real runtime turn wait promptly when its child dies', async () => {
     await withRpcFixture(async ({ handle }) => {
       const runtime = makeCodexRuntime(handle, 'prompt', 'default', '/workspace');
       const scope = await Effect.runPromise(Scope.make());
@@ -193,20 +193,21 @@ describe('Codex RPC process boundary', () => {
         childClosed = true;
       });
       try {
-        expect(fiber.pollUnsafe()).toBeUndefined();
         await expect(handle.request('test/exit')).rejects.toThrow('exited with 17');
         await vi.waitFor(() => {
           expect(childClosed).toBe(true);
+          expect(fiber.pollUnsafe()).toBeDefined();
         });
-        expect(fiber.pollUnsafe()).toBeUndefined();
+        const result = await Effect.runPromise(Effect.result(Fiber.join(fiber)));
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({ operation: 'turn/wait' });
+          expect(String(result.failure)).toContain('app-server connection closed');
+        }
       } finally {
         removeCloseListener();
-        const interrupted = Exit.interrupt();
-        const closeScope = Scope.close(scope, interrupted);
-        await Effect.runPromise(closeScope);
+        await Effect.runPromise(Scope.close(scope, Exit.void));
       }
-      const waitExit = await Effect.runPromise(Fiber.await(fiber));
-      expect(Exit.hasInterrupts(waitExit)).toBe(true);
     });
   });
 
