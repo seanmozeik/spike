@@ -140,10 +140,6 @@ const resolveControl = Effect.fn('SpikeApproval.resolveControl')(function* resol
   if (resolution.kind === 'Ignored') {
     return;
   }
-  if (resolution.kind === 'Invalid') {
-    yield* deliverControl(context, resolution.sourceId, 'Reply with exactly /yes or /no.');
-    return;
-  }
   if (resolution.kind === 'NoPending') {
     yield* deliverControl(
       context,
@@ -194,7 +190,11 @@ const pollUnlocked = Effect.fn('SpikeApproval.poll')(function* pollApprovals(
   if (context.isClosed()) {
     return;
   }
-  for (const event of context.pendingEvents.splice(0)) {
+  while (context.pendingEvents.length > 0) {
+    const [event] = context.pendingEvents;
+    if (event === undefined) {
+      break;
+    }
     if (event.kind === 'Request') {
       yield* receive(context, event.request);
     } else if (event.kind === 'Resolved') {
@@ -202,6 +202,7 @@ const pollUnlocked = Effect.fn('SpikeApproval.poll')(function* pollApprovals(
     } else {
       yield* orphanCurrent(context);
     }
+    context.pendingEvents.shift();
   }
   for (const record of yield* context.journal.expireDue(context.options.now())) {
     yield* respondAndDeliver(context, record);
@@ -230,6 +231,42 @@ const subscribeRuntime = (context: ApprovalContext): readonly (() => void)[] => 
   }),
 ];
 
+const closeApprovalManager = (
+  context: ApprovalContext,
+  unsubscribe: readonly (() => void)[],
+  markClosed: () => void,
+): Effect.Effect<void, unknown> =>
+  Effect.gen(function* closeManager() {
+    markClosed();
+    for (const stop of unsubscribe) {
+      stop();
+    }
+    while (context.pendingEvents.length > 0) {
+      const [event] = context.pendingEvents;
+      if (event === undefined) {
+        break;
+      }
+      if (event.kind === 'Request') {
+        const persisted = yield* context.journal.hasRequest(context.connectionId, event.request.id);
+        if (!persisted) {
+          yield* Effect.promise(() =>
+            context.options.runtime.respondToServerRequest(
+              event.request.id,
+              safeDenial(event.request.method),
+            ),
+          );
+        }
+      }
+      context.pendingEvents.shift();
+    }
+    for (const record of yield* context.journal.cancelConnection(
+      context.connectionId,
+      context.options.now(),
+    )) {
+      yield* respond(context, record);
+    }
+  });
+
 const makeApprovalManager = Effect.fn('SpikeApproval.make')(function* makeApprovalManager(
   options: ApprovalManagerOptionsShape,
 ) {
@@ -246,27 +283,8 @@ const makeApprovalManager = Effect.fn('SpikeApproval.make')(function* makeApprov
   for (const record of yield* context.journal.markOrphaned(context.connectionId, options.now())) {
     yield* deliverOutcome(context, record);
   }
-  const close = Effect.gen(function* closeManager() {
+  const close = closeApprovalManager(context, unsubscribe, () => {
     closed = true;
-    for (const stop of unsubscribe) {
-      stop();
-    }
-    for (const event of context.pendingEvents.splice(0)) {
-      if (event.kind === 'Request') {
-        yield* Effect.promise(() =>
-          options.runtime.respondToServerRequest(
-            event.request.id,
-            safeDenial(event.request.method),
-          ),
-        );
-      }
-    }
-    for (const record of yield* context.journal.cancelConnection(
-      context.connectionId,
-      options.now(),
-    )) {
-      yield* respond(context, record);
-    }
   });
   yield* deliverNext(context);
   return {

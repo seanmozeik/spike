@@ -4,6 +4,7 @@ import type { Effect } from 'effect';
 
 import type { JsonRpcId } from '../codex/server-request-registry';
 import type { JournalTransactionError } from '../errors';
+import { parseApprovalCommand } from './command';
 import { parseRow, type ApprovalRow } from './journal-row';
 import { wrap } from './journal-shared';
 import type { ApprovalCommand, ApprovalRecord, CommandResolution } from './journal-types';
@@ -110,7 +111,6 @@ const orphanConnection = (database: Database, connectionId: string, at: Date): R
 const recordUnhandled = (
   database: Database,
   command: ApprovalCommand,
-  outcome: 'Invalid' | 'NoPending',
   at: Date,
 ): CommandResolution => {
   const normalized = command.text.trim().toLowerCase();
@@ -118,9 +118,9 @@ const recordUnhandled = (
     `INSERT INTO handled_approval_messages(
        inbound_message_id, approval_id, command, outcome, handled_at
      ) VALUES (?, NULL, ?, ?, ?)`,
-    [command.id, outcome === 'Invalid' ? 'invalid' : normalized, outcome, at.toISOString()],
+    [command.id, normalized, 'NoPending', at.toISOString()],
   );
-  return { kind: outcome, sourceId: command.id };
+  return { kind: 'NoPending', sourceId: command.id };
 };
 
 const resolveDisplayed = (
@@ -130,13 +130,14 @@ const resolveDisplayed = (
   at: Date,
 ): CommandResolution => {
   const row = database
-    .query<ApprovalRow, [string]>(
+    .query<ApprovalRow, [string, string]>(
       `SELECT * FROM approval_requests WHERE state = 'Pending'
-       AND delivered_at IS NOT NULL AND expires_at > ? ORDER BY requested_at LIMIT 1`,
+       AND delivered_at IS NOT NULL AND delivered_at <= ? AND expires_at > ?
+       ORDER BY requested_at LIMIT 1`,
     )
-    .get(at.toISOString());
+    .get(command.sentAt.toISOString(), at.toISOString());
   if (row === null) {
-    return recordUnhandled(database, command, 'NoPending', at);
+    return recordUnhandled(database, command, at);
   }
   const decision = normalized === '/yes' ? 'yes' : 'no';
   const state = decision === 'yes' ? 'Approved' : 'Denied';
@@ -170,8 +171,8 @@ const resolveCommand = (
   at: Date,
 ): Effect.Effect<CommandResolution, JournalTransactionError> =>
   wrap('resolveApprovalCommand', (): CommandResolution => {
-    const normalized = command.text.trim().toLowerCase();
-    if (!normalized.startsWith('/yes') && !normalized.startsWith('/no')) {
+    const normalized = parseApprovalCommand(command.text);
+    if (normalized === null) {
       return { kind: 'Ignored' };
     }
     const handled = database
@@ -182,12 +183,9 @@ const resolveCommand = (
     if (handled !== null) {
       return { kind: 'Ignored' };
     }
-    const transaction = database.transaction((): CommandResolution => {
-      if (normalized !== '/yes' && normalized !== '/no') {
-        return recordUnhandled(database, command, 'Invalid', at);
-      }
-      return resolveDisplayed(database, command, normalized, at);
-    });
+    const transaction = database.transaction(
+      (): CommandResolution => resolveDisplayed(database, command, normalized, at),
+    );
     return transaction();
   });
 

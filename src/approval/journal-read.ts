@@ -2,8 +2,10 @@ import type { Database } from 'bun:sqlite';
 
 import type { Effect } from 'effect';
 
+import type { JsonRpcId } from '../codex/server-request-registry';
 import { InboundMessageId } from '../domain/ids';
 import type { JournalTransactionError } from '../errors';
+import { parseApprovalCommand } from './command';
 import { parseRow, type ApprovalRow } from './journal-row';
 import { wrap } from './journal-shared';
 import type { ApprovalCommand, ApprovalCounts, ApprovalRecord } from './journal-types';
@@ -12,6 +14,7 @@ type CountsEffect = Effect.Effect<ApprovalCounts, JournalTransactionError>;
 type CommandsEffect = Effect.Effect<readonly ApprovalCommand[], JournalTransactionError>;
 type RecordEffect = Effect.Effect<ApprovalRecord | null, JournalTransactionError>;
 type RecordsEffect = Effect.Effect<readonly ApprovalRecord[], JournalTransactionError>;
+type BooleanEffect = Effect.Effect<boolean, JournalTransactionError>;
 
 const HOURS_PER_DAY = 24;
 const MINUTES_PER_HOUR = 60;
@@ -45,17 +48,37 @@ const counts = (database: Database, now: Date): CountsEffect =>
 const listCommands = (database: Database): CommandsEffect =>
   wrap('listApprovalCommands', () =>
     database
-      .query<{ id: string; text: string }, []>(
-        `SELECT im.id, im.text FROM inbound_messages im
+      .query<{ id: string; sent_at: string; text: string }, []>(
+        `SELECT im.id, im.sent_at, im.text FROM inbound_messages im
          WHERE im.text IS NOT NULL
-           AND (lower(trim(im.text)) GLOB '/yes*' OR lower(trim(im.text)) GLOB '/no*')
            AND NOT EXISTS (SELECT 1 FROM handled_approval_messages h WHERE h.inbound_message_id = im.id)
            AND NOT EXISTS (SELECT 1 FROM input_batch_messages b WHERE b.inbound_message_id = im.id)
            AND NOT EXISTS (SELECT 1 FROM scheduler_pool_messages p WHERE p.inbound_message_id = im.id)
          ORDER BY im.messages_rowid`,
       )
       .all()
-      .map((row) => ({ id: InboundMessageId.make(row.id), text: row.text })),
+      .filter((row) => parseApprovalCommand(row.text) !== null)
+      .map((row) => ({
+        id: InboundMessageId.make(row.id),
+        sentAt: new Date(row.sent_at),
+        text: row.text,
+      })),
+  );
+
+const hasRequest = (
+  database: Database,
+  connectionId: string,
+  rpcRequestId: JsonRpcId,
+): BooleanEffect =>
+  wrap(
+    'hasApprovalRequest',
+    () =>
+      database
+        .query<{ present: number }, [string, string]>(
+          `SELECT 1 AS present FROM approval_requests
+         WHERE connection_id = ? AND rpc_request_id_json = ? LIMIT 1`,
+        )
+        .get(connectionId, JSON.stringify(rpcRequestId)) !== null,
   );
 
 const listRecent = (database: Database, limit: number): RecordsEffect =>
@@ -87,4 +110,4 @@ const nextUndelivered = (database: Database): RecordEffect =>
     return row === null ? null : parseRow(row);
   });
 
-export { counts, listCommands, listRecent, nextUndelivered };
+export { counts, hasRequest, listCommands, listRecent, nextUndelivered };

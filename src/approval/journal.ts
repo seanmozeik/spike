@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 
-import { counts, listCommands, listRecent, nextUndelivered } from './journal-read';
+import { counts, hasRequest, listCommands, listRecent, nextUndelivered } from './journal-read';
 import {
   cancelConnection,
   expireDue,
@@ -25,6 +25,8 @@ const makeApprovalJournal = (database: Database): ApprovalJournal => ({
   enqueue: (request, connectionId): ReturnType<ApprovalJournal['enqueue']> =>
     enqueue(database, request, connectionId),
   expireDue: (now): ReturnType<ApprovalJournal['expireDue']> => expireDue(database, now),
+  hasRequest: (connectionId, rpcRequestId): ReturnType<ApprovalJournal['hasRequest']> =>
+    hasRequest(database, connectionId, rpcRequestId),
   listCommands: listCommands(database),
   listRecent: (limit): ReturnType<ApprovalJournal['listRecent']> => listRecent(database, limit),
   markDelivered: (id, at): ReturnType<ApprovalJournal['markDelivered']> =>

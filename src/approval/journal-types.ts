@@ -14,12 +14,12 @@ interface ApprovalRecord extends ApprovalRequest {
 
 interface ApprovalCommand {
   readonly id: InboundMessageId;
+  readonly sentAt: Date;
   readonly text: string;
 }
 
 type CommandResolution =
   | { readonly kind: 'Ignored' }
-  | { readonly kind: 'Invalid'; readonly sourceId: InboundMessageId }
   | { readonly kind: 'NoPending'; readonly sourceId: InboundMessageId }
   | {
       readonly decision: 'no' | 'yes';
@@ -48,6 +48,10 @@ interface ApprovalJournal {
   readonly expireDue: (
     now: Date,
   ) => Effect.Effect<readonly ApprovalRecord[], JournalTransactionError>;
+  readonly hasRequest: (
+    connectionId: string,
+    rpcRequestId: JsonRpcId,
+  ) => Effect.Effect<boolean, JournalTransactionError>;
   readonly listCommands: Effect.Effect<readonly ApprovalCommand[], JournalTransactionError>;
   readonly listRecent: (
     limit: number,

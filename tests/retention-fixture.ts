@@ -102,8 +102,9 @@ const ingest = Effect.fn('Test.ingestRetentionMessage')(function* ingestMessage(
     id: InboundMessageId.make(persisted.id),
     inserted,
     receivedAt: OLD,
+    sentAt: OLD,
     text,
-  } satisfies PooledMessage & { readonly inserted: number };
+  } satisfies PooledMessage & { readonly inserted: number; readonly sentAt: Date };
 });
 
 const startCodexTurn = Effect.fn('Test.startRetentionTurn')(function* startTurn(
