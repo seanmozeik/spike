@@ -142,20 +142,27 @@ const makeStartThread = (loaded: Set<string>): CodexRuntime['startThread'] => {
 
 const makeSteerTurn =
   (behavior: TurnBehavior, trace: RuntimeTrace): CodexRuntime['steerTurn'] =>
-  ({ input }) =>
-    Effect.gen(function* steerTurn() {
+  ({ input }) => {
+    const recorded = Effect.sync(() => {
       trace.steers.push(input);
-      if (behavior.steerGate !== undefined) {
-        yield* Effect.promise(() => behavior.steerGate ?? Promise.resolve());
-      }
-      if (behavior.steerFailure !== undefined) {
-        yield* new CodexRuntimeError({
-          cause: new Error(behavior.steerFailure),
-          message: behavior.steerFailure,
-          operation: 'turn/steer',
-        });
-      }
     });
+    const gated =
+      behavior.steerGate === undefined
+        ? Effect.void
+        : Effect.promise(() => behavior.steerGate ?? Promise.resolve());
+    const failure = behavior.steerFailure;
+    const failed =
+      failure === undefined
+        ? Effect.void
+        : Effect.fail(
+            new CodexRuntimeError({
+              cause: new Error(failure),
+              message: failure,
+              operation: 'turn/steer',
+            }),
+          );
+    return recorded.pipe(Effect.andThen(gated), Effect.andThen(failed));
+  };
 
 const makeRuntimeHarness = (
   behavior: TurnBehavior,
