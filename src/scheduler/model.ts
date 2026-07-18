@@ -18,6 +18,11 @@ interface ActiveTurn {
   readonly logicalTurnId: LogicalTurnId;
 }
 
+interface TurnIdentity {
+  readonly generationId: GenerationId;
+  readonly logicalTurnId: LogicalTurnId;
+}
+
 interface SchedulerState {
   readonly active: ActiveTurn | null;
   readonly codexThreadId: CodexThreadId | null;
@@ -103,4 +108,5 @@ export type {
   SchedulerEvent,
   SchedulerState,
   SchedulerTransition,
+  TurnIdentity,
 };

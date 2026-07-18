@@ -1,4 +1,4 @@
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -65,6 +65,7 @@ const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS input_batches (
     id TEXT PRIMARY KEY,
     logical_turn_id TEXT NOT NULL REFERENCES logical_turns(id) ON DELETE RESTRICT,
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
     kind TEXT NOT NULL CHECK(kind IN ('Initial','Steer')),
     fingerprint TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -79,6 +80,7 @@ const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS codex_attempts (
     id TEXT PRIMARY KEY,
     logical_turn_id TEXT NOT NULL REFERENCES logical_turns(id) ON DELETE RESTRICT,
+    input_batch_id TEXT REFERENCES input_batches(id) ON DELETE RESTRICT,
     account_id TEXT,
     state TEXT NOT NULL CHECK(state IN ('Prepared','Submitted','SubmissionUnknown','Accepted','Completed','Failed')),
     codex_thread_id TEXT,

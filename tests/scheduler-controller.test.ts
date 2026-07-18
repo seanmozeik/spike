@@ -23,16 +23,9 @@ const initial: SchedulerState = {
 };
 
 const journal = (): SchedulerJournal => ({
-  appendSteer: (): Effect.Effect<void> => Effect.void,
-  beginTurn: (): Effect.Effect<void> => Effect.void,
-  completeTurn: (): Effect.Effect<void> => Effect.void,
-  consumeControl: (): Effect.Effect<void> => Effect.void,
-  failTurn: (): Effect.Effect<void> => Effect.void,
-  loadLatestBatchMessages: (): Effect.Effect<readonly []> => Effect.succeed([]),
+  commitTransition: (): Effect.Effect<void> => Effect.void,
+  loadInputBatches: (): Effect.Effect<readonly []> => Effect.succeed([]),
   loadOrCreate: (): Effect.Effect<SchedulerState> => Effect.succeed(initial),
-  recordAcknowledgement: (): Effect.Effect<void> => Effect.void,
-  resetGeneration: (): Effect.Effect<void> => Effect.void,
-  save: (): Effect.Effect<void> => Effect.void,
 });
 
 const inbound = (id: string, at: number, logicalTurnId: string): SchedulerEvent => ({

@@ -12,7 +12,7 @@ import { MessagesDeliveryError } from '../src/delivery/error';
 import { makeDeliveryJournal } from '../src/delivery/journal';
 import type { MessagesTransport } from '../src/delivery/messages-transport';
 import { makeDeliveryService } from '../src/delivery/service';
-import { ChatGuid, MessagesRowId } from '../src/domain/ids';
+import { ChatGuid, MessageGuid, MessagesRowId } from '../src/domain/ids';
 import type { ObservedMessage } from '../src/domain/inbound';
 import type { LikeAcknowledgement } from '../src/like/adapter';
 import type { MessagesInboxHandle } from '../src/messages-inbox';
@@ -47,6 +47,18 @@ interface EngineFixtureOptions {
 }
 
 const CHAT_GUID = ChatGuid.make('any;-;+15555550199');
+
+const inbound = (rowId: number, text: string): ObservedMessage => ({
+  attachments: [],
+  chatGuid: CHAT_GUID,
+  handle: '+15555550199',
+  isFromMe: false,
+  messageGuid: MessageGuid.make(`message-${String(rowId)}`),
+  rowId: MessagesRowId.make(rowId),
+  sentAt: new Date('2026-07-14T11:59:00.000Z'),
+  service: 'iMessage',
+  text,
+});
 
 const renderStatus = (behavior: TurnBehavior): Promise<string> =>
   behavior.statusFailure === undefined
@@ -118,6 +130,15 @@ interface FixtureParts {
   readonly trace: RuntimeTrace;
 }
 
+interface MakeFixtureOptions {
+  readonly beforeOpen: ((databasePath: string) => void) | undefined;
+  readonly behavior: TurnBehavior;
+  readonly now: () => Date;
+  readonly prepare: ((database: Database) => Effect.Effect<void, unknown>) | undefined;
+  readonly preexisting: readonly ObservedMessage[] | undefined;
+  readonly snapshot: ThreadSnapshot | undefined;
+}
+
 const buildFixture = ({
   engine,
   handle,
@@ -162,18 +183,22 @@ const buildFixture = ({
   turnsStarted: trace.turnsStarted,
 });
 
-const makeEngineFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture(
-  options: EngineFixtureOptions = {},
-) {
-  const {
-    behavior = {},
-    now = (): Date => new Date('2026-07-14T12:00:00.000Z'),
-    prepare,
-    preexisting,
-    snapshot,
-  } = options;
+const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
+  beforeOpen,
+  behavior,
+  now,
+  prepare,
+  preexisting,
+  snapshot,
+}: MakeFixtureOptions) {
   const root = mkdtempSync(path.join(tmpdir(), 'spike-engine-'));
-  const handle = yield* openJournal(path.join(root, 'spike.db'));
+  const databasePath = path.join(root, 'spike.db');
+  if (beforeOpen !== undefined) {
+    const bootstrap = yield* openJournal(databasePath);
+    bootstrap.close();
+    beforeOpen(databasePath);
+  }
+  const handle = yield* openJournal(databasePath);
   const likes: string[] = [],
     sent: string[] = [];
   const queue: ObservedMessage[] = [...(preexisting ?? [])];
@@ -199,6 +224,30 @@ const makeEngineFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixt
   return buildFixture({ engine, handle, likes, queue, root, sent, trace });
 });
 
+const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeof makeFixture> =>
+  makeFixture({
+    beforeOpen: undefined,
+    behavior: options.behavior ?? {},
+    now: options.now ?? ((): Date => new Date('2026-07-14T12:00:00.000Z')),
+    preexisting: options.preexisting,
+    prepare: options.prepare,
+    snapshot: options.snapshot,
+  });
+
+const makeMigratedEngineFixture = (
+  behavior: TurnBehavior,
+  snapshot: ThreadSnapshot,
+  beforeOpen: (databasePath: string) => void,
+): ReturnType<typeof makeFixture> =>
+  makeFixture({
+    beforeOpen,
+    behavior,
+    now: (): Date => new Date('2026-07-14T12:00:00.000Z'),
+    preexisting: undefined,
+    prepare: undefined,
+    snapshot,
+  });
+
 const settle = (engine: SpikeEngine): Effect.Effect<void, unknown> =>
   Effect.gen(function* settleEngine() {
     yield* engine.pollOnce;
@@ -206,6 +255,6 @@ const settle = (engine: SpikeEngine): Effect.Effect<void, unknown> =>
     yield* engine.drain;
   });
 
-export { CHAT_GUID, makeEngineFixture, settle };
+export { CHAT_GUID, inbound, makeEngineFixture, makeMigratedEngineFixture, settle };
 export type { EngineFixture };
 export type { TurnBehavior } from './fake-codex-runtime';

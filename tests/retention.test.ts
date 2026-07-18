@@ -48,7 +48,13 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
     const deliveryAttempt = yield* fixture.delivery.beginAttempt(deliveredChunk.id, 0, OLD);
     yield* fixture.delivery.markSent(deliveryAttempt, deliveredChunk.id, OLD);
     yield* fixture.codex.finishLogicalTurn(terminal.logicalTurnId, 'Completed', OLD);
-    yield* fixture.scheduler.completeTurn(terminal.logicalTurnId, OLD);
+    yield* fixture.scheduler.commitTransition(
+      {
+        actions: [{ kind: 'CompleteTurn', logicalTurnId: terminal.logicalTurnId }],
+        state: { ...fixture.state, active: null },
+      },
+      OLD,
+    );
 
     const activeMessage = yield* ingest(fixture, 2, 'active private input');
     const active = yield* startCodexTurn(fixture, 'active', activeMessage);
@@ -148,7 +154,13 @@ it.effect('redacts Failed and Prepared sibling chunks after their parent fails',
     }
     yield* fixture.delivery.beginAttempt(first.id, 0, OLD);
     yield* fixture.delivery.markFailed(first.id, 'delivery failed', OLD);
-    yield* fixture.scheduler.failTurn(turn.logicalTurnId, OLD);
+    yield* fixture.scheduler.commitTransition(
+      {
+        actions: [{ kind: 'FailTurn', logicalTurnId: turn.logicalTurnId }],
+        state: { ...fixture.state, active: null },
+      },
+      OLD,
+    );
     const states = fixture.database
       .query<{ state: string }, []>('SELECT state FROM outbound_chunks ORDER BY ordinal')
       .all()
@@ -176,16 +188,26 @@ it.effect('terminalizes reset attempts and redacts legacy superseded-turn items'
     const message = yield* ingest(fixture, 1, 'superseded input');
     const turn = yield* startCodexTurn(fixture, 'superseded', message);
     const command = yield* ingest(fixture, 2, '/new');
-    yield* fixture.scheduler.resetGeneration(
+    const replacement = {
+      active: null,
+      codexThreadId: null,
+      generationBroken: false,
+      generationId: GenerationId.make('replacement-generation'),
+      pool: [],
+    } as const;
+    yield* fixture.scheduler.commitTransition(
       {
-        active: null,
-        codexThreadId: null,
-        generationBroken: false,
-        generationId: GenerationId.make('replacement-generation'),
-        pool: [],
+        actions: [
+          {
+            commandMessageId: command.id,
+            kind: 'ResetGeneration',
+            newGenerationId: replacement.generationId,
+            oldGenerationId: fixture.state.generationId,
+          },
+        ],
+        state: replacement,
       },
       OLD,
-      command.id,
     );
     expect(
       fixture.database
@@ -217,7 +239,10 @@ it.effect('redacts handled control and approval commands but keeps ordinary inpu
     const control = yield* ingest(fixture, 1, '/status');
     const approvalCommand = yield* ingest(fixture, 2, '/yes');
     yield* ingest(fixture, 3, 'ordinary unassigned input');
-    yield* fixture.scheduler.consumeControl(control.id, '/status', OLD);
+    yield* fixture.scheduler.commitTransition(
+      { actions: [{ commandMessageId: control.id, kind: 'ReplyStatus' }], state: fixture.state },
+      OLD,
+    );
     const approval = yield* fixture.approvals.enqueue(
       approvalRequest(4, 'private command'),
       'four',

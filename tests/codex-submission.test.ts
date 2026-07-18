@@ -8,13 +8,19 @@ import { afterEach, expect, it } from 'vitest';
 import type { ClassifiedOutput } from '../src/codex/output-classifier';
 import type { ThreadSnapshot } from '../src/codex/reconcile';
 import type { CodexRuntime } from '../src/codex/runtime';
-import { submitCodexInput } from '../src/codex/submission';
+import { recoverCodexInput, submitCodexInput } from '../src/codex/submission';
 import { openJournal } from '../src/database';
-import { CodexThreadId, CodexTurnId, LogicalTurnId } from '../src/domain/ids';
+import { CodexThreadId, CodexTurnId, InputBatchId, LogicalTurnId } from '../src/domain/ids';
 import { CodexRuntimeError } from '../src/errors';
 import { makeCodexJournal } from '../src/journal/codex-journal';
 
 const roots: string[] = [];
+
+const BatchId = {
+  initial: InputBatchId.make('batch-initial'),
+  steerOne: InputBatchId.make('batch-steer-one'),
+  steerTwo: InputBatchId.make('batch-steer-two'),
+} as const;
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
@@ -65,12 +71,21 @@ const withJournal = <A>(
       "INSERT INTO logical_turns VALUES ('logical-turn', 'generation', 1, 'Collecting', 'correlation', ?, NULL, NULL)",
       [now],
     );
+    handle.database.run(
+      `INSERT INTO input_batches(id, logical_turn_id, sequence, kind, fingerprint, created_at)
+       VALUES
+         (?, 'logical-turn', 1, 'Initial', 'initial', ?),
+         (?, 'logical-turn', 2, 'Steer', 'steer-one', ?),
+         (?, 'logical-turn', 3, 'Steer', 'steer-two', ?)`,
+      [BatchId.initial, now, BatchId.steerOne, now, BatchId.steerTwo, now],
+    );
     const result = yield* run(makeCodexJournal(handle.database));
     handle.close();
     return result;
   });
 
 const input = {
+  batchId: BatchId.initial,
   frontier: 'Read' as const,
   input: 'hello',
   kind: 'Start' as const,
@@ -90,6 +105,100 @@ it('persists the frontier before submitting and accepts the returned turn', asyn
         expect(yield* journal.loadNonterminalAttempts).toMatchObject([
           { state: 'Accepted', submissionKind: 'Start' },
         ]);
+      }),
+    ),
+  );
+});
+
+it('accepts successive steers without claiming the already-active Codex turn id', async () => {
+  await Effect.runPromise(
+    withJournal((journal) =>
+      Effect.gen(function* acceptedSteer() {
+        const activeTurnId = CodexTurnId.make('turn-active');
+        let steerCalls = 0;
+        const runtime: CodexRuntime = {
+          ...makeRuntime(
+            () => Effect.succeed(emptyThread()),
+            () => Effect.succeed(activeTurnId),
+          ),
+          steerTurn: () =>
+            Effect.sync(() => {
+              steerCalls += 1;
+            }),
+        };
+        yield* submitCodexInput(runtime, journal, input);
+        for (const [index, followUp] of ['follow-up one', 'follow-up two'].entries()) {
+          expect(
+            yield* submitCodexInput(runtime, journal, {
+              ...input,
+              batchId: index === 0 ? BatchId.steerOne : BatchId.steerTwo,
+              expectedTurnId: activeTurnId,
+              input: followUp,
+              kind: 'Steer',
+            }),
+          ).toBe(activeTurnId);
+        }
+
+        const attempts = yield* journal.loadNonterminalAttempts;
+        expect(steerCalls).toBe(2);
+        expect(attempts.find(({ submissionKind }) => submissionKind === 'Start')).toMatchObject({
+          state: 'Accepted',
+          turnId: activeTurnId,
+        });
+        expect(
+          attempts
+            .filter(({ submissionKind }) => submissionKind === 'Steer')
+            .map(({ state, turnId }) => ({ state, turnId })),
+        ).toStrictEqual([
+          { state: 'Accepted', turnId: null },
+          { state: 'Accepted', turnId: null },
+        ]);
+      }),
+    ),
+  );
+});
+
+it('recovers an accepted steer without resubmitting after the scheduler-save crash window', async () => {
+  await Effect.runPromise(
+    withJournal((journal) =>
+      Effect.gen(function* recoverAcceptedSteer() {
+        const activeTurnId = CodexTurnId.make('turn-active');
+        let reads = 0;
+        let steerCalls = 0;
+        const runtime: CodexRuntime = {
+          ...makeRuntime(
+            () =>
+              Effect.sync(() => {
+                reads += 1;
+                return emptyThread();
+              }),
+            () => Effect.succeed(activeTurnId),
+          ),
+          steerTurn: () =>
+            Effect.sync(() => {
+              steerCalls += 1;
+            }),
+        };
+        yield* submitCodexInput(runtime, journal, input);
+        const steerInput = {
+          batchId: BatchId.steerOne,
+          expectedTurnId: activeTurnId,
+          input: 'follow-up',
+          kind: 'Steer' as const,
+          logicalTurnId: input.logicalTurnId,
+          threadId: input.threadId,
+        };
+        yield* submitCodexInput(runtime, journal, { ...steerInput, frontier: 'Read' });
+        const attempt = (yield* journal.loadNonterminalAttempts).find(
+          ({ submissionKind }) => submissionKind === 'Steer',
+        );
+        if (attempt === undefined) {
+          throw new Error('expected an accepted steer attempt');
+        }
+        const beforeRecovery = { reads, steerCalls };
+
+        expect(yield* recoverCodexInput(runtime, journal, attempt, steerInput)).toBe(activeTurnId);
+        expect({ reads, steerCalls }).toStrictEqual(beforeRecovery);
       }),
     ),
   );

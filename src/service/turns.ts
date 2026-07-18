@@ -1,101 +1,12 @@
 import { Effect, Result } from 'effect';
 
-import { recoverCodexInput, submitCodexInput, type CodexInput } from '../codex/submission';
 import type { CodexThreadId, CodexTurnId, LogicalTurnId } from '../domain/ids';
-import { GenerationBroken, isGenerationBroken } from '../errors';
-import type { CodexAttemptRecord } from '../journal/codex-journal';
-import type {
-  SchedulerController,
-  SchedulerControllerError,
-  SchedulerPorts,
-} from '../scheduler/controller';
-import type { PooledMessage, SchedulerState } from '../scheduler/model';
-import { controlReplyText, dispatch, inputText, report, type EngineContext } from './context';
+import type { SchedulerControllerError, SchedulerPorts } from '../scheduler/controller';
+import type { PooledMessage, SchedulerState, TurnIdentity } from '../scheduler/model';
+import { controlReplyText, dispatch, report, type EngineContext } from './context';
 import { startMonitor } from './monitor';
-
-interface EnsuredThread {
-  readonly threadId: CodexThreadId;
-  readonly unused: boolean;
-}
-
-const ensureThread = (
-  context: EngineContext,
-  state: SchedulerState,
-): Effect.Effect<EnsuredThread, SchedulerControllerError> =>
-  Effect.gen(function* ensureCodexThread() {
-    const binding = yield* context.codexJournal.loadGenerationThreadState(state.generationId);
-    if (binding === null) {
-      const threadId = yield* context.options.runtime.startThread;
-      yield* context.codexJournal.bindGenerationThread(state.generationId, threadId);
-      return { threadId, unused: true };
-    }
-    const { threadId: boundThreadId, unused } = binding;
-    const loaded = yield* context.options.runtime.loadedThreads;
-    if (loaded.includes(boundThreadId)) {
-      return { threadId: boundThreadId, unused };
-    }
-    const resumed = yield* Effect.result(context.options.runtime.resumeThread(boundThreadId));
-    if (Result.isSuccess(resumed)) {
-      return { threadId: boundThreadId, unused };
-    }
-    if (!isGenerationBroken(resumed.failure)) {
-      return yield* resumed.failure;
-    }
-    const replacementThreadId = yield* context.options.runtime.startThread;
-    const replaced = yield* context.codexJournal.replaceUnusedGenerationThread(
-      state.generationId,
-      boundThreadId,
-      replacementThreadId,
-    );
-    if (!replaced) {
-      return yield* new GenerationBroken({
-        message: 'Codex thread has persisted history but its rollout is missing; send /new',
-      });
-    }
-    return { threadId: replacementThreadId, unused: true };
-  });
-
-const findAttempt = (
-  attempts: readonly CodexAttemptRecord[],
-  logicalTurnId: LogicalTurnId,
-  kind: 'Start' | 'Steer',
-): CodexAttemptRecord | undefined =>
-  attempts.findLast(
-    (attempt) => attempt.logicalTurnId === logicalTurnId && attempt.submissionKind === kind,
-  );
-
-const submit = (
-  context: EngineContext,
-  state: SchedulerState,
-  logicalTurnId: LogicalTurnId,
-  messages: readonly PooledMessage[],
-  kind: 'Start' | 'Steer',
-  expectedTurnId?: CodexTurnId,
-): Effect.Effect<
-  { readonly threadId: CodexThreadId; readonly turnId: CodexTurnId },
-  SchedulerControllerError
-> =>
-  Effect.gen(function* submitLogicalTurn() {
-    const ensured = yield* ensureThread(context, state);
-    const { threadId } = ensured;
-    const input: CodexInput = {
-      ...(expectedTurnId === undefined ? {} : { expectedTurnId }),
-      input: inputText(messages),
-      kind,
-      logicalTurnId,
-      threadId,
-    };
-    const attempts = yield* context.codexJournal.loadNonterminalAttempts;
-    const attempt = findAttempt(attempts, logicalTurnId, kind);
-    const turnId =
-      attempt === undefined
-        ? yield* submitCodexInput(context.options.runtime, context.codexJournal, {
-            ...input,
-            frontier: ensured.unused ? 'Empty' : 'Read',
-          })
-        : yield* recoverCodexInput(context.options.runtime, context.codexJournal, attempt, input);
-    return { threadId, turnId };
-  });
+import { failTurn } from './turn-failure';
+import { ensureThread, loadPersistedBatch, submit } from './turn-submission';
 
 const cleanupGeneration = (
   context: EngineContext,
@@ -114,11 +25,35 @@ const cleanupGeneration = (
   });
 };
 
-const schedulePool = (context: EngineContext, deadlineAt: Date): void => {
+const dispatchPoolTimer = Effect.fn('SpikeEngine.dispatchPoolTimer')(function* dispatchPoolTimer(
+  context: EngineContext,
+  deadlineAt: Date,
+  identity: TurnIdentity | null,
+) {
+  const dispatched = yield* Effect.result(
+    Effect.tryPromise({
+      catch: (error) => error,
+      try: () => dispatch(context, { deadlineAt, kind: 'PoolTimer' }),
+    }),
+  );
+  if (Result.isFailure(dispatched)) {
+    if (identity === null) {
+      report(context, dispatched.failure);
+    } else {
+      yield* failTurn(context, identity, dispatched.failure);
+    }
+  }
+});
+
+const schedulePool = (
+  context: EngineContext,
+  deadlineAt: Date,
+  identity: TurnIdentity | null,
+): void => {
   const delay = Math.max(0, deadlineAt.getTime() - context.now().getTime());
   const timer = setTimeout(() => {
     context.timers.delete(timer);
-    Effect.runFork(Effect.promise(() => dispatch(context, { deadlineAt, kind: 'PoolTimer' })));
+    Effect.runFork(dispatchPoolTimer(context, deadlineAt, identity));
   }, delay);
   context.timers.add(timer);
 };
@@ -144,15 +79,16 @@ const startTurnPort = (
 > =>
   Effect.gen(function* startTurn() {
     const controller = yield* Effect.promise(() => context.controllerReady.promise);
-    const started = yield* submit(
-      context,
-      yield* controller.snapshot,
-      logicalTurnId,
-      messages,
-      'Start',
-    );
+    const state = yield* controller.snapshot;
+    const batch = yield* loadPersistedBatch(context, logicalTurnId, 'Initial', messages);
+    const started = yield* submit(context, state, batch);
     queueMicrotask(() => {
-      startMonitor(context, logicalTurnId, started.threadId, started.turnId);
+      startMonitor(
+        context,
+        { generationId: state.generationId, logicalTurnId },
+        started.threadId,
+        started.turnId,
+      );
     });
     return started;
   });
@@ -171,89 +107,23 @@ const makePorts = (context: EngineContext): SchedulerPorts => ({
     Effect.sync(() => {
       report(context, error);
     }),
-  schedulePool: (deadlineAt): Effect.Effect<void> =>
+  schedulePool: (deadlineAt, identity): Effect.Effect<void> =>
     Effect.sync(() => {
-      schedulePool(context, deadlineAt);
+      schedulePool(context, deadlineAt, identity);
     }),
   startTurn: (logicalTurnId, messages): ReturnType<SchedulerPorts['startTurn']> =>
     startTurnPort(context, logicalTurnId, messages),
   steerTurn: (action): Effect.Effect<void, SchedulerControllerError> =>
     Effect.gen(function* steerTurn() {
       const controller = yield* Effect.promise(() => context.controllerReady.promise);
-      yield* submit(
+      const batch = yield* loadPersistedBatch(
         context,
-        yield* controller.snapshot,
         action.logicalTurnId,
-        action.messages,
         'Steer',
-        action.codexTurnId,
+        action.messages,
       );
+      yield* submit(context, yield* controller.snapshot, batch, action.codexTurnId);
     }),
 });
 
-const recoverPendingSteer = (
-  context: EngineContext,
-  state: SchedulerState & { readonly active: NonNullable<SchedulerState['active']> },
-  threadId: CodexThreadId,
-  turnId: CodexTurnId,
-): Effect.Effect<void, SchedulerControllerError> =>
-  Effect.gen(function* recoverSteer() {
-    const attempts = yield* context.codexJournal.loadNonterminalAttempts;
-    const attempt = attempts.findLast(
-      (candidate) =>
-        candidate.logicalTurnId === state.active.logicalTurnId &&
-        candidate.submissionKind === 'Steer' &&
-        candidate.state !== 'Accepted',
-    );
-    if (attempt === undefined) {
-      return;
-    }
-    const messages = yield* context.schedulerJournal.loadLatestBatchMessages(
-      state.active.logicalTurnId,
-      'Steer',
-    );
-    yield* recoverCodexInput(context.options.runtime, context.codexJournal, attempt, {
-      expectedTurnId: turnId,
-      input: inputText(messages),
-      kind: 'Steer',
-      logicalTurnId: state.active.logicalTurnId,
-      threadId,
-    });
-  });
-
-const recoverActive = (
-  context: EngineContext,
-  controller: SchedulerController,
-): Effect.Effect<void, SchedulerControllerError> =>
-  Effect.gen(function* recoverActiveTurn() {
-    const state = yield* controller.snapshot;
-    if (state.active === null) {
-      return;
-    }
-    let threadId = state.codexThreadId;
-    let turnId = state.active.codexTurnId;
-    let submittedNow = false;
-    if (threadId === null || turnId === null) {
-      const messages = yield* context.schedulerJournal.loadLatestBatchMessages(
-        state.active.logicalTurnId,
-        'Initial',
-      );
-      const started = yield* submit(context, state, state.active.logicalTurnId, messages, 'Start');
-      ({ threadId, turnId } = started);
-      submittedNow = true;
-      yield* controller.dispatch({
-        at: context.now(),
-        codexTurnId: turnId,
-        kind: 'TurnStarted',
-        logicalTurnId: state.active.logicalTurnId,
-      });
-    }
-    const loaded = yield* context.options.runtime.loadedThreads;
-    if (!loaded.includes(threadId)) {
-      yield* context.options.runtime.resumeThread(threadId);
-    }
-    startMonitor(context, state.active.logicalTurnId, threadId, turnId, !submittedNow);
-    yield* recoverPendingSteer(context, { ...state, active: state.active }, threadId, turnId);
-  });
-
-export { makePorts, recoverActive };
+export { makePorts };

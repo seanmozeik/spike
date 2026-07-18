@@ -13,6 +13,7 @@ import {
   CodexThreadId,
   CodexTurnId,
   GenerationId,
+  InputBatchId,
   LogicalTurnId,
 } from '../src/domain/ids';
 import { makeCodexJournal } from '../src/journal/codex-journal';
@@ -38,9 +39,14 @@ it.effect('persists the pre-submit frontier and reconciled turn through named tr
       "INSERT INTO logical_turns VALUES ('logical-turn', 'generation', 1, 'Collecting', 'correlation', ?, NULL, NULL)",
       [new Date().toISOString()],
     );
+    handle.database.run(
+      "INSERT INTO input_batches VALUES ('input-batch', 'logical-turn', 1, 'Initial', 'batch-fingerprint', ?)",
+      [new Date().toISOString()],
+    );
     const journal = makeCodexJournal(handle.database);
     const attemptId = yield* journal.beginCodexAttempt({
       accountId: AccountId.make('default'),
+      batchId: InputBatchId.make('input-batch'),
       fingerprint: 'fingerprint',
       frontier: { itemIds: ['item-before'], turnIds: ['turn-before'] },
       logicalTurnId: LogicalTurnId.make('logical-turn'),
@@ -48,7 +54,7 @@ it.effect('persists the pre-submit frontier and reconciled turn through named tr
       submissionKind: 'Start',
     });
     expect(yield* journal.loadNonterminalAttempts).toMatchObject([
-      { fingerprint: 'fingerprint', state: 'Prepared', submissionKind: 'Start' },
+      { batchId: 'input-batch', state: 'Prepared', submissionKind: 'Start' },
     ]);
     yield* journal.recordSubmissionUnknown(attemptId);
     yield* journal.acceptCodexTurn(

@@ -4,22 +4,8 @@ import { it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { expect } from 'vitest';
 
-import { MessageGuid, MessagesRowId } from '../src/domain/ids';
-import type { ObservedMessage } from '../src/domain/inbound';
 import { makeJournal } from '../src/journal/service';
-import { CHAT_GUID, makeEngineFixture, settle } from './engine-fixture';
-
-const inbound = (rowId: number, text: string): ObservedMessage => ({
-  attachments: [],
-  chatGuid: CHAT_GUID,
-  handle: '+15555550199',
-  isFromMe: false,
-  messageGuid: MessageGuid.make(`message-${rowId}`),
-  rowId: MessagesRowId.make(rowId),
-  sentAt: new Date('2026-07-14T11:59:00.000Z'),
-  service: 'iMessage',
-  text,
-});
+import { CHAT_GUID, inbound, makeEngineFixture, settle } from './engine-fixture';
 
 const seedActiveTurn = (database: Database): void => {
   const now = '2026-07-14T12:00:00.000Z';
@@ -30,6 +16,24 @@ const seedActiveTurn = (database: Database): void => {
   database.run(
     "INSERT INTO logical_turns VALUES ('logical-turn', 'generation', 1, 'Running', 'correlation', ?, NULL, NULL)",
     [now],
+  );
+  database.run(
+    `INSERT INTO inbound_messages(
+       id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
+     ) VALUES (
+       'inbound-initial', 'message-initial', 1000, 'any;-;+15555550199', '+15555550199',
+       'iMessage', 'recovered request', ?, ?
+     )`,
+    [now, now],
+  );
+  database.run(
+    `INSERT INTO input_batches(id, logical_turn_id, sequence, kind, fingerprint, created_at)
+     VALUES ('batch-initial', 'logical-turn', 1, 'Initial', '["inbound-initial"]', ?)`,
+    [now],
+  );
+  database.run(
+    `INSERT INTO input_batch_messages(input_batch_id, inbound_message_id, ordinal)
+     VALUES ('batch-initial', 'inbound-initial', 0)`,
   );
   database.run(
     `INSERT INTO scheduler_state(
@@ -43,10 +47,10 @@ const seedActiveTurn = (database: Database): void => {
 const seedAcceptedAttempt = (database: Database): void => {
   database.run(
     `INSERT INTO codex_attempts(
-       id, logical_turn_id, account_id, state, codex_thread_id, codex_turn_id,
+       id, logical_turn_id, input_batch_id, account_id, state, codex_thread_id, codex_turn_id,
        input_fingerprint, frontier_json, submission_kind, started_at
      ) VALUES (
-       'attempt-1', 'logical-turn', 'test-account', 'Accepted', 'thread-1', 'turn-1',
+       'attempt-1', 'logical-turn', 'batch-initial', 'test-account', 'Accepted', 'thread-1', 'turn-1',
        'fingerprint', '{"turnIds":[],"itemIds":[]}', 'Start', '2026-07-14T12:00:00.000Z'
      )`,
   );
@@ -182,6 +186,98 @@ it.effect('terminates a fresh submission after its one reconciliation retry', ()
   }),
 );
 
+it.effect('fails the persisted follow-up turn when its start side effect fails', () =>
+  Effect.gen(function* failedFollowUpStart() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({
+      behavior: {
+        finalAnswer: 'First finished.',
+        gate: gate.promise,
+        startFailure: 'follow-up start unavailable',
+        startFailureAfter: 1,
+      },
+    });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    fixture.push(inbound(2, 'follow-up request'));
+    yield* fixture.engine.pollOnce;
+    gate.resolve();
+    yield* fixture.engine.drain;
+
+    expect(fixture.inputs).toStrictEqual([
+      'first request',
+      'follow-up request',
+      'follow-up request',
+    ]);
+    expect(fixture.sent).toStrictEqual([
+      'First finished',
+      'Spike hit an error: follow-up start unavailable',
+    ]);
+    expect(
+      fixture.database
+        .query<{ state: string }, []>('SELECT state FROM logical_turns ORDER BY sequence')
+        .all(),
+    ).toStrictEqual([{ state: 'Completed' }, { state: 'Failed' }]);
+    expect((yield* fixture.engine.snapshot).active).toBeNull();
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('fails an active turn when its persisted steer side effect fails', () =>
+  Effect.gen(function* failedSteer() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({
+      behavior: { gate: gate.promise, steerFailure: 'follow-up steer unavailable' },
+    });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    fixture.push(inbound(2, 'follow-up detail'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(3100));
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    expect(fixture.steers).toStrictEqual(['follow-up detail', 'follow-up detail']);
+    expect(fixture.sent).toStrictEqual(['Spike hit an error: follow-up steer unavailable']);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Failed');
+    expect((yield* fixture.engine.snapshot).active).toBeNull();
+
+    gate.reject(new Error('monitor stopped after the steer failure'));
+    yield* fixture.engine.drain;
+    expect(fixture.sent).toStrictEqual(['Spike hit an error: follow-up steer unavailable']);
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('/new suppresses a late failure from the superseded monitor', () =>
+  Effect.gen(function* supersededMonitorFailure() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({ behavior: { gate: gate.promise } });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    fixture.push(inbound(2, '/new'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+
+    gate.reject(new Error('superseded monitor disconnected'));
+    yield* fixture.engine.drain;
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Superseded');
+    expect((yield* fixture.engine.snapshot).active).toBeNull();
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
 it.effect('redispatches a durably ingested message after a crash advanced the inbox cursor', () =>
   Effect.gen(function* replayInbound() {
     const fixture = yield* makeEngineFixture({ behavior: { finalAnswer: 'Recovered.' } });
@@ -304,28 +400,35 @@ it.effect('recovers local control replies consumed immediately before a crash', 
   }),
 );
 
-it.effect('pools an active-turn follow-up into one steer without duplicating the work ack', () =>
-  Effect.gen(function* pooledSteer() {
-    const gate = Promise.withResolvers<undefined>();
-    const fixture = yield* makeEngineFixture({
-      behavior: {
-        acknowledgement: 'Looking into it now.',
-        finalAnswer: 'Finished.',
-        gate: gate.promise,
-      },
-    });
-    fixture.push(inbound(1, 'first request'));
-    yield* fixture.engine.pollOnce;
-    yield* Effect.promise(() => Bun.sleep(0));
-    fixture.push(inbound(2, 'follow-up detail'));
-    yield* fixture.engine.pollOnce;
-    yield* Effect.promise(() => Bun.sleep(3100));
-    gate.resolve();
-    yield* fixture.engine.drain;
-    expect(fixture.steers).toStrictEqual(['follow-up detail']);
-    expect(fixture.sent).toStrictEqual(['Looking into it now', 'Finished']);
-    fixture.remove();
-  }),
+it.effect(
+  'submits identical successive active-turn follow-ups without duplicating the work ack',
+  () =>
+    Effect.gen(function* pooledSteers() {
+      const gate = Promise.withResolvers<undefined>();
+      const fixture = yield* makeEngineFixture({
+        behavior: {
+          acknowledgement: 'Looking into it now.',
+          finalAnswer: 'Finished.',
+          gate: gate.promise,
+        },
+      });
+      fixture.push(inbound(1, 'first request'));
+      yield* fixture.engine.pollOnce;
+      yield* Effect.promise(() => Bun.sleep(0));
+      fixture.push(inbound(2, 'follow-up detail'));
+      yield* fixture.engine.pollOnce;
+      yield* Effect.promise(() => Bun.sleep(3100));
+      yield* Effect.promise(() => Bun.sleep(0));
+      fixture.push(inbound(3, 'follow-up detail'));
+      yield* fixture.engine.pollOnce;
+      yield* Effect.promise(() => Bun.sleep(3100));
+      gate.resolve();
+      yield* fixture.engine.drain;
+      expect(fixture.steers).toStrictEqual(['follow-up detail', 'follow-up detail']);
+      expect(fixture.sent).toStrictEqual(['Looking into it now', 'Finished']);
+      fixture.remove();
+    }),
+  10_000,
 );
 
 it.effect('resumes and completes a turn whose terminal notification was lost before restart', () =>

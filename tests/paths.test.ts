@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { spikePaths } from '../src/paths';
 
@@ -15,6 +15,11 @@ describe('spike paths', () => {
   });
 
   it('defaults to the canonical Spike config home', () => {
-    expect(spikePaths().root).toMatch(/\/\.config\/spike$/u);
+    vi.stubEnv('SPIKE_HOME', '');
+    try {
+      expect(spikePaths().root).toMatch(/\/\.config\/spike$/u);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

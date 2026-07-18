@@ -118,12 +118,13 @@ it.effect('enforces one current generation and one batch assignment per inbound 
       [new Date().toISOString()],
     );
     handle.database.run(
-      "INSERT INTO input_batches VALUES ('batch-1', 'turn', 'Initial', 'one', ?)",
+      "INSERT INTO input_batches VALUES ('batch-1', 'turn', 1, 'Initial', 'one', ?)",
       [new Date().toISOString()],
     );
-    handle.database.run("INSERT INTO input_batches VALUES ('batch-2', 'turn', 'Steer', 'two', ?)", [
-      new Date().toISOString(),
-    ]);
+    handle.database.run(
+      "INSERT INTO input_batches VALUES ('batch-2', 'turn', 2, 'Steer', 'two', ?)",
+      [new Date().toISOString()],
+    );
     handle.database.run('INSERT INTO input_batch_messages VALUES (?, ?, 0)', [
       'batch-1',
       inbound.id,

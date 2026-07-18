@@ -1,19 +1,13 @@
-import { randomUUID } from 'node:crypto';
-
 import { Effect } from 'effect';
 
 import type { ClassifiedOutput } from '../codex/output-classifier';
 import type { TurnEventHandlers } from '../codex/runtime-types';
 import { recoverTurn } from '../codex/turn-recovery';
-import {
-  type CodexThreadId,
-  type CodexTurnId,
-  type LogicalTurnId,
-  LogicalTurnId as LogicalTurnIdSchema,
-} from '../domain/ids';
+import type { CodexThreadId, CodexTurnId, LogicalTurnId } from '../domain/ids';
 import { CodexRuntimeError } from '../errors';
-import { dispatch, report, type EngineContext } from './context';
-import { finishFailedTurn } from './turn-failure';
+import type { TurnIdentity } from '../scheduler/model';
+import { dispatch, type EngineContext } from './context';
+import { completeTurn, failTurn } from './turn-failure';
 
 const acknowledgementEffect = (
   context: EngineContext,
@@ -145,33 +139,28 @@ const deliverTurnOutput = (
       finalAnswer,
       context.now(),
     );
-    yield* context.codexJournal.finishLogicalTurn(logicalTurnId, 'Completed', context.now());
-    yield* Effect.promise(() =>
-      dispatch(context, {
-        at: context.now(),
-        kind: 'TurnCompleted',
-        logicalTurnId,
-        nextLogicalTurnId: LogicalTurnIdSchema.make(randomUUID()),
-      }),
-    );
   });
 
 const runMonitor = async (
   context: EngineContext,
-  logicalTurnId: LogicalTurnId,
+  identity: TurnIdentity,
   threadId: CodexThreadId,
   turnId: CodexTurnId,
   reconcile: boolean,
 ): Promise<void> => {
   try {
-    await Effect.runPromise(deliverTurnOutput(context, logicalTurnId, threadId, turnId, reconcile));
-  } catch (error) {
-    if (!context.closing.value) {
-      try {
-        await finishFailedTurn(context, logicalTurnId, turnId, error);
-      } catch (deliveryError) {
-        report(context, deliveryError);
+    try {
+      await Effect.runPromise(
+        deliverTurnOutput(context, identity.logicalTurnId, threadId, turnId, reconcile),
+      );
+    } catch (error) {
+      if (!context.closing.value) {
+        await Effect.runPromise(failTurn(context, identity, error));
       }
+      return;
+    }
+    if (!context.closing.value) {
+      await Effect.runPromise(completeTurn(context, identity));
     }
   } finally {
     context.monitors.delete(turnId);
@@ -180,7 +169,7 @@ const runMonitor = async (
 
 const startMonitor = (
   context: EngineContext,
-  logicalTurnId: LogicalTurnId,
+  identity: TurnIdentity,
   threadId: CodexThreadId,
   turnId: CodexTurnId,
   reconcile = false,
@@ -188,7 +177,7 @@ const startMonitor = (
   if (context.monitors.has(turnId)) {
     return;
   }
-  const task = runMonitor(context, logicalTurnId, threadId, turnId, reconcile);
+  const task = runMonitor(context, identity, threadId, turnId, reconcile);
   context.monitors.set(turnId, task);
 };
 

@@ -112,9 +112,23 @@ const startCodexTurn = Effect.fn('Test.startRetentionTurn')(function* startTurn(
   message: PooledMessage,
 ) {
   const logicalTurnId = LogicalTurnId.make(`logical-${suffix}`);
-  yield* fixture.scheduler.beginTurn(fixture.state.generationId, logicalTurnId, [message], OLD);
+  yield* fixture.scheduler.commitTransition(
+    {
+      actions: [{ kind: 'StartTurn', logicalTurnId, messages: [message] }],
+      state: {
+        ...fixture.state,
+        active: { acknowledged: false, codexTurnId: null, logicalTurnId },
+      },
+    },
+    OLD,
+  );
+  const [batch] = yield* fixture.scheduler.loadInputBatches(logicalTurnId, 'Initial');
+  if (batch === undefined) {
+    throw new Error('expected persisted retention input batch');
+  }
   const attemptId = yield* fixture.codex.beginCodexAttempt({
     accountId: AccountId.make('default'),
+    batchId: batch.id,
     fingerprint: `fingerprint-${suffix}`,
     frontier: { itemIds: [], turnIds: [] },
     logicalTurnId,

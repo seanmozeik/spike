@@ -1,6 +1,12 @@
 import { Effect, Result } from 'effect';
 
-import { AccountId, CodexTurnId, type CodexThreadId, type LogicalTurnId } from '../domain/ids';
+import {
+  AccountId,
+  CodexTurnId,
+  type CodexThreadId,
+  type InputBatchId,
+  type LogicalTurnId,
+} from '../domain/ids';
 import {
   CodexRuntimeError,
   type GenerationBroken,
@@ -14,6 +20,7 @@ import { canonicalInputFingerprint, captureFrontier, reconcileSubmission } from 
 import type { CodexRuntime } from './runtime';
 
 interface CodexInput {
+  readonly batchId: InputBatchId;
   readonly expectedTurnId?: CodexTurnId;
   readonly input: string;
   readonly kind: 'Start' | 'Steer';
@@ -73,6 +80,7 @@ const submitCodexInput = Effect.fn('SpikeCodex.submit')(function* submitCodexInp
   const frontier = captureFrontier(before);
   const attemptId = yield* journal.beginCodexAttempt({
     accountId: AccountId.make(runtime.accountId),
+    batchId: input.batchId,
     fingerprint: canonicalInputFingerprint(input.input),
     frontier,
     logicalTurnId: input.logicalTurnId,
@@ -111,8 +119,17 @@ const recoverCodexInput = Effect.fn('SpikeCodex.recover')(function* recoverCodex
   attempt: CodexAttemptRecord,
   input: CodexInput,
 ) {
-  if (attempt.state === 'Accepted' && attempt.turnId !== null) {
-    return CodexTurnId.make(attempt.turnId);
+  if (attempt.state === 'Accepted') {
+    if (attempt.turnId !== null) {
+      return CodexTurnId.make(attempt.turnId);
+    }
+    if (
+      attempt.submissionKind === 'Steer' &&
+      input.kind === 'Steer' &&
+      input.expectedTurnId !== undefined
+    ) {
+      return input.expectedTurnId;
+    }
   }
   const current = yield* runtime.readThread(input.threadId);
   const reconciliation = reconcileSubmission(attempt.frontier, current, attempt.id);

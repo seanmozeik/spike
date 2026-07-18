@@ -36,7 +36,13 @@ it.effect('redacts a late attachment whose terminal parent was redacted on an ea
     const terminalMessage = yield* ingest(fixture, 1, 'terminal private input');
     const terminal = yield* startCodexTurn(fixture, 'late-attachment', terminalMessage);
     yield* fixture.codex.finishLogicalTurn(terminal.logicalTurnId, 'Completed', OLD);
-    yield* fixture.scheduler.completeTurn(terminal.logicalTurnId, OLD);
+    yield* fixture.scheduler.commitTransition(
+      {
+        actions: [{ kind: 'CompleteTurn', logicalTurnId: terminal.logicalTurnId }],
+        state: { ...fixture.state, active: null },
+      },
+      OLD,
+    );
 
     expect(yield* fixture.journal.redactTerminalPayloads(CUTOFF, NOW)).toBe(1);
     expect(yield* fixture.journal.listInbound).toMatchObject([{ rowId: 1, text: null }]);

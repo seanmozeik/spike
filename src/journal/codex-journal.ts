@@ -6,6 +6,7 @@ import { Effect } from 'effect';
 import type { Frontier } from '../codex/reconcile';
 import {
   CodexAttemptId,
+  InputBatchId,
   type AccountId,
   type CodexItemId,
   type CodexThreadId,
@@ -20,6 +21,7 @@ import {
 
 interface BeginCodexAttempt {
   readonly accountId: AccountId;
+  readonly batchId: InputBatchId;
   readonly fingerprint: string;
   readonly frontier: Frontier;
   readonly logicalTurnId: LogicalTurnId;
@@ -28,7 +30,7 @@ interface BeginCodexAttempt {
 }
 
 interface CodexAttemptRecord {
-  readonly fingerprint: string;
+  readonly batchId: InputBatchId | null;
   readonly frontier: Frontier;
   readonly id: CodexAttemptId;
   readonly logicalTurnId: string;
@@ -43,6 +45,7 @@ interface AttemptRow {
   readonly codex_turn_id: string | null;
   readonly frontier_json: string;
   readonly id: string;
+  readonly input_batch_id: string | null;
   readonly input_fingerprint: string;
   readonly logical_turn_id: string;
   readonly state: string;
@@ -109,7 +112,7 @@ const parseFrontier = (json: string): Frontier => {
 };
 
 const parseAttempt = (row: AttemptRow): CodexAttemptRecord => ({
-  fingerprint: row.input_fingerprint,
+  batchId: row.input_batch_id === null ? null : InputBatchId.make(row.input_batch_id),
   frontier: parseFrontier(row.frontier_json),
   id: CodexAttemptId.make(row.id),
   logicalTurnId: row.logical_turn_id,
@@ -126,7 +129,8 @@ const makeAcceptTurn =
       catch: (cause) => journalError('acceptCodexTurn', cause),
       try: () => {
         const result = database.run(
-          `UPDATE codex_attempts SET state = 'Accepted', codex_thread_id = ?, codex_turn_id = ?
+          `UPDATE codex_attempts SET state = 'Accepted', codex_thread_id = ?,
+             codex_turn_id = CASE WHEN submission_kind = 'Steer' THEN NULL ELSE ? END
          WHERE id = ? AND state IN ('Prepared','Submitted','SubmissionUnknown')`,
           [threadId, turnId, attemptId],
         );
@@ -143,12 +147,13 @@ const makeBeginAttempt =
         const id = CodexAttemptId.make(randomUUID());
         database.run(
           `INSERT INTO codex_attempts(
-          id, logical_turn_id, account_id, state, input_fingerprint, frontier_json,
-          submission_kind, started_at
-        ) VALUES (?, ?, ?, 'Prepared', ?, ?, ?, ?)`,
+          id, logical_turn_id, input_batch_id, account_id, state, input_fingerprint,
+          frontier_json, submission_kind, started_at
+        ) VALUES (?, ?, ?, ?, 'Prepared', ?, ?, ?, ?)`,
           [
             id,
             input.logicalTurnId,
+            input.batchId,
             input.accountId,
             input.fingerprint,
             JSON.stringify(input.frontier),
@@ -239,8 +244,8 @@ const makeCodexJournal = (database: Database): CodexJournal => ({
   loadNonterminalAttempts: Effect.sync(() =>
     database
       .query<AttemptRow, []>(
-        `SELECT id, logical_turn_id, state, input_fingerprint, frontier_json, submission_kind,
-                codex_thread_id, codex_turn_id
+        `SELECT id, logical_turn_id, input_batch_id, state, input_fingerprint, frontier_json,
+                submission_kind, codex_thread_id, codex_turn_id
        FROM codex_attempts WHERE state IN ('Prepared','Submitted','SubmissionUnknown','Accepted')
        ORDER BY started_at ASC`,
       )

@@ -4,7 +4,6 @@ import { Duration, Effect, Result } from 'effect';
 
 import { makeApprovalManager } from '../approval/manager';
 import { GenerationId, type InboundMessageId, LogicalTurnId } from '../domain/ids';
-import { type GenerationBroken, isGenerationBroken } from '../errors';
 import { makeCodexJournal } from '../journal/codex-journal';
 import type { PendingControl } from '../journal/control-recovery';
 import type { PendingInboundMessage } from '../journal/inbound-recovery';
@@ -13,8 +12,10 @@ import { cursorRowId, makeJournal } from '../journal/service';
 import { makeSchedulerController, type SchedulerController } from '../scheduler/controller';
 import type { SchedulerState } from '../scheduler/model';
 import { controlReplyText, report, type EngineContext, type SpikeEngineOptions } from './context';
-import { finishBrokenGeneration, finishFailedTurn } from './turn-failure';
-import { makePorts, recoverActive } from './turns';
+import { failTurn, retryTurnTerminals } from './turn-failure';
+import { recoverActive } from './turn-recovery';
+import { makeTurnTerminalQueue } from './turn-terminal-model';
+import { makePorts } from './turns';
 
 interface SpikeEngine {
   readonly close: () => void;
@@ -80,12 +81,33 @@ const dispatchPending = (
       if (message.acknowledgementText !== null) {
         runLike(context, message.id, message.acknowledgementText, at);
       }
-      yield* controller.dispatch({
+      const state = yield* controller.snapshot;
+      const nextLogicalTurnId = LogicalTurnId.make(randomUUID());
+      const event = {
         kind: 'Inbound',
         message: { id: message.id, receivedAt: message.receivedAt, text: message.text },
         newGenerationId: GenerationId.make(randomUUID()),
-        nextLogicalTurnId: LogicalTurnId.make(randomUUID()),
-      });
+        nextLogicalTurnId,
+      } as const;
+      const dispatched = yield* Effect.result(controller.dispatch(event));
+      if (Result.isFailure(dispatched)) {
+        const command = message.text.trim().toLowerCase();
+        if (
+          state.active === null &&
+          !state.generationBroken &&
+          command !== '/new' &&
+          command !== '/status'
+        ) {
+          yield* failTurn(
+            context,
+            { generationId: state.generationId, logicalTurnId: nextLogicalTurnId },
+            dispatched.failure,
+          );
+        } else {
+          report(context, dispatched.failure);
+        }
+        return;
+      }
     }
   });
 
@@ -107,61 +129,26 @@ const recoverControlReplies = (context: EngineContext): Effect.Effect<void, unkn
     }
   });
 
-const failBrokenActiveTurn = (
-  context: EngineContext,
-  controller: SchedulerController,
-  error: GenerationBroken,
-): Effect.Effect<void, unknown> =>
-  Effect.gen(function* finishBroken() {
-    const state = yield* controller.snapshot;
-    const { active } = state;
-    if (active === null) {
-      report(context, error);
-      return;
-    }
-    yield* Effect.promise(() =>
-      finishBrokenGeneration(
-        context,
-        active.logicalTurnId,
-        active.codexTurnId ?? active.logicalTurnId,
-        error,
-      ),
-    );
-  });
-
-const failActiveTurn = (
-  context: EngineContext,
-  controller: SchedulerController,
-  error: unknown,
-): Effect.Effect<void, unknown> =>
-  Effect.gen(function* terminateFailedRecovery() {
-    const { active } = yield* controller.snapshot;
-    if (active === null) {
-      report(context, error);
-      return;
-    }
-    yield* Effect.promise(() =>
-      finishFailedTurn(
-        context,
-        active.logicalTurnId,
-        active.codexTurnId ?? active.logicalTurnId,
-        error,
-      ),
-    );
-  });
-
 const pollOnce = (
   context: EngineContext,
   controller: SchedulerController,
 ): Effect.Effect<void, unknown> =>
   Effect.gen(function* pollMessages() {
+    yield* retryTurnTerminals(context);
     if (context.recoveryPending.value) {
       context.recoveryPending.value = false;
+      const state = yield* controller.snapshot;
       const recovery = yield* Effect.result(recoverActive(context, controller));
       if (Result.isFailure(recovery)) {
-        yield* isGenerationBroken(recovery.failure)
-          ? failBrokenActiveTurn(context, controller, recovery.failure)
-          : failActiveTurn(context, controller, recovery.failure);
+        if (state.active === null) {
+          report(context, recovery.failure);
+        } else {
+          yield* failTurn(
+            context,
+            { generationId: state.generationId, logicalTurnId: state.active.logicalTurnId },
+            recovery.failure,
+          );
+        }
       }
     }
     yield* recoverControlReplies(context);
@@ -179,10 +166,7 @@ const pollOnce = (
     }
     const at = context.now();
     const pending = yield* context.journal.listPendingInbound;
-    const dispatched = yield* Effect.result(dispatchPending(context, controller, pending, at));
-    if (Result.isFailure(dispatched)) {
-      yield* failActiveTurn(context, controller, dispatched.failure);
-    }
+    yield* dispatchPending(context, controller, pending, at);
   });
 
 const closeEngine = (context: EngineContext): void => {
@@ -219,6 +203,7 @@ const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContex
   recoveryPending: { value: true },
   schedulerJournal: makeSchedulerJournal(options.database),
   timers: new Set(),
+  turnTerminals: makeTurnTerminalQueue(),
 });
 
 const makeCycle = (
@@ -277,6 +262,7 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
     },
     drain: Effect.promise(async () => {
       await Promise.all(context.monitors.values());
+      await context.turnTerminals.tail;
     }),
     pollOnce: once,
     redactNow: (at): Effect.Effect<number, unknown> => redactNow(context, at),

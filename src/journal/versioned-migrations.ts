@@ -1,10 +1,16 @@
 import type { Database } from 'bun:sqlite';
 
+import {
+  ensureInputBatchIdentityIndexes,
+  migrateInputBatchIdentity,
+} from './input-batch-migration';
+
 const DELIVERY_FRONTIER_VERSION = 5;
 const CANONICAL_GENERATION_THREAD_VERSION = 7;
 const BROKEN_GENERATION_STATE_VERSION = 8;
 const TERMINAL_ATTEMPT_STATE_VERSION = 9;
 const APPROVAL_PAYLOAD_RETENTION_VERSION = 11;
+const INPUT_BATCH_IDENTITY_VERSION = 12;
 
 const hasColumn = (database: Database, table: string, column: string): boolean =>
   database
@@ -57,6 +63,10 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   ) {
     database.run('ALTER TABLE approval_requests ADD COLUMN payload_redacted_at TEXT');
   }
+  if (previousVersion > 0 && previousVersion < INPUT_BATCH_IDENTITY_VERSION) {
+    migrateInputBatchIdentity(database);
+  }
+  ensureInputBatchIdentityIndexes(database);
 };
 
 export { applyVersionedMigrations };

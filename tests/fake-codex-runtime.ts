@@ -20,7 +20,10 @@ interface TurnBehavior {
   readonly resumeRuntimeFailure?: string;
   readonly responseFailure?: string;
   readonly startFailure?: string;
+  readonly startFailureAfter?: number;
   readonly statusFailure?: string;
+  readonly steerFailure?: string;
+  readonly steerGate?: Promise<void>;
 }
 
 interface RuntimeTrace {
@@ -88,7 +91,10 @@ const makeStartTurn =
   ({ input }) =>
     Effect.gen(function* startTurn() {
       trace.inputs.push(input);
-      if (behavior.startFailure !== undefined) {
+      if (
+        behavior.startFailure !== undefined &&
+        trace.turnsStarted.length >= (behavior.startFailureAfter ?? 0)
+      ) {
         return yield* new CodexRuntimeError({
           cause: new Error(behavior.startFailure),
           message: behavior.startFailure,
@@ -122,6 +128,35 @@ const makeTrace = (): RuntimeTrace => ({
   turnsStarted: [],
 });
 
+const makeStartThread = (loaded: Set<string>): CodexRuntime['startThread'] => {
+  let startedThreadCount = 0;
+  return Effect.sync(() => {
+    startedThreadCount += 1;
+    const threadId = CodexThreadId.make(
+      startedThreadCount === 1 ? 'thread-new' : `thread-new-${startedThreadCount}`,
+    );
+    loaded.add(threadId);
+    return threadId;
+  });
+};
+
+const makeSteerTurn =
+  (behavior: TurnBehavior, trace: RuntimeTrace): CodexRuntime['steerTurn'] =>
+  ({ input }) =>
+    Effect.gen(function* steerTurn() {
+      trace.steers.push(input);
+      if (behavior.steerGate !== undefined) {
+        yield* Effect.promise(() => behavior.steerGate ?? Promise.resolve());
+      }
+      if (behavior.steerFailure !== undefined) {
+        yield* new CodexRuntimeError({
+          cause: new Error(behavior.steerFailure),
+          message: behavior.steerFailure,
+          operation: 'turn/steer',
+        });
+      }
+    });
+
 const makeRuntimeHarness = (
   behavior: TurnBehavior,
   snapshot: ThreadSnapshot,
@@ -151,16 +186,9 @@ const makeRuntimeHarness = (
         : Promise.reject(new Error(behavior.responseFailure));
     },
     resumeThread: makeResumeThread(behavior, trace, loaded),
-    startThread: Effect.sync(() => {
-      const threadId = CodexThreadId.make('thread-new');
-      loaded.add(threadId);
-      return threadId;
-    }),
+    startThread: makeStartThread(loaded),
     startTurn: makeStartTurn(behavior, trace),
-    steerTurn: ({ input }): Effect.Effect<void> =>
-      Effect.sync(() => {
-        trace.steers.push(input);
-      }),
+    steerTurn: makeSteerTurn(behavior, trace),
     usage: Effect.succeed({}),
     waitForTurn: makeWaitForTurn(behavior),
   };

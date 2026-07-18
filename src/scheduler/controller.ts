@@ -11,7 +11,13 @@ import type {
   WaitingForCapacity,
 } from '../errors';
 import type { SchedulerJournal } from '../journal/scheduler-journal';
-import type { PooledMessage, SchedulerAction, SchedulerEvent, SchedulerState } from './model';
+import type {
+  PooledMessage,
+  SchedulerAction,
+  SchedulerEvent,
+  SchedulerState,
+  TurnIdentity,
+} from './model';
 import { poolDeadline, transitionScheduler } from './transition';
 
 type SchedulerControllerError =
@@ -39,7 +45,10 @@ interface SchedulerPorts {
     commandMessageId: InboundMessageId,
   ) => Effect.Effect<void, SchedulerControllerError>;
   readonly reportFailure: (error: SchedulerControllerError) => Effect.Effect<void>;
-  readonly schedulePool: (deadlineAt: Date) => Effect.Effect<void, SchedulerControllerError>;
+  readonly schedulePool: (
+    deadlineAt: Date,
+    identity: TurnIdentity | null,
+  ) => Effect.Effect<void, SchedulerControllerError>;
   readonly startTurn: (
     logicalTurnId: Extract<SchedulerAction, { kind: 'StartTurn' }>['logicalTurnId'],
     messages: readonly PooledMessage[],
@@ -67,37 +76,10 @@ const eventTime = (event: SchedulerEvent): Date => {
   return new Date();
 };
 
-const persistActions = Effect.fn('SpikeScheduler.persistActions')(function* persistActions(
-  journal: SchedulerJournal,
-  previous: SchedulerState,
-  next: SchedulerState,
-  actions: readonly SchedulerAction[],
-  now: Date,
-) {
-  let reset = false;
-  for (const action of actions) {
-    if (action.kind === 'StartTurn') {
-      yield* journal.beginTurn(next.generationId, action.logicalTurnId, action.messages, now);
-    } else if (action.kind === 'SteerTurn') {
-      yield* journal.appendSteer(action.logicalTurnId, action.messages, now);
-    } else if (action.kind === 'CompleteTurn') {
-      yield* journal.completeTurn(action.logicalTurnId, now);
-    } else if (action.kind === 'FailTurn') {
-      yield* journal.failTurn(action.logicalTurnId, now);
-    } else if (action.kind === 'RecordAcknowledgement') {
-      yield* journal.recordAcknowledgement(action.logicalTurnId, action.at);
-    } else if (action.kind === 'ResetGeneration') {
-      reset = true;
-      yield* journal.resetGeneration(next, now, action.commandMessageId);
-    } else if (action.kind === 'ReplyStatus') {
-      yield* journal.consumeControl(action.commandMessageId, '/status', now);
-    }
-  }
-  if (!reset) {
-    yield* journal.save(next, now);
-  }
-  return previous;
-});
+const turnIdentity = (state: SchedulerState): TurnIdentity | null =>
+  state.active === null
+    ? null
+    : { generationId: state.generationId, logicalTurnId: state.active.logicalTurnId };
 
 const runSideEffects = Effect.fn('SpikeScheduler.runSideEffects')(function* runSideEffects(
   ports: SchedulerPorts,
@@ -114,7 +96,7 @@ const runSideEffects = Effect.fn('SpikeScheduler.runSideEffects')(function* runS
         yield* applyUnlocked({ codexThreadId: threadId, kind: 'ThreadBound' });
       }
     } else if (action.kind === 'SchedulePool') {
-      yield* ports.schedulePool(action.deadlineAt);
+      yield* ports.schedulePool(action.deadlineAt, turnIdentity(next));
     } else if (action.kind === 'SteerTurn') {
       yield* ports.steerTurn(action);
     } else if (action.kind === 'StartTurn') {
@@ -150,14 +132,14 @@ const makeSchedulerController = Effect.fn('SpikeScheduler.make')(function* makeS
   const semaphore = yield* Semaphore.make(1);
   const restartDeadline = poolDeadline(initial.pool);
   if (restartDeadline !== null) {
-    yield* ports.schedulePool(restartDeadline);
+    yield* ports.schedulePool(restartDeadline, turnIdentity(initial));
   }
   const applyUnlocked = (event: SchedulerEvent): Effect.Effect<void, SchedulerControllerError> =>
     Effect.gen(function* applySchedulerEvent() {
       const previous = yield* Ref.get(state);
       const transition = transitionScheduler(previous, event);
       const now = eventTime(event);
-      yield* persistActions(journal, previous, transition.state, transition.actions, now);
+      yield* journal.commitTransition(transition, now);
       yield* Ref.set(state, transition.state);
       yield* runSideEffects(
         ports,

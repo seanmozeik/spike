@@ -14,7 +14,9 @@ import type { Journal } from '../journal/service';
 import type { LikeAcknowledgement } from '../like/adapter';
 import type { MessagesInboxHandle } from '../messages-inbox';
 import type { SchedulerController } from '../scheduler/controller';
+import { inputBatchText } from '../scheduler/input-batch';
 import type { PooledMessage, SchedulerEvent } from '../scheduler/model';
+import type { TurnTerminalQueue } from './turn-terminal-model';
 
 interface SpikeEngineOptions {
   readonly approvalExpiryMs?: number;
@@ -43,10 +45,10 @@ interface EngineContext {
   readonly recoveryPending: { value: boolean };
   readonly schedulerJournal: SchedulerJournal;
   readonly timers: Set<ReturnType<typeof setTimeout>>;
+  readonly turnTerminals: TurnTerminalQueue;
 }
 
-const inputText = (messages: readonly PooledMessage[]): string =>
-  messages.map((message) => message.text).join('\n\n');
+const inputText = (messages: readonly PooledMessage[]): string => inputBatchText(messages);
 
 const statusError = (cause: unknown): SpikeRuntimeError =>
   new SpikeRuntimeError({ cause, message: compactError(cause), operation: 'status/render' });

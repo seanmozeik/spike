@@ -7,6 +7,7 @@ import { it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { afterEach, expect } from 'vitest';
 
+import { canonicalInputFingerprint } from '../src/codex/reconcile';
 import { ensureRuntimeLayout } from '../src/config-files';
 import { inspectJournal, journalInfo, openJournal } from '../src/database';
 import { spikePaths } from '../src/paths';
@@ -14,6 +15,58 @@ import { spikePaths } from '../src/paths';
 const roots: string[] = [];
 
 const mode = (file: string): string => statSync(file).mode.toString(8).slice(-3);
+
+const seedVersionElevenBatchIdentity = (databasePath: string): void => {
+  const database = new Database(databasePath, { strict: true });
+  const firstCreatedAt = '2026-07-15T00:00:00.000Z';
+  const attemptStartedAt = '2026-07-15T00:01:00.000Z';
+  const secondCreatedAt = '2026-07-15T00:02:00.000Z';
+  database.run('DROP INDEX codex_attempts_one_per_input_batch');
+  database.run('DROP INDEX input_batches_turn_sequence');
+  database.run('ALTER TABLE codex_attempts DROP COLUMN input_batch_id');
+  database.run('ALTER TABLE input_batches DROP COLUMN sequence');
+  database.run(
+    "INSERT INTO generations(id, sequence, state, created_at) VALUES ('generation', 1, 'Current', ?)",
+    [firstCreatedAt],
+  );
+  database.run(
+    `INSERT INTO logical_turns(id, generation_id, sequence, state, correlation_id, created_at)
+     VALUES ('turn', 'generation', 1, 'Running', 'correlation', ?)`,
+    [firstCreatedAt],
+  );
+  for (const [id, rowId, createdAt] of [
+    ['one', 1, firstCreatedAt],
+    ['two', 2, secondCreatedAt],
+  ] as const) {
+    database.run(
+      `INSERT INTO inbound_messages(
+         id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
+       ) VALUES (?, ?, ?, 'chat', 'handle', 'iMessage', 'same steer', ?, ?)`,
+      [`inbound-${id}`, `message-${id}`, rowId, createdAt, createdAt],
+    );
+    database.run(
+      `INSERT INTO input_batches(id, logical_turn_id, kind, fingerprint, created_at)
+       VALUES (?, 'turn', 'Steer', ?, ?)`,
+      [`batch-${id}`, `inbound-${id}`, createdAt],
+    );
+    database.run(
+      `INSERT INTO input_batch_messages(input_batch_id, inbound_message_id, ordinal)
+       VALUES (?, ?, 0)`,
+      [`batch-${id}`, `inbound-${id}`],
+    );
+  }
+  database.run(
+    `INSERT INTO codex_attempts(
+       id, logical_turn_id, state, input_fingerprint, frontier_json, submission_kind, started_at
+     ) VALUES ('attempt-one', 'turn', 'Prepared', ?, '{"itemIds":[],"turnIds":[]}', 'Steer', ?)`,
+    [canonicalInputFingerprint('same steer'), attemptStartedAt],
+  );
+  database.run('DELETE FROM schema_meta');
+  database.run(
+    "INSERT INTO schema_meta(version, applied_at) VALUES (11, '2026-07-15T00:03:00.000Z')",
+  );
+  database.close();
+};
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
@@ -45,7 +98,7 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
     journal.close();
     expect(inspectJournal(databasePath)).toStrictEqual({
       journalMode: 'wal',
-      migrationVersion: 11,
+      migrationVersion: 12,
     });
   }),
 );
@@ -133,7 +186,7 @@ it.effect('migrates a version 6 scheduler journal to the canonical generation th
 
     expect(columns).not.toContain('codex_thread_id');
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(11);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
   }),
 );
 
@@ -161,7 +214,7 @@ it.effect('migrates a version 7 journal to durable broken-generation state', () 
     migrated.close();
 
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(11);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
   }),
 );
 
@@ -195,7 +248,7 @@ it.effect('migrates failed logical turns to terminal Codex attempts', () =>
     migrated.close();
 
     expect(attempt).toStrictEqual({ finished_at: '2026-07-15T00:01:00.000Z', state: 'Failed' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(11);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
   }),
 );
 
@@ -223,6 +276,55 @@ it.effect('migrates version 10 approval rows to the payload retention marker', (
     migrated.close();
 
     expect(columns).toContain('payload_redacted_at');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(11);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+  }),
+);
+
+it.effect('migrates v11 attempts to causal batch identities and remains idempotent', () =>
+  Effect.gen(function* batchIdentityMigrationFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-v11-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    initial.close();
+    seedVersionElevenBatchIdentity(databasePath);
+
+    const migrated = yield* openJournal(databasePath);
+    expect(
+      migrated.database
+        .query<{ id: string; sequence: number }, []>(
+          'SELECT id, sequence FROM input_batches ORDER BY sequence',
+        )
+        .all(),
+    ).toStrictEqual([
+      { id: 'batch-one', sequence: 1 },
+      { id: 'batch-two', sequence: 2 },
+    ]);
+    expect(
+      migrated.database
+        .query<{ input_batch_id: string | null }, []>(
+          "SELECT input_batch_id FROM codex_attempts WHERE id = 'attempt-one'",
+        )
+        .get(),
+    ).toStrictEqual({ input_batch_id: 'batch-one' });
+    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    migrated.close();
+
+    const reopened = yield* openJournal(databasePath);
+    expect(
+      reopened.database
+        .query<{ count: number }, []>(
+          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = 12',
+        )
+        .get()?.count,
+    ).toBe(1);
+    expect(
+      reopened.database
+        .query<{ input_batch_id: string | null }, []>(
+          "SELECT input_batch_id FROM codex_attempts WHERE id = 'attempt-one'",
+        )
+        .get(),
+    ).toStrictEqual({ input_batch_id: 'batch-one' });
+    reopened.close();
   }),
 );
