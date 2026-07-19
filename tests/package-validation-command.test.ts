@@ -10,6 +10,12 @@ import {
   runObservedCommand,
 } from '../scripts/package-validation-command';
 
+const FILE_POLL_INTERVAL_MS = 10;
+const FIXTURE_READY_ATTEMPTS = 100;
+const ESCAPED_COMMAND_TIMEOUT_MS = 2000;
+const MAX_TIMEOUT_OVERHEAD_MS = 1000;
+const COMPLETE_PID_MARKER = /^[1-9]\d*\n$/u;
+
 const processExists = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -32,6 +38,47 @@ const waitForProcessExit = async (pid: number, attempts: number): Promise<boolea
   await Bun.sleep(10);
   return waitForProcessExit(pid, attempts - 1);
 };
+
+const readFixturePid = async (pidFile: string): Promise<number | undefined> => {
+  const marker = Bun.file(pidFile);
+  if (!(await marker.exists())) {
+    return undefined;
+  }
+  const contents = await marker.text();
+  if (!COMPLETE_PID_MARKER.test(contents)) {
+    return undefined;
+  }
+  const pid = Number(contents.slice(0, -1));
+  return Number.isSafeInteger(pid) ? pid : undefined;
+};
+
+const waitForFixturePid = async (
+  pidFile: string,
+  attempts = FIXTURE_READY_ATTEMPTS,
+): Promise<number> => {
+  const pid = await readFixturePid(pidFile);
+  if (pid !== undefined) {
+    return pid;
+  }
+  if (attempts === 0) {
+    throw new Error(`fixture PID marker was not ready: ${pidFile}`);
+  }
+  await Bun.sleep(FILE_POLL_INTERVAL_MS);
+  return waitForFixturePid(pidFile, attempts - 1);
+};
+
+it('reads only complete positive fixture PID markers', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'spike-command-pid-marker-'));
+  const pidFile = path.join(root, 'descendant.pid');
+  try {
+    await Bun.write(pidFile, '42');
+    expect(await readFixturePid(pidFile)).toBeUndefined();
+    await Bun.write(pidFile, '42\n');
+    expect(await readFixturePid(pidFile)).toBe(42);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
 
 it('bounds commands that leave descendants holding their output pipes', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'spike-command-timeout-'));
@@ -106,26 +153,31 @@ it('bounds output draining when a descendant escapes the process group', async (
       stderr: 'inherit',
       stdout: 'inherit',
     });
-    await Bun.write(${JSON.stringify(pidFile)}, String(child.pid));
+    await Bun.write(${JSON.stringify(pidFile)}, String(child.pid) + "\\n");
     child.unref();
   `;
   const startedAt = performance.now();
   let descendantPid: number | undefined;
+  const command = runCommand({
+    argv: [process.execPath, '-e', escapedScript],
+    cwd: root,
+    environment: {},
+    label: 'escaped process group timeout probe',
+    timeoutMs: ESCAPED_COMMAND_TIMEOUT_MS,
+  });
   try {
-    await expect(
-      runCommand({
-        argv: [process.execPath, '-e', escapedScript],
-        cwd: root,
-        environment: {},
-        label: 'escaped process group timeout probe',
-        timeoutMs: 100,
-      }),
-    ).rejects.toThrow('escaped process group timeout probe exceeded its 100ms timeout');
-    expect(performance.now() - startedAt).toBeLessThan(1000);
-
-    descendantPid = Number(await readFile(pidFile, 'utf8'));
+    descendantPid = await waitForFixturePid(pidFile);
+    expect(processExists(descendantPid)).toBe(true);
+    await expect(command).rejects.toThrow(
+      `escaped process group timeout probe exceeded its ${String(ESCAPED_COMMAND_TIMEOUT_MS)}ms timeout`,
+    );
+    expect(performance.now() - startedAt).toBeLessThan(
+      ESCAPED_COMMAND_TIMEOUT_MS + MAX_TIMEOUT_OVERHEAD_MS,
+    );
     expect(processExists(descendantPid)).toBe(true);
   } finally {
+    await Promise.allSettled([command]);
+    descendantPid ??= await readFixturePid(pidFile);
     if (descendantPid !== undefined && processExists(descendantPid)) {
       process.kill(descendantPid, 'SIGKILL');
       await waitForProcessExit(descendantPid, 20);
