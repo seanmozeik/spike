@@ -7,6 +7,7 @@ import { Deferred, Effect, Fiber } from 'effect';
 
 import { loadSpikeConfig, type SpikeConfig } from './app-config';
 import { openCodexRuntime, type CodexRuntime } from './codex/runtime';
+import type { CodexLogMode } from './codex/stderr-log';
 import { ensureRuntimeLayout } from './config-files';
 import { startControlSocket } from './control-socket';
 import { makeConversationPolicy } from './conversation-policy';
@@ -69,15 +70,17 @@ const releaseServer = (server: Server, paths: SpikePaths): Effect.Effect<void> =
 interface ServeDaemonOptions {
   readonly codex?: boolean;
   readonly conversationValidationIntervalMs?: number;
+  readonly logMode?: CodexLogMode;
 }
 
 const acquireCodex = (
   paths: SpikePaths,
   config: SpikeConfig,
   enabled: boolean,
+  logMode: CodexLogMode,
 ): Effect.Effect<CodexRuntime | null, SpikeRuntimeError> =>
   enabled
-    ? openCodexRuntime(paths, config).pipe(
+    ? openCodexRuntime(paths, config, logMode).pipe(
         Effect.mapError(
           (cause) =>
             new SpikeRuntimeError({
@@ -251,7 +254,7 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
       const config = yield* loadSpikeConfig(paths);
       const journal = yield* Effect.acquireRelease(openJournal(paths.database), releaseJournal);
       const runtime = yield* Effect.acquireRelease(
-        acquireCodex(paths, config, options.codex !== false),
+        acquireCodex(paths, config, options.codex !== false, options.logMode ?? 'quiet'),
         releaseCodex,
       );
       const startedAt = new Date().toISOString();

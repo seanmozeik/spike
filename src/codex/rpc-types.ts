@@ -1,5 +1,6 @@
 import type { JsonRpcNotification } from './notification-registry';
 import type { CodexServerRequest } from './server-request-registry';
+import type { CodexLogMode } from './stderr-log';
 
 type JsonRpcId = number | string;
 
@@ -20,6 +21,7 @@ interface RpcHandle {
 interface SpawnRpcOptions {
   readonly codexExecutable: string;
   readonly codexHome: string;
+  readonly logMode: CodexLogMode;
   readonly stderrLog: string;
   readonly timeoutMs?: number;
 }

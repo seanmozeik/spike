@@ -39,7 +39,7 @@ const stderrLogger = Logger.make(({ logLevel, message }) => {
   const text = Array.isArray(message) ? message.map(String).join(' ') : String(message);
   process.stderr.write(`[${logLevel.toLowerCase()}] ${text}\n`);
 });
-const verbose = process.argv.includes('--verbose') || process.argv.includes('-v');
+const verbose = process.argv.includes('--verbose');
 const minLogLevel: LogLevel.LogLevel = verbose ? 'Debug' : 'Warn';
 const runtimeLayer = Layer.mergeAll(
   BunServices.layer,

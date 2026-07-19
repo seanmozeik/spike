@@ -22,6 +22,7 @@ const RpcRequest = Schema.Struct({
   method: Schema.String,
   params: Schema.optional(Schema.Unknown),
 });
+const StderrParams = Schema.Struct({ lines: Schema.Array(Schema.String) });
 
 type RpcRequest = typeof RpcRequest.Type;
 
@@ -84,6 +85,17 @@ const writeNoiseThenResult = (request: RpcRequest): void => {
   writeJson({ id: ORPHAN_RESPONSE_ID, jsonrpc: '2.0', result: 'orphan' });
   writeJson({ jsonrpc: '2.0', unexpected: true });
   writeJson({ id: request.id, jsonrpc: '2.0', result: 'after-noise' });
+};
+
+const writeStderr = (request: RpcRequest): void => {
+  const decoded = Schema.decodeUnknownOption(StderrParams)(request.params);
+  if (Option.isNone(decoded)) {
+    return;
+  }
+  for (const line of decoded.value.lines) {
+    process.stderr.write(`${line}\n`);
+  }
+  writeJson({ id: request.id, jsonrpc: '2.0', result: null });
 };
 
 const observeHang = (request: RpcRequest): void => {
@@ -155,6 +167,10 @@ const handleRequest = async (request: RpcRequest): Promise<void> => {
     }
     case 'test/error': {
       writeErrorResult(request);
+      return;
+    }
+    case 'test/stderr': {
+      writeStderr(request);
       return;
     }
     case 'test/split': {

@@ -1,5 +1,3 @@
-import { appendFile } from 'node:fs/promises';
-
 import { Effect } from 'effect';
 
 import { CodexRuntimeError } from '../errors';
@@ -7,6 +5,7 @@ import { makeNotificationRegistry, type NotificationRegistry } from './notificat
 import { routeServerRequest } from './rpc-server-request';
 import type { JsonRpcId, RpcHandle, SpawnRpcOptions } from './rpc-types';
 import { makeServerRequestRegistry, type ServerRequestRegistry } from './server-request-registry';
+import { makeCodexStderrLog, type CodexStderrLog } from './stderr-log';
 
 interface PendingRequest {
   readonly reject: (reason?: unknown) => void;
@@ -99,6 +98,17 @@ const readLines = async (
       }
       newline = buffer.indexOf('\n');
     }
+  }
+};
+
+const readStderr = async (
+  stream: ReadableStream<Uint8Array>,
+  log: CodexStderrLog,
+): Promise<void> => {
+  try {
+    await readLines(stream, log.write);
+  } finally {
+    await log.close();
   }
 };
 
@@ -229,21 +239,12 @@ const spawnRpcHandle = (options: SpawnRpcOptions): RpcHandle => {
     stdout: 'pipe',
   });
   const writer = makeWriter(child.stdin);
-  const stderrWrites: Promise<void>[] = [];
+  const stderrLog = makeCodexStderrLog(options.stderrLog, options.logMode);
   const stdout = readLines(
     child.stdout,
     makeLineHandler(runtime, notifications, serverRequests, writer.enqueue),
   );
-  const stderr = readLines(child.stderr, (line) => {
-    const write = async (): Promise<void> => {
-      try {
-        await appendFile(options.stderrLog, `${line}\n`, 'utf8');
-      } catch {
-        // The daemon log is diagnostic; RPC failures still surface to callers.
-      }
-    };
-    stderrWrites.push(write());
-  });
+  const stderr = readStderr(child.stderr, stderrLog);
   const exited = watchChild(child.exited, runtime, closeRegistry.publish);
   return {
     addConnectionCloseListener: closeRegistry.subscribe,
@@ -255,7 +256,6 @@ const spawnRpcHandle = (options: SpawnRpcOptions): RpcHandle => {
       closeRegistry.publish();
       child.kill();
       await Promise.allSettled([child.exited, writer.tail(), stdout, stderr, exited]);
-      await Promise.allSettled(stderrWrites);
     },
     notify: (method, params) => writer.write({ jsonrpc: '2.0', method, params }),
     request: makeRequest(runtime, writer.write, options.timeoutMs ?? DEFAULT_TIMEOUT_MS),

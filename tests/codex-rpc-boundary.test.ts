@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { spawnRpcHandle, type RpcHandle } from '../src/codex/rpc';
 import { makeCodexRuntime } from '../src/codex/runtime';
+import type { CodexLogMode } from '../src/codex/stderr-log';
 import { CodexThreadId, CodexTurnId } from '../src/domain/ids';
 
 const FAKE_CODEX_EXECUTABLE = fileURLToPath(
@@ -19,11 +20,13 @@ interface RpcFixture {
   readonly close: () => Promise<void>;
   readonly codexHome: string;
   readonly handle: RpcHandle;
+  readonly stderrLog: string;
 }
 
 interface RpcFixtureOptions {
   readonly closeHandle?: (handle: RpcHandle) => Promise<void>;
   readonly codexExecutable?: string;
+  readonly logMode?: CodexLogMode;
   readonly onRootCreated?: (root: string) => void;
 }
 
@@ -47,11 +50,13 @@ const withRpcFixture = async <A>(
   try {
     options.onRootCreated?.(root);
     const codexHome = path.join(root, 'codex-home');
+    const stderrLog = path.join(root, 'codex.stderr.log');
     await mkdir(codexHome, { recursive: true });
     const handle = spawnRpcHandle({
       codexExecutable: options.codexExecutable ?? FAKE_CODEX_EXECUTABLE,
       codexHome,
-      stderrLog: path.join(root, 'codex.stderr.log'),
+      logMode: options.logMode ?? 'quiet',
+      stderrLog,
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
     let closed = false;
@@ -62,7 +67,7 @@ const withRpcFixture = async <A>(
       closed = true;
       await (options.closeHandle === undefined ? handle.close() : options.closeHandle(handle));
     };
-    return await use({ close, codexHome, handle });
+    return await use({ close, codexHome, handle, stderrLog });
   } finally {
     try {
       await close();
@@ -99,6 +104,40 @@ describe('Codex RPC process boundary', () => {
         message: 'scripted failure',
       });
     });
+  });
+
+  it('applies the quiet policy to the real child stderr stream and flushes its summary', async () => {
+    await withRpcFixture(async ({ close, handle, stderrLog }) => {
+      const debug = '2026-07-19T10:00:00Z DEBUG codex_core::poll: polling account state';
+      const websocket =
+        '2026-07-19T10:00:01Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 403 Forbidden';
+      await expect(
+        handle.request('test/stderr', { lines: [debug, websocket, websocket, websocket] }),
+      ).resolves.toBeNull();
+      await close();
+
+      const logged = await readFile(stderrLog, 'utf8');
+      expect(logged.trimEnd().split('\n')).toStrictEqual([
+        websocket,
+        '[warn] codex app-server repeats suppressed flow=responses-websocket-unavailable count=2',
+      ]);
+    });
+  });
+
+  it('retains raw diagnostics through the real child stderr stream in verbose mode', async () => {
+    await withRpcFixture(
+      async ({ close, handle, stderrLog }) => {
+        const diagnostic = '2026-07-19T10:00:00Z DEBUG codex_core::poll: polling account state';
+        await expect(
+          handle.request('test/stderr', { lines: [diagnostic, diagnostic] }),
+        ).resolves.toBeNull();
+        await close();
+
+        const logged = await readFile(stderrLog, 'utf8');
+        expect(logged.trimEnd().split('\n')).toStrictEqual([diagnostic, diagnostic]);
+      },
+      { logMode: 'verbose' },
+    );
   });
 
   it('removes its temp root when the real process spawn fails during acquisition', async () => {

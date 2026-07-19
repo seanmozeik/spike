@@ -13,6 +13,7 @@ import type { ClassifiedOutput } from './output-classifier';
 import type { ThreadItem, ThreadSnapshot, ThreadTurn } from './reconcile';
 import { initializeRpc, spawnRpcHandle, type RpcHandle } from './rpc';
 import type { CodexRuntime } from './runtime-types';
+import type { CodexLogMode } from './stderr-log';
 import { classifyThreadLookup, isThreadNotLoaded } from './thread-errors';
 import { waitForTurn } from './turn-wait';
 
@@ -205,6 +206,7 @@ const makeCodexRuntime = (
 const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime(
   paths: SpikePaths,
   config: SpikeConfig,
+  logMode: CodexLogMode = 'quiet',
 ) {
   yield* Effect.tryPromise({
     catch: (cause) => runtimeError('home/create', cause),
@@ -245,6 +247,7 @@ const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime
   const handle = spawnRpcHandle({
     codexExecutable: config.codexExecutable,
     codexHome: config.codexHome,
+    logMode,
     stderrLog: paths.daemonLog,
   });
   yield* initializeRpc(handle).pipe(Effect.tapError(() => Effect.promise(() => handle.close())));

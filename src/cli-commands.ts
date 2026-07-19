@@ -117,9 +117,14 @@ const initCommand = Command.make('init', { preview: previewFlag }).pipe(
     });
   }),
 );
-const serveCommand = Command.make('serve').pipe(
+const verboseFlag = Flag.boolean('verbose').pipe(
+  Flag.withDescription('Retain diagnostic app-server logs'),
+);
+const serveCommand = Command.make('serve', { verbose: verboseFlag }).pipe(
   Command.withDescription('Run the foreground daemon for launchd'),
-  Command.withHandler(() => serveDaemon(spikePaths())),
+  Command.withHandler(({ verbose }) =>
+    serveDaemon(spikePaths(), { logMode: verbose ? 'verbose' : 'quiet' }),
+  ),
 );
 
 export {
