@@ -6,43 +6,7 @@ import { expect } from 'vitest';
 
 import { makeJournal } from '../src/journal/service';
 import { CHAT_GUID, inbound, makeEngineFixture, settle } from './engine-fixture';
-
-const seedActiveTurn = (database: Database): void => {
-  const now = '2026-07-14T12:00:00.000Z';
-  database.run(
-    "INSERT INTO generations VALUES ('generation', 1, 'Current', ?, NULL, 'thread-1', NULL, NULL)",
-    [now],
-  );
-  database.run(
-    "INSERT INTO logical_turns VALUES ('logical-turn', 'generation', 1, 'Running', 'correlation', ?, NULL, NULL)",
-    [now],
-  );
-  database.run(
-    `INSERT INTO inbound_messages(
-       id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
-     ) VALUES (
-       'inbound-initial', 'message-initial', 1000, 'any;-;+15555550199', '+15555550199',
-       'iMessage', 'recovered request', ?, ?
-     )`,
-    [now, now],
-  );
-  database.run(
-    `INSERT INTO input_batches(id, logical_turn_id, sequence, kind, fingerprint, created_at)
-     VALUES ('batch-initial', 'logical-turn', 1, 'Initial', '["inbound-initial"]', ?)`,
-    [now],
-  );
-  database.run(
-    `INSERT INTO input_batch_messages(input_batch_id, inbound_message_id, ordinal)
-     VALUES ('batch-initial', 'inbound-initial', 0)`,
-  );
-  database.run(
-    `INSERT INTO scheduler_state(
-      singleton, generation_id, active_logical_turn_id, active_codex_turn_id,
-      active_acknowledged, timer_deadline_at, updated_at
-    ) VALUES (1, 'generation', 'logical-turn', 'turn-1', 0, NULL, ?)`,
-    [now],
-  );
-};
+import { seedActiveTurn } from './engine-seeds';
 
 const seedAcceptedAttempt = (database: Database): void => {
   database.run(
@@ -52,6 +16,28 @@ const seedAcceptedAttempt = (database: Database): void => {
      ) VALUES (
        'attempt-1', 'logical-turn', 'batch-initial', 'test-account', 'Accepted', 'thread-1', 'turn-1',
        'fingerprint', '{"turnIds":[],"itemIds":[]}', 'Start', '2026-07-14T12:00:00.000Z'
+     )`,
+  );
+};
+
+const seedDeliveredFailureNotice = (database: Database): void => {
+  database.run(
+    `INSERT INTO outbound_messages(
+       id, logical_turn_id, source_kind, source_id, message_kind, text, state,
+       created_at, delivered_at
+     ) VALUES (
+       'failure-outbound', 'logical-turn', 'TurnFailureNotice', 'turn-1', 'Final',
+       'Spike hit an error: interrupted before terminal persistence', 'Delivered',
+       '2026-07-14T12:00:00.000Z', '2026-07-14T12:00:01.000Z'
+     )`,
+  );
+  database.run(
+    `INSERT INTO outbound_chunks(
+       id, outbound_message_id, ordinal, text, messages_rowid, message_guid, state
+     ) VALUES (
+       'failure-chunk', 'failure-outbound', 0,
+       'Spike hit an error: interrupted before terminal persistence', 900,
+       'failure-message-guid', 'Reconciled'
      )`,
   );
 };
@@ -149,14 +135,20 @@ it.effect('advances a turn to failed after its bounded delivery path is exhauste
     fixture.push(inbound(1, 'hello Spike'));
     yield* settle(fixture.engine);
     yield* settle(fixture.engine);
-    expect(fixture.sent).toStrictEqual(['Done']);
+    expect(fixture.sent).toStrictEqual(['Done', 'Spike hit an error: chat.db unavailable']);
     expect(
       fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
     ).toBe('Failed');
     expect(
-      fixture.database.query<{ state: string }, []>('SELECT state FROM outbound_messages').get()
-        ?.state,
-    ).toBe('Failed');
+      fixture.database
+        .query<{ source_kind: string; state: string }, []>(
+          'SELECT source_kind, state FROM outbound_messages ORDER BY source_kind',
+        )
+        .all(),
+    ).toStrictEqual([
+      { source_kind: 'CodexAgentItem', state: 'Failed' },
+      { source_kind: 'TurnFailureNotice', state: 'Failed' },
+    ]);
     expect(
       fixture.database.query<{ state: string }, []>('SELECT state FROM codex_attempts').get()
         ?.state,
@@ -521,12 +513,13 @@ it.effect(
   10_000,
 );
 
-it.effect('resumes and completes a turn whose terminal notification was lost before restart', () =>
+it.effect('recovers one final after a delivered failure and repeated reconciliation', () =>
   Effect.gen(function* recoveredCompletion() {
     const fixture = yield* makeEngineFixture({
       prepare: (database) =>
         Effect.sync(() => {
           seedActiveTurn(database);
+          seedDeliveredFailureNotice(database);
         }),
       snapshot: {
         id: 'thread-1',
@@ -540,6 +533,12 @@ it.effect('resumes and completes a turn whose terminal notification was lost bef
                 text: 'Recovered terminal answer.',
                 type: 'agentMessage',
               },
+              {
+                id: 'trailing-commentary',
+                phase: 'commentary',
+                text: 'Trailing recovery note.',
+                type: 'agentMessage',
+              },
             ],
             status: 'completed',
           },
@@ -547,11 +546,77 @@ it.effect('resumes and completes a turn whose terminal notification was lost bef
       },
     });
     yield* settle(fixture.engine);
+    yield* settle(fixture.engine);
     expect(fixture.resumed).toStrictEqual(['thread-1']);
-    expect(fixture.sent).toStrictEqual(['Recovered terminal answer']);
+    expect(fixture.sent).toStrictEqual(['Trailing recovery note', 'Recovered terminal answer']);
+    expect(
+      fixture.database
+        .query<{ count: number; message_kind: string; source_kind: string }, []>(
+          `SELECT source_kind, message_kind, COUNT(*) AS count
+           FROM outbound_messages GROUP BY source_kind, message_kind
+           ORDER BY source_kind, message_kind`,
+        )
+        .all(),
+    ).toStrictEqual([
+      { count: 1, message_kind: 'Final', source_kind: 'CodexAgentItem' },
+      { count: 1, message_kind: 'WorkAck', source_kind: 'CodexAgentItem' },
+      { count: 1, message_kind: 'Final', source_kind: 'TurnFailureNotice' },
+    ]);
     expect(
       fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
     ).toBe('Completed');
+    fixture.remove();
+  }),
+);
+
+it.effect('fails commentary-only recovery explicitly and preserves diagnostics', () =>
+  Effect.gen(function* commentaryOnlyRecovery() {
+    const fixture = yield* makeEngineFixture({
+      prepare: (database) =>
+        Effect.sync(() => {
+          seedActiveTurn(database);
+        }),
+      snapshot: {
+        id: 'thread-1',
+        turns: [
+          {
+            id: 'turn-1',
+            items: [
+              {
+                id: 'commentary-only',
+                phase: 'commentary',
+                text: 'Still investigating.',
+                type: 'agentMessage',
+              },
+            ],
+            status: 'completed',
+          },
+        ],
+      },
+    });
+
+    yield* settle(fixture.engine);
+
+    expect(fixture.sent).toStrictEqual([
+      'Still investigating',
+      'Spike hit an error: Codex completed without a final answer',
+    ]);
+    expect(
+      fixture.database
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM outbound_messages
+           WHERE source_kind = 'CodexAgentItem' AND message_kind = 'Final'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      fixture.database
+        .query<{ message: string }, []>('SELECT message FROM failures ORDER BY id DESC LIMIT 1')
+        .get()?.message,
+    ).toBe('Codex completed without a final answer');
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Failed');
     fixture.remove();
   }),
 );

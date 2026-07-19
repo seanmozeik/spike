@@ -312,7 +312,7 @@ it.effect('emits one acknowledgement and releases the final only after successfu
     });
     expect(yield* Fiber.join(fiber)).toEqual({
       acknowledgement: 'Looking into it now',
-      finalAnswer: 'Done.',
+      final: { itemId: 'final', kind: 'Ready', text: 'Done.' },
     });
     expect(acknowledgements).toEqual(['Looking into it now']);
     expect(compactions).toEqual(['compact-1']);

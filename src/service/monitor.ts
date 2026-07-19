@@ -67,16 +67,50 @@ const resolvedOutput = (
 const requireFinalAnswer = (
   output: ClassifiedOutput,
   turnId: CodexTurnId,
-): Effect.Effect<string, CodexRuntimeError> =>
-  output.finalAnswer === null
-    ? Effect.fail(
+): Effect.Effect<string, CodexRuntimeError> => {
+  switch (output.final.kind) {
+    case 'Ready': {
+      return Effect.succeed(output.final.text);
+    }
+    case 'Ambiguous': {
+      return Effect.fail(
+        new CodexRuntimeError({
+          cause: { candidateItemIds: output.final.candidateItemIds, turnId },
+          message: `Codex completed with multiple final answers: ${output.final.candidateItemIds.join(', ')}`,
+          operation: 'turn/output',
+        }),
+      );
+    }
+    case 'Missing': {
+      return Effect.fail(
         new CodexRuntimeError({
           cause: turnId,
           message: 'Codex completed without a final answer',
           operation: 'turn/output',
         }),
-      )
-    : Effect.succeed(output.finalAnswer);
+      );
+    }
+    case 'Pending': {
+      return Effect.fail(
+        new CodexRuntimeError({
+          cause: turnId,
+          message: 'Codex output was requested before turn completion',
+          operation: 'turn/output',
+        }),
+      );
+    }
+    default: {
+      const unexpected: never = output.final;
+      return Effect.fail(
+        new CodexRuntimeError({
+          cause: unexpected,
+          message: 'Codex returned an unrecognized final output state',
+          operation: 'turn/output',
+        }),
+      );
+    }
+  }
+};
 
 interface TurnNoticeTracker {
   readonly acknowledgementSeen: () => boolean;

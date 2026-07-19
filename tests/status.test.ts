@@ -1,8 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
+import { it } from '@effect/vitest';
+import { Effect } from 'effect';
+import { afterEach, describe, expect } from 'vitest';
+
+import { openJournal } from '../src/database';
+import { spikePaths } from '../src/paths';
 import { duration, formatStatus, relativeTime } from '../src/status/format';
 import { readRateLimits } from '../src/status/rate-limits';
-import { parseMemoryPressure, type StatusSnapshot } from '../src/status/snapshot';
+import {
+  makeStatusSnapshot,
+  parseMemoryPressure,
+  type StatusSnapshot,
+} from '../src/status/snapshot';
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
 
 const snapshot = (): StatusSnapshot => ({
   account: { active: 'default', availability: 'available', configured: 1, eligible: 1 },
@@ -90,4 +110,43 @@ describe('compact status', () => {
     expect(parseMemoryPressure('System-wide memory free percentage: 90%')).toBe(10);
     expect(parseMemoryPressure('unavailable')).toBeNull();
   });
+
+  it.effect('counts only delivered Codex agent finals as conversation activity', () =>
+    Effect.gen(function* statusFinalRole() {
+      const root = mkdtempSync(path.join(tmpdir(), 'spike-status-final-role-'));
+      roots.push(root);
+      const handle = yield* openJournal(path.join(root, 'spike.db'));
+      const createdAt = '2026-07-14T19:00:00.000Z';
+      handle.database.run(
+        "INSERT INTO generations(id, sequence, state, created_at) VALUES ('generation', 1, 'Current', ?)",
+        [createdAt],
+      );
+      handle.database.run(
+        `INSERT INTO logical_turns(
+           id, generation_id, sequence, state, correlation_id, created_at
+         ) VALUES ('turn', 'generation', 1, 'Completed', 'correlation', ?)`,
+        [createdAt],
+      );
+      handle.database.run(
+        `INSERT INTO outbound_messages(
+           id, logical_turn_id, source_kind, source_id, message_kind, text, state,
+           created_at, delivered_at
+         ) VALUES
+           ('assistant', 'turn', 'CodexAgentItem', 'final-item', 'Final', 'Answer',
+            'Delivered', ?, '2026-07-14T19:01:00.000Z'),
+           ('control', NULL, 'Control', 'status:1', 'Final', 'Status',
+            'Delivered', ?, '2026-07-14T19:02:00.000Z'),
+           ('failure', 'turn', 'TurnFailureNotice', 'turn', 'Final', 'Failure',
+            'Delivered', ?, '2026-07-14T19:03:00.000Z')`,
+        [createdAt, createdAt, createdAt],
+      );
+
+      const status = yield* Effect.promise(() =>
+        makeStatusSnapshot(handle.database, spikePaths(root), createdAt, null),
+      );
+
+      expect(status.turn.lastFinalAt).toBe('2026-07-14T19:01:00.000Z');
+      handle.close();
+    }),
+  );
 });

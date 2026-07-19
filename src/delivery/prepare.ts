@@ -9,7 +9,7 @@ import { chunkFinalAnswer } from './chunk';
 import type { AssistantMessageKind, DeliveryJournal, PreparedDelivery } from './model';
 import { applyPlainTextFallback } from './plain-text';
 
-type DeliverySourceKind = 'CodexAgentItem' | 'Control';
+type DeliverySourceKind = 'CodexAgentItem' | 'Control' | 'TurnFailureNotice';
 
 interface PrepareInput {
   readonly createdAt: string;
@@ -23,6 +23,7 @@ interface PrepareInput {
 interface PrepareFunctions {
   readonly assistant: DeliveryJournal['prepareAssistantMessage'];
   readonly control: DeliveryJournal['prepareControlMessage'];
+  readonly failure: DeliveryJournal['prepareFailureNotice'];
 }
 
 const ACKNOWLEDGEMENT_LIMIT = 240;
@@ -30,20 +31,36 @@ const ACKNOWLEDGEMENT_LIMIT = 240;
 const deliveryTexts = (kind: AssistantMessageKind, text: string): readonly string[] =>
   kind === 'WorkAck' ? [text.slice(0, ACKNOWLEDGEMENT_LIMIT)] : chunkFinalAnswer(text);
 
+const findExisting = (database: Database, input: PrepareInput): string | null => {
+  if (input.sourceKind === 'TurnFailureNotice' && input.logicalTurnId !== null) {
+    return (
+      database
+        .query<{ id: string }, [string]>(
+          `SELECT id FROM outbound_messages
+           WHERE logical_turn_id = ? AND source_kind = 'TurnFailureNotice'`,
+        )
+        .get(input.logicalTurnId)?.id ?? null
+    );
+  }
+  return (
+    database
+      .query<{ id: string }, [string, string, string]>(
+        `SELECT id FROM outbound_messages
+         WHERE source_kind = ? AND source_id = ? AND message_kind = ?`,
+      )
+      .get(input.sourceKind, input.sourceId, input.kind)?.id ?? null
+  );
+};
+
 const prepareRows = (database: Database, input: PrepareInput): string => {
   const { createdAt, kind, logicalTurnId, sourceId, sourceKind } = input;
   const text = applyPlainTextFallback(input.text);
   if (text.trim().length === 0) {
     throw new Error('assistant delivery text must not be empty');
   }
-  const existing = database
-    .query<{ id: string }, [string, string, string]>(
-      `SELECT id FROM outbound_messages
-       WHERE source_kind = ? AND source_id = ? AND message_kind = ?`,
-    )
-    .get(sourceKind, sourceId, kind);
+  const existing = findExisting(database, input);
   if (existing !== null) {
-    return existing.id;
+    return existing;
   }
   const outboundMessageId = OutboundMessageId.make(randomUUID());
   database.run(
@@ -99,6 +116,8 @@ const makePrepare = (
       prepare(logicalTurnId, 'CodexAgentItem', sourceId, kind, text, createdAt),
     control: (sourceId, text, createdAt) =>
       prepare(null, 'Control', sourceId, 'Final', text, createdAt),
+    failure: (logicalTurnId, text, createdAt) =>
+      prepare(logicalTurnId, 'TurnFailureNotice', logicalTurnId, 'Final', text, createdAt),
   };
 };
 

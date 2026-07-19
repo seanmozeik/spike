@@ -98,7 +98,7 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
     journal.close();
     expect(inspectJournal(databasePath)).toStrictEqual({
       journalMode: 'wal',
-      migrationVersion: 12,
+      migrationVersion: 13,
     });
   }),
 );
@@ -186,7 +186,7 @@ it.effect('migrates a version 6 scheduler journal to the canonical generation th
 
     expect(columns).not.toContain('codex_thread_id');
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
   }),
 );
 
@@ -214,7 +214,7 @@ it.effect('migrates a version 7 journal to durable broken-generation state', () 
     migrated.close();
 
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
   }),
 );
 
@@ -248,7 +248,7 @@ it.effect('migrates failed logical turns to terminal Codex attempts', () =>
     migrated.close();
 
     expect(attempt).toStrictEqual({ finished_at: '2026-07-15T00:01:00.000Z', state: 'Failed' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
   }),
 );
 
@@ -276,7 +276,7 @@ it.effect('migrates version 10 approval rows to the payload retention marker', (
     migrated.close();
 
     expect(columns).toContain('payload_redacted_at');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
   }),
 );
 
@@ -307,14 +307,14 @@ it.effect('migrates v11 attempts to causal batch identities and remains idempote
         )
         .get(),
     ).toStrictEqual({ input_batch_id: 'batch-one' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
     migrated.close();
 
     const reopened = yield* openJournal(databasePath);
     expect(
       reopened.database
         .query<{ count: number }, []>(
-          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = 12',
+          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = 13',
         )
         .get()?.count,
     ).toBe(1);
@@ -326,5 +326,56 @@ it.effect('migrates v11 attempts to causal batch identities and remains idempote
         .get(),
     ).toStrictEqual({ input_batch_id: 'batch-one' });
     reopened.close();
+  }),
+);
+
+it.effect('migrates the v12 final index to admit a distinct failure-notice role', () =>
+  Effect.gen(function* failureNoticeIndexMigration() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-v12-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    initial.close();
+
+    const versionTwelve = new Database(databasePath, { strict: true });
+    versionTwelve.run('DROP INDEX outbound_one_failure_notice');
+    versionTwelve.run('DROP INDEX outbound_one_final');
+    versionTwelve.run(
+      `CREATE UNIQUE INDEX outbound_one_final
+       ON outbound_messages(logical_turn_id, message_kind) WHERE message_kind = 'Final'`,
+    );
+    versionTwelve.run('DELETE FROM schema_meta');
+    versionTwelve.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (12, '2026-07-15T00:03:00.000Z')",
+    );
+    versionTwelve.close();
+
+    const migrated = yield* openJournal(databasePath);
+    migrated.database.run(
+      "INSERT INTO generations(id, sequence, state, created_at) VALUES ('generation', 1, 'Current', '2026-07-15T00:00:00.000Z')",
+    );
+    migrated.database.run(
+      "INSERT INTO logical_turns(id, generation_id, sequence, state, correlation_id, created_at) VALUES ('turn', 'generation', 1, 'Running', 'correlation', '2026-07-15T00:00:00.000Z')",
+    );
+    for (const [id, sourceKind] of [
+      ['failure', 'TurnFailureNotice'],
+      ['answer', 'CodexAgentItem'],
+    ] as const) {
+      migrated.database.run(
+        `INSERT INTO outbound_messages(
+           id, logical_turn_id, source_kind, source_id, message_kind, text, state, created_at
+         ) VALUES (?, 'turn', ?, 'turn-1', 'Final', ?, 'Delivered', '2026-07-15T00:01:00.000Z')`,
+        [id, sourceKind, id],
+      );
+    }
+    expect(
+      migrated.database
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM outbound_messages WHERE logical_turn_id = 'turn'",
+        )
+        .get()?.count,
+    ).toBe(2);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
+    migrated.close();
   }),
 );

@@ -45,10 +45,8 @@ const deliverFailure = (
 ): Effect.Effect<void> =>
   Effect.gen(function* deliverTurnFailure() {
     const delivered = yield* Effect.result(
-      context.options.delivery.deliverAssistantMessage(
+      context.options.delivery.deliverFailureNotice(
         obligation.identity.logicalTurnId,
-        obligation.sourceId,
-        'Final',
         `Spike hit an error: ${compactError(obligation.error)}`,
         context.now(),
       ),

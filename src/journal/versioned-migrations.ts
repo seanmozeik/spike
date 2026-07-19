@@ -11,12 +11,37 @@ const BROKEN_GENERATION_STATE_VERSION = 8;
 const TERMINAL_ATTEMPT_STATE_VERSION = 9;
 const APPROVAL_PAYLOAD_RETENTION_VERSION = 11;
 const INPUT_BATCH_IDENTITY_VERSION = 12;
+const FAILURE_NOTICE_IDENTITY_VERSION = 13;
 
 const hasColumn = (database: Database, table: string, column: string): boolean =>
   database
     .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
     .all()
     .some(({ name }) => name === column);
+
+const migrateFailureNoticeIdentity = (database: Database): void => {
+  database.run('DROP INDEX IF EXISTS outbound_one_final');
+  database.run(
+    `CREATE UNIQUE INDEX outbound_one_final
+     ON outbound_messages(logical_turn_id, message_kind)
+     WHERE message_kind = 'Final' AND source_kind = 'CodexAgentItem'`,
+  );
+  database.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_failure_notice
+     ON outbound_messages(logical_turn_id, source_kind)
+     WHERE source_kind = 'TurnFailureNotice'`,
+  );
+};
+
+const applyIdentityMigrations = (database: Database, previousVersion: number): void => {
+  if (previousVersion > 0 && previousVersion < INPUT_BATCH_IDENTITY_VERSION) {
+    migrateInputBatchIdentity(database);
+  }
+  if (previousVersion > 0 && previousVersion < FAILURE_NOTICE_IDENTITY_VERSION) {
+    migrateFailureNoticeIdentity(database);
+  }
+  ensureInputBatchIdentityIndexes(database);
+};
 
 const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
   if (previousVersion === 1) {
@@ -63,10 +88,7 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   ) {
     database.run('ALTER TABLE approval_requests ADD COLUMN payload_redacted_at TEXT');
   }
-  if (previousVersion > 0 && previousVersion < INPUT_BATCH_IDENTITY_VERSION) {
-    migrateInputBatchIdentity(database);
-  }
-  ensureInputBatchIdentityIndexes(database);
+  applyIdentityMigrations(database, previousVersion);
 };
 
 export { applyVersionedMigrations };

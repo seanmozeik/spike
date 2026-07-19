@@ -55,7 +55,10 @@ const makeRuntime = (
   steerTurn: (): Effect.Effect<void> => Effect.void,
   usage: Effect.succeed({}),
   waitForTurn: (): Effect.Effect<ClassifiedOutput> =>
-    Effect.succeed({ acknowledgement: null, finalAnswer: 'Done.' }),
+    Effect.succeed({
+      acknowledgement: null,
+      final: { itemId: 'final', kind: 'Ready', text: 'Done.' },
+    }),
 });
 
 const makeSubmissionFixture = Effect.fn('Test.makeCodexSubmissionFixture')(

@@ -1,4 +1,4 @@
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -117,7 +117,11 @@ const migrationStatements = [
   `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_work_ack
     ON outbound_messages(logical_turn_id, message_kind) WHERE message_kind = 'WorkAck'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_final
-    ON outbound_messages(logical_turn_id, message_kind) WHERE message_kind = 'Final'`,
+    ON outbound_messages(logical_turn_id, message_kind)
+    WHERE message_kind = 'Final' AND source_kind = 'CodexAgentItem'`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_failure_notice
+    ON outbound_messages(logical_turn_id, source_kind)
+    WHERE source_kind = 'TurnFailureNotice'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_outage_notice
     ON outbound_messages(outage_episode_id, message_kind) WHERE message_kind = 'OutageNotice'`,
   `CREATE TABLE IF NOT EXISTS outbound_chunks (

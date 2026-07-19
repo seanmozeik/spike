@@ -1,6 +1,6 @@
 import type { CodexTurnId } from '../domain/ids';
-import type { ClassifiedOutput } from './output-classifier';
-import type { ThreadItem, ThreadSnapshot } from './reconcile';
+import { classifyAgentMessages, type ClassifiedOutput } from './output-classifier';
+import type { ThreadSnapshot } from './reconcile';
 
 type RecoveredTurn =
   | { readonly kind: 'Completed'; readonly output: ClassifiedOutput }
@@ -19,16 +19,7 @@ const recoverTurn = (snapshot: ThreadSnapshot, turnId: CodexTurnId): RecoveredTu
   if (turn.status !== 'completed') {
     return { kind: 'Running' };
   }
-  const messages = turn.items.filter(
-    (item): item is ThreadItem & { readonly text: string } =>
-      item.type === 'agentMessage' && typeof item.text === 'string',
-  );
-  const acknowledgement = messages.find((item) => item.phase === 'commentary')?.text ?? null;
-  const finalAnswer =
-    messages.findLast((item) => item.phase === 'final_answer')?.text ??
-    messages.at(-1)?.text ??
-    null;
-  return { kind: 'Completed', output: { acknowledgement, finalAnswer } };
+  return { kind: 'Completed', output: classifyAgentMessages(turn.items, true) };
 };
 
 export { recoverTurn };

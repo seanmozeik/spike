@@ -11,6 +11,7 @@ import { CodexRuntimeError, GenerationBroken } from '../src/errors';
 interface TurnBehavior {
   readonly acknowledgement?: string;
   readonly approvalExpiryMs?: number;
+  readonly classifiedOutput?: ClassifiedOutput;
   readonly compactions?: readonly string[];
   readonly deliveryFailure?: string;
   readonly failure?: string;
@@ -58,10 +59,12 @@ const makeWaitForTurn =
       if (behavior.gate !== undefined) {
         yield* Effect.promise(() => behavior.gate ?? Promise.resolve());
       }
-      return {
-        acknowledgement: behavior.acknowledgement ?? null,
-        finalAnswer: behavior.finalAnswer ?? 'Done.',
-      } satisfies ClassifiedOutput;
+      return (
+        behavior.classifiedOutput ?? {
+          acknowledgement: behavior.acknowledgement ?? null,
+          final: { itemId: 'final', kind: 'Ready', text: behavior.finalAnswer ?? 'Done.' },
+        }
+      );
     });
 
 const makeResumeThread =

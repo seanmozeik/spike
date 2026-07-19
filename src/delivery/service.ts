@@ -21,6 +21,11 @@ interface DeliveryService {
     text: string,
     createdAt: Date,
   ) => Effect.Effect<void, DeliveryError>;
+  readonly deliverFailureNotice: (
+    logicalTurnId: LogicalTurnId,
+    text: string,
+    createdAt: Date,
+  ) => Effect.Effect<void, DeliveryError>;
   readonly recover: Effect.Effect<void, DeliveryError>;
   readonly deliverControlMessage: (
     sourceId: string,
@@ -170,6 +175,10 @@ const makeDeliveryService = (
   deliverControlMessage: (sourceId, text, createdAt): Effect.Effect<void, DeliveryError> =>
     journal
       .prepareControlMessage(sourceId, text, createdAt)
+      .pipe(Effect.flatMap((prepared) => deliverPrepared(journal, transport, prepared))),
+  deliverFailureNotice: (logicalTurnId, text, createdAt): Effect.Effect<void, DeliveryError> =>
+    journal
+      .prepareFailureNotice(logicalTurnId, text, createdAt)
       .pipe(Effect.flatMap((prepared) => deliverPrepared(journal, transport, prepared))),
   recover: Effect.gen(function* recoverDelivery() {
     const chunks = yield* journal.listRecoverable;

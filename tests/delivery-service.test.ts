@@ -125,6 +125,80 @@ it.effect('prepares idempotently and reconciles a confirmed one-bubble acknowled
   }),
 );
 
+it.effect('keys a failure notice by logical turn across legacy physical source identities', () =>
+  Effect.gen(function* distinctFailureDelivery() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-delivery-failure-role-'));
+    roots.push(root);
+    const handle = yield* openJournal(path.join(root, 'spike.db'));
+    seedTurn(handle.database);
+    let sends = 0;
+    const service = makeDeliveryService(
+      makeDeliveryJournal(handle.database),
+      transport(
+        () =>
+          Effect.sync(() => {
+            sends += 1;
+          }),
+        (_frontier, text) =>
+          Effect.succeed({ guid: `guid-${String(sends)}-${text}`, rowId: 20 + sends }),
+      ),
+    );
+    const logicalTurnId = LogicalTurnId.make('turn');
+
+    yield* service.deliverFailureNotice(
+      logicalTurnId,
+      'Spike hit an error: interrupted',
+      new Date(),
+    );
+    handle.database.run(
+      "UPDATE outbound_messages SET source_id = 'turn-1' WHERE source_kind = 'TurnFailureNotice'",
+    );
+    yield* service.deliverFailureNotice(
+      logicalTurnId,
+      'Spike hit an error: interrupted',
+      new Date(),
+    );
+    yield* service.deliverAssistantMessage(
+      logicalTurnId,
+      'turn-1',
+      'Final',
+      'Recovered answer.',
+      new Date(),
+    );
+    yield* service.deliverAssistantMessage(
+      logicalTurnId,
+      'turn-1',
+      'Final',
+      'Recovered answer.',
+      new Date(),
+    );
+
+    expect(sends).toBe(2);
+    expect(
+      handle.database
+        .query<{ message_kind: string; source_id: string; source_kind: string; state: string }, []>(
+          `SELECT source_kind, source_id, message_kind, state FROM outbound_messages
+           ORDER BY source_kind`,
+        )
+        .all(),
+    ).toStrictEqual([
+      {
+        message_kind: 'Final',
+        source_id: 'turn-1',
+        source_kind: 'CodexAgentItem',
+        state: 'Delivered',
+      },
+      {
+        message_kind: 'Final',
+        source_id: 'turn-1',
+        source_kind: 'TurnFailureNotice',
+        state: 'Delivered',
+      },
+    ]);
+    handle.close();
+  }),
+);
+
 it.effect('reconciles an AppleEvent failure before retrying', () =>
   Effect.gen(function* ambiguousDelivery() {
     const root = mkdtempSync(path.join(tmpdir(), 'spike-delivery-ambiguous-'));

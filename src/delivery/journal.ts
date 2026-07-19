@@ -220,6 +220,7 @@ const makeDeliveryJournal = (database: Database): DeliveryJournal => {
     markSent: makeMarkSent(database),
     prepareAssistantMessage: prepare.assistant,
     prepareControlMessage: prepare.control,
+    prepareFailureNotice: prepare.failure,
   };
 };
 

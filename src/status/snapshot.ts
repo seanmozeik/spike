@@ -227,7 +227,8 @@ const turnStatus = (
   return {
     lastFinalAt: scalarString(
       database,
-      "SELECT MAX(delivered_at) AS value FROM outbound_messages WHERE message_kind = 'Final'",
+      `SELECT MAX(delivered_at) AS value FROM outbound_messages
+           WHERE message_kind = 'Final' AND source_kind = 'CodexAgentItem'`,
     ),
     lastWorkAcknowledgementAt: scalarString(
       database,

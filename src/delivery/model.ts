@@ -63,6 +63,11 @@ interface DeliveryJournal {
     text: string,
     createdAt: Date,
   ) => Effect.Effect<PreparedDelivery, JournalTransactionError>;
+  readonly prepareFailureNotice: (
+    logicalTurnId: LogicalTurnId,
+    text: string,
+    createdAt: Date,
+  ) => Effect.Effect<PreparedDelivery, JournalTransactionError>;
   readonly prepareControlMessage: (
     sourceId: string,
     text: string,
