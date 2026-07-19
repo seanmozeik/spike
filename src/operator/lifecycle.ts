@@ -126,17 +126,15 @@ const unloadService = Effect.fn('SpikeLifecycle.unload')(function* unloadService
   const args = ['bootout', `${options.domain}/${options.label}`] as const;
   const result = yield* options.commands.launchctl(args);
   if (result.timedOut) {
-    yield* Effect.fail(launchctlError(args, result));
-    return;
+    return yield* launchctlError(args, result);
   }
   if (result.exitCode !== 0) {
     if (serviceIsMissing(result.stderr)) {
-      return;
+      return yield* Effect.void;
     }
-    yield* Effect.fail(launchctlError(args, result));
-    return;
+    return yield* launchctlError(args, result);
   }
-  yield* waitUntilUnloaded(options);
+  return yield* waitUntilUnloaded(options);
 });
 
 const launchService = Effect.fn('SpikeLifecycle.launch')(function* launchService(
