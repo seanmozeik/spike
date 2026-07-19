@@ -159,8 +159,11 @@ it.effect('waits durably when all accounts are exhausted and wakes when an accou
       readProvider: Effect.succeed(null),
     });
     const acquire = yield* Effect.forkChild(coordinator.acquire);
-    yield* Effect.promise(() => Bun.sleep(10));
-    expect(yield* coordinator.snapshot).toEqual({
+    const waiting = yield* Effect.repeat(
+      Effect.yieldNow.pipe(Effect.andThen(coordinator.snapshot)),
+      { times: 1000, until: (state) => state.kind === 'WaitingForCapacity' },
+    );
+    expect(waiting).toEqual({
       kind: 'WaitingForCapacity',
       retryAt: new Date('2026-07-14T17:00:00Z'),
     });

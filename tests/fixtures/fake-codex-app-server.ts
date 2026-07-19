@@ -2,7 +2,7 @@
 
 import { Option, Schema } from 'effect';
 
-import { makeFakeCodexDaemonHandler } from './fake-codex-daemon';
+import { handleDaemonNotification, makeFakeCodexDaemonHandler } from './fake-codex-daemon';
 
 const EXIT_CODE = 17;
 const INVALID_USAGE_CODE = 64;
@@ -17,9 +17,18 @@ const RpcRequest = Schema.Struct({
   method: Schema.String,
   params: Schema.optional(Schema.Unknown),
 });
+const RpcNotification = Schema.Struct({
+  jsonrpc: Schema.Literal('2.0'),
+  method: Schema.String,
+  params: Schema.optional(Schema.Unknown),
+});
 const StderrParams = Schema.Struct({ lines: Schema.Array(Schema.String) });
 
 type RpcRequest = typeof RpcRequest.Type;
+type RpcNotification = typeof RpcNotification.Type;
+type RpcInput =
+  | { readonly kind: 'Notification'; readonly value: RpcNotification }
+  | { readonly kind: 'Request'; readonly value: RpcRequest };
 
 const writeJson = (value: unknown): void => {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -110,7 +119,8 @@ const scheduleLateResult = (request: RpcRequest): void => {
 
 const exitChild = (): never => process.exit(EXIT_CODE);
 
-const handleDaemonRequest = makeFakeCodexDaemonHandler({ exitChild, schedule, writeJson });
+const daemonOptions = { exitChild, schedule, writeJson };
+const handleDaemonRequest = makeFakeCodexDaemonHandler(daemonOptions);
 
 const handleRequest = async (request: RpcRequest): Promise<void> => {
   if (handleDaemonRequest(request)) {
@@ -163,31 +173,40 @@ const handleRequest = async (request: RpcRequest): Promise<void> => {
   }
 };
 
-const decodeRequest = (line: string): RpcRequest | null => {
+const decodeInput = (line: string): RpcInput | null => {
   try {
-    const decoded = Schema.decodeUnknownOption(RpcRequest)(JSON.parse(line) as unknown);
-    return Option.isSome(decoded) ? decoded.value : null;
+    const parsed = JSON.parse(line) as unknown;
+    const request = Schema.decodeUnknownOption(RpcRequest)(parsed);
+    if (Option.isSome(request)) {
+      return { kind: 'Request', value: request.value };
+    }
+    const notification = Schema.decodeUnknownOption(RpcNotification)(parsed);
+    return Option.isSome(notification) ? { kind: 'Notification', value: notification.value } : null;
   } catch {
     return null;
   }
 };
 
-const processRequests = async (requests: readonly RpcRequest[], index = 0): Promise<void> => {
-  const request = requests[index];
-  if (request === undefined) {
+const processInputs = async (inputs: readonly RpcInput[], index = 0): Promise<void> => {
+  const input = inputs[index];
+  if (input === undefined) {
     return;
   }
-  await handleRequest(request);
-  await processRequests(requests, index + 1);
+  if (input.kind === 'Request') {
+    await handleRequest(input.value);
+  } else {
+    handleDaemonNotification(input.value.method, daemonOptions);
+  }
+  await processInputs(inputs, index + 1);
 };
 
 const processBuffer = async (buffer: string): Promise<string> => {
   const lines = buffer.split('\n');
   const remainder = lines.pop() ?? '';
-  const requests = lines
-    .map((line) => decodeRequest(line.trim()))
-    .filter((request): request is RpcRequest => request !== null);
-  await processRequests(requests);
+  const inputs = lines
+    .map((line) => decodeInput(line.trim()))
+    .filter((input): input is RpcInput => input !== null);
+  await processInputs(inputs);
   return remainder;
 };
 

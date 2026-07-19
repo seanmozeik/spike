@@ -52,9 +52,14 @@ const handleInitializeRequest = (request: RpcRequest, options: FakeCodexDaemonOp
     return false;
   }
   options.writeJson({ id: request.id, jsonrpc: '2.0', result: {} });
-  if (markerExists(EXIT_AFTER_INITIALIZE_MARKER)) {
-    options.schedule(SPLIT_DELAY_MS, options.exitChild);
+  return true;
+};
+
+const handleDaemonNotification = (method: string, options: FakeCodexDaemonOptions): boolean => {
+  if (method !== 'initialized' || !markerExists(EXIT_AFTER_INITIALIZE_MARKER)) {
+    return false;
   }
+  options.schedule(0, options.exitChild);
   return true;
 };
 
@@ -128,4 +133,4 @@ const makeFakeCodexDaemonHandler =
     handleTurnRequest(request, options) ||
     handleAccountRequest(request, options);
 
-export { makeFakeCodexDaemonHandler };
+export { handleDaemonNotification, makeFakeCodexDaemonHandler };
