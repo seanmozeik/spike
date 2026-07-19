@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite';
 
 import { it } from '@effect/vitest';
 import { Effect } from 'effect';
+import { TestClock } from 'effect/testing';
 import { expect } from 'vitest';
 
 import { makeJournal } from '../src/journal/service';
@@ -228,8 +229,8 @@ it.effect('fails an active turn when its persisted steer side effect fails', () 
     yield* Effect.promise(() => Bun.sleep(0));
     fixture.push(inbound(2, 'follow-up detail'));
     yield* fixture.engine.pollOnce;
-    yield* Effect.promise(() => Bun.sleep(3100));
-    yield* Effect.promise(() => Bun.sleep(0));
+    yield* TestClock.adjust('3100 millis');
+    yield* Effect.yieldNow;
 
     expect(fixture.steers).toStrictEqual(['follow-up detail', 'follow-up detail']);
     expect(fixture.sent).toStrictEqual(['Spike hit an error: follow-up steer unavailable']);
@@ -242,6 +243,30 @@ it.effect('fails an active turn when its persisted steer side effect fails', () 
     yield* fixture.engine.drain;
     expect(fixture.sent).toStrictEqual(['Spike hit an error: follow-up steer unavailable']);
     fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('cancels and joins a pooled steer debounce during engine shutdown', () =>
+  Effect.gen(function* cancelledSteer() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({ behavior: { gate: gate.promise } });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    fixture.push(inbound(2, 'follow-up detail'));
+    yield* fixture.engine.pollOnce;
+
+    yield* fixture.engine.shutdown;
+    yield* TestClock.adjust('3100 millis');
+    yield* Effect.yieldNow;
+
+    expect(fixture.steers).toStrictEqual([]);
+    expect((yield* fixture.engine.snapshot).pool.map(({ text }) => text)).toStrictEqual([
+      'follow-up detail',
+    ]);
+    gate.reject(new Error('monitor stopped after engine close'));
+    yield* fixture.engine.drain;
     fixture.remove();
   }),
 );
@@ -272,8 +297,8 @@ it.effect('quarantines a generation when a pool-timer steer finds a legacy attem
 
     fixture.push(inbound(2, 'follow-up detail'));
     yield* fixture.engine.pollOnce;
-    yield* Effect.promise(() => Bun.sleep(3100));
-    yield* Effect.promise(() => Bun.sleep(0));
+    yield* TestClock.adjust('3100 millis');
+    yield* Effect.yieldNow;
 
     expect(fixture.steers).toStrictEqual([]);
     expect(fixture.sent).toStrictEqual([
@@ -499,11 +524,11 @@ it.effect(
       yield* Effect.promise(() => Bun.sleep(0));
       fixture.push(inbound(2, 'follow-up detail'));
       yield* fixture.engine.pollOnce;
-      yield* Effect.promise(() => Bun.sleep(3100));
-      yield* Effect.promise(() => Bun.sleep(0));
+      yield* TestClock.adjust('3100 millis');
+      yield* Effect.yieldNow;
       fixture.push(inbound(3, 'follow-up detail'));
       yield* fixture.engine.pollOnce;
-      yield* Effect.promise(() => Bun.sleep(3100));
+      yield* TestClock.adjust('3100 millis');
       gate.resolve();
       yield* fixture.engine.drain;
       expect(fixture.steers).toStrictEqual(['follow-up detail', 'follow-up detail']);

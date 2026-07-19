@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect, Result } from 'effect';
+import { Effect, type Fiber, Result } from 'effect';
 
 import type { ApprovalManager } from '../approval/manager';
 import type { CodexRuntime } from '../codex/runtime';
@@ -46,8 +46,9 @@ interface EngineContext {
   readonly now: () => Date;
   readonly options: SpikeEngineOptions;
   readonly recoveryPending: { value: boolean };
+  readonly scheduledFibers: Set<Fiber.Fiber<void, unknown>>;
+  readonly schedulingClosed: { value: boolean };
   readonly schedulerJournal: SchedulerJournal;
-  readonly timers: Set<ReturnType<typeof setTimeout>>;
   readonly turnTerminals: TurnTerminalQueue;
 }
 

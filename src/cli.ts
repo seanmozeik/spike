@@ -4,35 +4,11 @@ import { Cause, Effect, Layer, Logger, type LogLevel, References } from 'effect'
 import { CliError, Command } from 'effect/unstable/cli';
 
 import pkg from '../package.json' with { type: 'json' };
-import {
-  accountsCommand,
-  approvalsCommand,
-  doctorCommand,
-  initCommand,
-  logsCommand,
-  restartCommand,
-  serveCommand,
-  startCommand,
-  statusCommand,
-  stopCommand,
-} from './cli-commands';
+import { makeCliApp } from './cli-commands';
 import { failPayload } from './output';
 
 const JSON_INDENT = 2;
-const app = Command.make('spike').pipe(
-  Command.withSubcommands([
-    startCommand,
-    stopCommand,
-    restartCommand,
-    statusCommand,
-    doctorCommand,
-    initCommand,
-    logsCommand,
-    accountsCommand,
-    approvalsCommand,
-    serveCommand,
-  ]),
-);
+const app = makeCliApp();
 const program = Command.run(app, { version: pkg.version });
 
 const stderrLogger = Logger.make(({ logLevel, message }) => {

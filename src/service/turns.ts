@@ -1,4 +1,4 @@
-import { Effect, Result } from 'effect';
+import { Effect, Fiber, Result } from 'effect';
 
 import type { CodexThreadId, CodexTurnId, LogicalTurnId } from '../domain/ids';
 import type { SchedulerControllerError, SchedulerPorts } from '../scheduler/controller';
@@ -41,21 +41,37 @@ const dispatchPoolTimer = Effect.fn('SpikeEngine.dispatchPoolTimer')(function* d
   }
 });
 
-const schedulePool = (
+const schedulePool = Effect.fn('SpikeEngine.schedulePool')(function* schedulePool(
   context: EngineContext,
   deadlineAt: Date,
   identity: TurnIdentity | null,
-): void => {
+) {
+  const schedulingClosed = (): boolean => context.schedulingClosed.value;
+  if (schedulingClosed()) {
+    return;
+  }
   const delay = Math.max(0, deadlineAt.getTime() - context.now().getTime());
-  const timer = setTimeout(() => {
-    context.timers.delete(timer);
-    const gatedDispatch = context.options.conversation.awaitAvailable.pipe(
-      Effect.andThen(dispatchPoolTimer(context, deadlineAt, identity)),
-    );
-    Effect.runFork(gatedDispatch);
-  }, delay);
-  context.timers.add(timer);
-};
+  const scheduled = Effect.sleep(delay).pipe(
+    Effect.andThen(
+      Effect.suspend(() =>
+        schedulingClosed()
+          ? Effect.void
+          : context.options.conversation.awaitAvailable.pipe(
+              Effect.andThen(dispatchPoolTimer(context, deadlineAt, identity)),
+            ),
+      ),
+    ),
+  );
+  const fiber = yield* Effect.forkDetach(scheduled, { startImmediately: true });
+  if (schedulingClosed()) {
+    yield* Fiber.interrupt(fiber);
+    return;
+  }
+  context.scheduledFibers.add(fiber);
+  fiber.addObserver(() => {
+    context.scheduledFibers.delete(fiber);
+  });
+});
 
 const replyLocal = (
   context: EngineContext,
@@ -107,9 +123,7 @@ const makePorts = (context: EngineContext): SchedulerPorts => ({
       report(context, error);
     }),
   schedulePool: (deadlineAt, identity): Effect.Effect<void> =>
-    Effect.sync(() => {
-      schedulePool(context, deadlineAt, identity);
-    }),
+    schedulePool(context, deadlineAt, identity),
   startTurn: (logicalTurnId, messages): ReturnType<SchedulerPorts['startTurn']> =>
     startTurnPort(context, logicalTurnId, messages),
   steerTurn: (action): Effect.Effect<void, SchedulerControllerError> =>

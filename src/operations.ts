@@ -7,16 +7,45 @@ import { Effect } from 'effect';
 import { loadSpikeConfig } from './app-config';
 import { ensureRuntimeLayout } from './config-files';
 import { requestControl } from './control-socket';
-import { guiDomain, launchAgentLabel, runLaunchctl, writeLaunchAgent } from './launchd';
+import { SpikeRuntimeError } from './errors';
+import { guiDomain, launchAgentLabel, writeLaunchAgent } from './launchd';
+import { liveOperatorCommands } from './operator/commands';
+import {
+  classifyServiceInspection,
+  makeServiceLifecycle,
+  type ServiceLifecycleResult,
+} from './operator/lifecycle';
 import { spikePaths } from './paths';
-import { inspectApprovalList } from './status/approvals';
-import { isDoctorReport, makeDoctorReport } from './status/doctor';
+import { inspectApprovalList, isApprovalList, type ApprovalList } from './status/approvals';
+import { isDoctorReport, makeDoctorReport, type DoctorReport } from './status/doctor';
+import { isStatusSnapshot, type StatusSnapshot } from './status/snapshot';
 
 const LOG_TAIL_LINES = 200;
 const LOG_TAIL_BYTES = 65_536;
 const DOCTOR_TIMEOUT_MS = 10_000;
-const UNLOAD_POLL_MS = 200;
-const UNLOAD_POLLS = 100;
+
+interface OfflineServiceStatus {
+  readonly loaded: boolean;
+  readonly ok: true;
+  readonly running: false;
+  readonly service: 'spike';
+  readonly socket: string;
+}
+
+interface LogResult {
+  readonly ok: true;
+  readonly path: string;
+  readonly text: string;
+}
+
+interface AccountResult {
+  readonly accounts: readonly { readonly eligible: boolean; readonly id: string }[];
+  readonly active: string | null;
+  readonly observations: readonly Record<string, unknown>[];
+  readonly ok: true;
+}
+
+type ServiceStatusResult = OfflineServiceStatus | StatusSnapshot;
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
@@ -25,30 +54,41 @@ const paths = spikePaths();
 
 const program = (): string => process.argv[1] ?? 'spike';
 
-const lifecycleError = (operation: string, stderr: string): Error =>
-  new Error(`${operation} failed: ${stderr.trim() || 'launchctl returned non-zero'}`);
+const operatorError = (operation: string, cause: unknown): SpikeRuntimeError =>
+  cause instanceof SpikeRuntimeError
+    ? cause
+    : new SpikeRuntimeError({
+        cause,
+        message: cause instanceof Error ? cause.message : String(cause),
+        operation,
+      });
 
-const serviceIsMissing = (stderr: string): boolean =>
-  stderr.includes('Could not find service') || stderr.includes('No such process');
+const prepareService = Effect.gen(function* prepareService() {
+  yield* ensureRuntimeLayout(paths);
+  const config = yield* loadSpikeConfig(paths);
+  yield* Effect.tryPromise({
+    catch: (cause) => operatorError('lifecycle/write-launch-agent', cause),
+    try: () =>
+      writeLaunchAgent({
+        bun: process.execPath,
+        codex: config.codexExecutable,
+        codexHome: config.codexHome,
+        path:
+          process.env['PATH'] ?? '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+        paths,
+        program: program(),
+      }),
+  });
+}).pipe(Effect.mapError((cause) => operatorError('lifecycle/prepare', cause)));
 
-const waitUntilUnloaded = async (domain: string, poll = 0): Promise<void> => {
-  if (runLaunchctl(['print', `${domain}/${launchAgentLabel}`]).exitCode !== 0) {
-    return;
-  }
-  if (poll >= UNLOAD_POLLS) {
-    throw lifecycleError('launchctl bootout', 'service remained loaded after bootout');
-  }
-  await Bun.sleep(UNLOAD_POLL_MS);
-  await waitUntilUnloaded(domain, poll + 1);
-};
-
-const unloadService = async (domain: string): Promise<void> => {
-  const result = runLaunchctl(['bootout', `${domain}/${launchAgentLabel}`]);
-  if (result.exitCode !== 0 && !serviceIsMissing(result.stderr)) {
-    throw lifecycleError('launchctl bootout', result.stderr);
-  }
-  await waitUntilUnloaded(domain);
-};
+const lifecycle = makeServiceLifecycle({
+  commands: liveOperatorCommands,
+  domain: guiDomain(),
+  label: launchAgentLabel,
+  launchAgent: paths.launchAgent,
+  prepare: prepareService,
+  socket: paths.socket,
+});
 
 const exists = async (target: string): Promise<boolean> => {
   try {
@@ -59,56 +99,36 @@ const exists = async (target: string): Promise<boolean> => {
   }
 };
 
-const startService = async (): Promise<unknown> => {
-  await Effect.runPromise(ensureRuntimeLayout(paths));
-  const config = await Effect.runPromise(loadSpikeConfig(paths));
-  await writeLaunchAgent({
-    bun: process.execPath,
-    codex: config.codexExecutable,
-    codexHome: config.codexHome,
-    path: process.env['PATH'] ?? '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-    paths,
-    program: program(),
-  });
-  const domain = guiDomain();
-  await unloadService(domain);
-  const bootstrap = runLaunchctl(['bootstrap', domain, paths.launchAgent]);
-  if (bootstrap.exitCode !== 0) {
-    throw lifecycleError('launchctl bootstrap', bootstrap.stderr);
-  }
-  const kickstart = runLaunchctl(['kickstart', '-k', `${domain}/${launchAgentLabel}`]);
-  if (kickstart.exitCode !== 0) {
-    throw lifecycleError('launchctl kickstart', kickstart.stderr);
-  }
-  return { label: launchAgentLabel, ok: true, socket: paths.socket, status: 'started' };
-};
+const startService = (): Promise<ServiceLifecycleResult> => Effect.runPromise(lifecycle.start);
 
-const stopService = async (): Promise<unknown> => {
-  await unloadService(guiDomain());
-  return { label: launchAgentLabel, ok: true, status: 'stopped' };
-};
+const stopService = (): Promise<ServiceLifecycleResult> => Effect.runPromise(lifecycle.stop);
 
-const restartService = async (): Promise<unknown> => {
-  await stopService();
-  return startService();
-};
+const restartService = (): Promise<ServiceLifecycleResult> => Effect.runPromise(lifecycle.restart);
 
-const serviceStatus = async (): Promise<unknown> => {
+const serviceStatus = async (): Promise<ServiceStatusResult> => {
   try {
-    return await requestControl(paths.socket, { kind: 'status' });
+    const status = await requestControl(paths.socket, { kind: 'status' });
+    if (isStatusSnapshot(status)) {
+      return status;
+    }
   } catch {
-    const launchd = runLaunchctl(['print', `${guiDomain()}/${launchAgentLabel}`]);
-    return {
-      loaded: launchd.exitCode === 0,
-      ok: true,
-      running: false,
-      service: 'spike',
-      socket: paths.socket,
-    };
+    // Fall through to launchd inspection when the daemon is absent.
   }
+  const target = `${guiDomain()}/${launchAgentLabel}`;
+  const inspect = liveOperatorCommands
+    .launchctl(['print', target])
+    .pipe(Effect.flatMap((result) => classifyServiceInspection(target, result)));
+  const launchd = await Effect.runPromise(inspect);
+  return {
+    loaded: launchd.loaded,
+    ok: true,
+    running: false,
+    service: 'spike',
+    socket: paths.socket,
+  };
 };
 
-const doctor = async (): ReturnType<typeof makeDoctorReport> => {
+const doctor = async (): Promise<DoctorReport> => {
   try {
     const report = await requestControl(
       paths.socket,
@@ -122,20 +142,24 @@ const doctor = async (): ReturnType<typeof makeDoctorReport> => {
     // Fall through to the offline report when the daemon is absent.
   }
   const helper = path.join(path.dirname(program()), 'spike-like');
-  return makeDoctorReport(paths, { ok: false }, helper);
+  return makeDoctorReport(paths, { ok: false }, helper, liveOperatorCommands);
 };
 
-const approvals = async (): Promise<unknown> => {
+const approvals = async (): Promise<ApprovalList> => {
   try {
-    return await requestControl(paths.socket, { kind: 'approvals' });
+    const response = await requestControl(paths.socket, { kind: 'approvals' });
+    if (isApprovalList(response)) {
+      return response;
+    }
   } catch {
-    return (await exists(paths.database))
-      ? inspectApprovalList(paths.database)
-      : { approvals: [], ok: true };
+    // Fall through to durable inspection when the daemon is absent.
   }
+  return (await exists(paths.database))
+    ? inspectApprovalList(paths.database)
+    : { approvals: [], ok: true };
 };
 
-const readLogs = async (): Promise<unknown> => {
+const readLogs = async (): Promise<LogResult> => {
   try {
     const handle = await open(paths.daemonLog, 'r');
     let contents = '';
@@ -156,7 +180,7 @@ const readLogs = async (): Promise<unknown> => {
   }
 };
 
-const accounts = async (): Promise<unknown> => {
+const accounts = async (): Promise<AccountResult> => {
   const entries = await readdir(paths.accounts, { withFileTypes: true }).catch(() => []);
   const configured = await Promise.all(
     entries
@@ -199,3 +223,4 @@ export {
   startService,
   stopService,
 };
+export type { AccountResult, LogResult, OfflineServiceStatus, ServiceStatusResult };

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Duration, Effect, Result } from 'effect';
+import { Duration, Effect, Fiber, Result } from 'effect';
 
 import { GenerationId, type InboundMessageId, LogicalTurnId } from '../domain/ids';
 import { makeCodexJournal } from '../journal/codex-journal';
@@ -168,12 +168,16 @@ const pollOnce = (
     yield* dispatchPending(context, controller, pending, at);
   });
 
-const quiesceEngine = (context: EngineContext): void => {
+const beginQuiesce = (context: EngineContext): readonly Fiber.Fiber<void, unknown>[] => {
+  context.schedulingClosed.value = true;
   context.options.conversation.close();
-  for (const timer of context.timers) {
-    clearTimeout(timer);
+  return [...context.scheduledFibers];
+};
+
+const quiesceEngine = (context: EngineContext): void => {
+  for (const fiber of beginQuiesce(context)) {
+    fiber.interruptUnsafe();
   }
-  context.timers.clear();
 };
 
 const closeEngine = (context: EngineContext): void => {
@@ -193,8 +197,9 @@ const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContex
   now,
   options,
   recoveryPending: { value: true },
+  scheduledFibers: new Set(),
   schedulerJournal: makeSchedulerJournal(options.database),
-  timers: new Set(),
+  schedulingClosed: { value: false },
   turnTerminals: makeTurnTerminalQueue(),
 });
 
@@ -258,7 +263,10 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
     redactNow: (at): Effect.Effect<number, unknown> => redactNow(context, at),
     run: Effect.forever(cycle),
     shutdown: Effect.gen(function* shutdownEngine() {
-      closeEngine(context);
+      context.closing.value = true;
+      const scheduled = beginQuiesce(context);
+      yield* Fiber.interruptAll(scheduled);
+      context.scheduledFibers.clear();
       if (context.approval !== null) {
         yield* context.approval.close;
       }
