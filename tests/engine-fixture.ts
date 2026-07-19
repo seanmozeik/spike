@@ -234,7 +234,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture(
 
 const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeof makeFixture> =>
   makeFixture({
-    beforeOpen: undefined,
+    beforeOpen: options.beforeOpen,
     behavior: options.behavior ?? {},
     conversationProbe: options.conversationProbe ?? ((): Effect.Effect<void> => Effect.void),
     conversationValidationIntervalMs: options.conversationValidationIntervalMs,

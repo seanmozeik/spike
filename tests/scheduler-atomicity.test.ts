@@ -276,6 +276,71 @@ it.effect('rolls back completion when successor creation cannot reach scheduler 
   }),
 );
 
+it.effect('settles every Codex attempt inside its scheduler terminal transition', () =>
+  Effect.gen(function* terminalAttempts() {
+    const fixture = yield* makeFixture();
+    const finishedAt = new Date(NOW.getTime() + 1000);
+    let state = fixture.initial;
+    let rowId = 10;
+
+    for (const outcome of ['Completed', 'Failed'] as const) {
+      const suffix = outcome.toLowerCase();
+      const message = seedMessage(fixture.handle.database, `message-${suffix}`, rowId, suffix, NOW);
+      rowId += 1;
+      const logicalTurnId = LogicalTurnId.make(`turn-${suffix}`);
+      const running = startTransition(state, logicalTurnId, message).state;
+      yield* fixture.journal.commitTransition(
+        { actions: [{ kind: 'StartTurn', logicalTurnId, messages: [message] }], state: running },
+        NOW,
+      );
+      for (const [attemptSequence, attemptState] of [
+        [1, 'Prepared'],
+        [2, 'Submitted'],
+        [3, 'SubmissionUnknown'],
+        [4, 'Accepted'],
+      ] as const) {
+        fixture.handle.database.run(
+          `INSERT INTO codex_attempts(
+             id, logical_turn_id, state, submission_kind, started_at
+           ) VALUES (?, ?, ?, 'Steer', ?)`,
+          [
+            `attempt-${suffix}-${String(attemptSequence)}`,
+            logicalTurnId,
+            attemptState,
+            NOW.toISOString(),
+          ],
+        );
+      }
+      state = { ...running, active: null };
+      yield* fixture.journal.commitTransition(
+        {
+          actions: [{ kind: outcome === 'Completed' ? 'CompleteTurn' : 'FailTurn', logicalTurnId }],
+          state,
+        },
+        finishedAt,
+      );
+    }
+
+    expect(
+      fixture.handle.database
+        .query<{ finished_at: string; id: string; state: string }, []>(
+          'SELECT id, state, finished_at FROM codex_attempts ORDER BY id',
+        )
+        .all(),
+    ).toStrictEqual([
+      { finished_at: finishedAt.toISOString(), id: 'attempt-completed-1', state: 'Failed' },
+      { finished_at: finishedAt.toISOString(), id: 'attempt-completed-2', state: 'Failed' },
+      { finished_at: finishedAt.toISOString(), id: 'attempt-completed-3', state: 'Failed' },
+      { finished_at: finishedAt.toISOString(), id: 'attempt-completed-4', state: 'Completed' },
+      { finished_at: finishedAt.toISOString(), id: 'attempt-failed-1', state: 'Failed' },
+      { finished_at: finishedAt.toISOString(), id: 'attempt-failed-2', state: 'Failed' },
+      { finished_at: finishedAt.toISOString(), id: 'attempt-failed-3', state: 'Failed' },
+      { finished_at: finishedAt.toISOString(), id: 'attempt-failed-4', state: 'Failed' },
+    ]);
+    fixture.handle.close();
+  }),
+);
+
 it.effect('reopens one claimed StartTurn after a crash before any side effect', () =>
   Effect.gen(function* restartAfterStartCommit() {
     const fixture = yield* makeFixture();

@@ -57,7 +57,6 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
       throw new Error('terminal delivery attempt was not claimed');
     }
     yield* fixture.delivery.markSent(deliveryAttempt, deliveredChunk.id, OLD);
-    yield* fixture.codex.finishLogicalTurn(terminal.logicalTurnId, 'Completed', OLD);
     yield* fixture.scheduler.commitTransition(
       {
         actions: [{ kind: 'CompleteTurn', logicalTurnId: terminal.logicalTurnId }],

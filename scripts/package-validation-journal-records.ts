@@ -22,6 +22,7 @@ interface PreservedJournalRecords {
 }
 
 const legacyCreatedAt = '2026-07-19T00:01:00.000Z';
+const legacyStaleAttemptStartedAt = '2026-07-19T00:00:30.000Z';
 
 const hasColumn = (database: Database, table: string, column: string): boolean =>
   database
@@ -160,5 +161,5 @@ const readPreservedJournalRecords = (database: Database): PreservedJournalRecord
   ),
 });
 
-export { legacyCreatedAt, readPreservedJournalRecords };
+export { legacyCreatedAt, legacyStaleAttemptStartedAt, readPreservedJournalRecords };
 export type { PreservedJournalRecords };

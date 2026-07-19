@@ -12,7 +12,10 @@ import {
   preservedJournalRecords,
   seedCurrentApprovalRecord,
 } from '../scripts/package-validation-journal';
-import { expectedVersionOneRecords } from '../scripts/package-validation-journal-expected';
+import {
+  expectedUpgradedVersionOneRecords,
+  expectedVersionOneRecords,
+} from '../scripts/package-validation-journal-expected';
 import {
   expectedCurrentMigrationContract,
   expectedVersionOneSchema,
@@ -22,7 +25,7 @@ import {
 } from '../scripts/package-validation-journal-schema';
 import { applyMigrations } from '../src/journal/migrations-runner';
 
-it('preserves every seeded version-one record while moving thread identity', async () => {
+it('preserves package migration records while repairing stale terminal-turn attempts', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'spike-oldest-schema-'));
   const databasePath = path.join(root, 'spike.db');
   try {
@@ -38,7 +41,7 @@ it('preserves every seeded version-one record while moving thread identity', asy
     }
 
     expect(journalVersion(databasePath)).toBe(currentSchemaVersion);
-    expect(preservedJournalRecords(databasePath)).toEqual(expectedVersionOneRecords);
+    expect(preservedJournalRecords(databasePath)).toEqual(expectedUpgradedVersionOneRecords);
     expect(readCurrentMigrationContract(databasePath)).toEqual(expectedCurrentMigrationContract);
 
     seedCurrentApprovalRecord(databasePath);

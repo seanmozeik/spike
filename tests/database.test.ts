@@ -11,6 +11,7 @@ import { canonicalInputFingerprint } from '../src/codex/reconcile';
 import { ensureRuntimeLayout } from '../src/config-files';
 import { inspectJournal, journalInfo, openJournal } from '../src/database';
 import { SCHEMA_VERSION } from '../src/journal/migrations';
+import { makeSchedulerJournal } from '../src/journal/scheduler-journal';
 import { spikePaths } from '../src/paths';
 
 const roots: string[] = [];
@@ -293,6 +294,132 @@ it.effect('migrates failed logical turns to terminal Codex attempts', () =>
     migrated.close();
 
     expect(attempt).toStrictEqual({ finished_at: '2026-07-15T00:01:00.000Z', state: 'Failed' });
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
+  }),
+);
+
+it.effect('repairs v17 terminal-turn attempts before rotating stale configuration', () =>
+  Effect.gen(function* terminalAttemptRepairFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-v17-terminal-attempts-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    const terminalAt = '2026-07-19T22:57:00.000Z';
+    initial.database.run(
+      `INSERT INTO generations(id, sequence, state, created_at, config_version)
+       VALUES ('stale-generation', 1, 'Current', ?, NULL)`,
+      [terminalAt],
+    );
+    initial.database.run(
+      `INSERT INTO logical_turns(
+         id, generation_id, sequence, state, correlation_id, created_at, completed_at
+       ) VALUES (
+         'completed-turn', 'stale-generation', 1, 'Completed', 'correlation', ?, ?
+       )`,
+      [terminalAt, terminalAt],
+    );
+    for (const [id, state] of [
+      ['accepted-attempt', 'Accepted'],
+      ['prepared-steer', 'Prepared'],
+    ] as const) {
+      initial.database.run(
+        `INSERT INTO codex_attempts(
+           id, logical_turn_id, state, submission_kind, started_at
+         ) VALUES (?, 'completed-turn', ?, 'Steer', ?)`,
+        [id, state, terminalAt],
+      );
+    }
+    initial.database.run('DELETE FROM schema_meta');
+    initial.database.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (17, '2026-07-19T22:57:00.000Z')",
+    );
+    initial.close();
+
+    const migrated = yield* openJournal(databasePath);
+    expect(
+      migrated.database
+        .query<{ finished_at: string; id: string; state: string }, []>(
+          'SELECT id, state, finished_at FROM codex_attempts ORDER BY id',
+        )
+        .all(),
+    ).toStrictEqual([
+      { finished_at: terminalAt, id: 'accepted-attempt', state: 'Completed' },
+      { finished_at: terminalAt, id: 'prepared-steer', state: 'Failed' },
+    ]);
+    const loaded = yield* makeSchedulerJournal(migrated.database).loadOrCreate(
+      new Date('2026-07-19T22:58:00.000Z'),
+    );
+    expect(loaded).toMatchObject({ configurationCurrent: true });
+    expect(loaded.generationId).not.toBe('stale-generation');
+    expect(
+      migrated.database
+        .query<{ state: string }, []>("SELECT state FROM generations WHERE id = 'stale-generation'")
+        .get(),
+    ).toStrictEqual({ state: 'Superseded' });
+    migrated.close();
+
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
+  }),
+);
+
+it.effect('leaves every field of v17 nonterminal attempts unchanged for a running turn', () =>
+  Effect.gen(function* runningAttemptMigrationFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-v17-running-attempts-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    const createdAt = '2026-07-19T23:10:00.000Z';
+    initial.database.run(
+      `INSERT INTO generations(id, sequence, state, created_at)
+       VALUES ('running-generation', 1, 'Current', ?)`,
+      [createdAt],
+    );
+    initial.database.run(
+      `INSERT INTO logical_turns(
+         id, generation_id, sequence, state, correlation_id, created_at
+       ) VALUES ('running-turn', 'running-generation', 1, 'Running', 'running-correlation', ?)`,
+      [createdAt],
+    );
+    for (const [index, state] of [
+      [1, 'Prepared'],
+      [2, 'Submitted'],
+      [3, 'SubmissionUnknown'],
+      [4, 'Accepted'],
+    ] as const) {
+      initial.database.run(
+        `INSERT INTO codex_attempts(
+           id, logical_turn_id, account_id, state, codex_thread_id, codex_turn_id,
+           input_fingerprint, frontier_json, submission_kind, started_at, finished_at
+         ) VALUES (?, 'running-turn', ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [
+          `running-attempt-${String(index)}`,
+          `account-${String(index)}`,
+          state,
+          `thread-${String(index)}`,
+          state === 'Accepted' ? `turn-${String(index)}` : null,
+          `fingerprint-${String(index)}`,
+          JSON.stringify({ itemIds: [`item-${String(index)}`], turnIds: [] }),
+          state === 'Accepted' ? 'Start' : 'Steer',
+          new Date(Date.parse(createdAt) + index).toISOString(),
+        ],
+      );
+    }
+    const before = initial.database
+      .query<Record<string, unknown>, []>('SELECT * FROM codex_attempts ORDER BY id')
+      .all();
+    initial.database.run('DELETE FROM schema_meta');
+    initial.database.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (17, '2026-07-19T23:11:00.000Z')",
+    );
+    initial.close();
+
+    const migrated = yield* openJournal(databasePath);
+    expect(
+      migrated.database
+        .query<Record<string, unknown>, []>('SELECT * FROM codex_attempts ORDER BY id')
+        .all(),
+    ).toStrictEqual(before);
+    migrated.close();
     expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );

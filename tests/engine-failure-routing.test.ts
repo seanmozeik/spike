@@ -1,8 +1,22 @@
+import { Database } from 'bun:sqlite';
+
 import { it } from '@effect/vitest';
-import { Effect, Fiber } from 'effect';
+import { Effect, Fiber, Result } from 'effect';
 import { expect } from 'vitest';
 
 import { canonicalInputFingerprint } from '../src/codex/reconcile';
+import {
+  AccountId,
+  CodexThreadId,
+  CodexTurnId,
+  GenerationId,
+  InboundMessageId,
+  LogicalTurnId,
+} from '../src/domain/ids';
+import { makeCodexJournal } from '../src/journal/codex-journal';
+import { makeSchedulerJournal } from '../src/journal/scheduler-journal';
+import type { PooledMessage } from '../src/scheduler/model';
+import { transitionScheduler } from '../src/scheduler/transition';
 import { inbound, makeEngineFixture, makeMigratedEngineFixture } from './engine-fixture';
 import {
   seedVersionTenActiveAttempt,
@@ -23,6 +37,125 @@ const failAttemptCompletionTrigger = (name: string): string =>
   `CREATE TRIGGER ${name} BEFORE UPDATE OF state ON codex_attempts
    WHEN NEW.state = 'Completed'
    BEGIN SELECT RAISE(ABORT, 'forced attempt completion failure'); END`;
+
+const RESTART_AT = new Date('2026-07-19T23:30:00.000Z');
+
+const seedRestartMessage = (
+  database: Database,
+  id: string,
+  rowId: number,
+  text: string,
+): PooledMessage => {
+  database.run(
+    `INSERT INTO inbound_messages(
+       id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
+     ) VALUES (?, ?, ?, 'chat', 'handle', 'iMessage', ?, ?, ?)`,
+    [id, `guid-${id}`, rowId, text, RESTART_AT.toISOString(), RESTART_AT.toISOString()],
+  );
+  return { attachments: [], id: InboundMessageId.make(id), receivedAt: RESTART_AT, text };
+};
+
+const seedFailedCompletionCommit = (databasePath: string): void => {
+  const database = new Database(databasePath, { strict: true });
+  try {
+    const scheduler = makeSchedulerJournal(database);
+    const codex = makeCodexJournal(database);
+    const initial = Effect.runSync(scheduler.loadOrCreate(RESTART_AT));
+    const logicalTurnId = LogicalTurnId.make('logical-completion-restart');
+    const threadId = CodexThreadId.make('thread-completion-restart');
+    const turnId = CodexTurnId.make('turn-completion-restart');
+    const initialMessage = seedRestartMessage(database, 'restart-initial', 1, 'initial request');
+    const steerMessage = seedRestartMessage(database, 'restart-steer', 2, 'follow-up detail');
+    const started = {
+      ...initial,
+      active: { acknowledged: false, codexTurnId: null, logicalTurnId },
+    } as const;
+    Effect.runSync(
+      scheduler.commitTransition(
+        {
+          actions: [{ kind: 'StartTurn', logicalTurnId, messages: [initialMessage] }],
+          state: started,
+        },
+        RESTART_AT,
+      ),
+    );
+    const running = {
+      ...started,
+      active: { acknowledged: false, codexTurnId: turnId, logicalTurnId },
+      codexThreadId: threadId,
+    } as const;
+    Effect.runSync(scheduler.commitTransition({ actions: [], state: running }, RESTART_AT));
+    Effect.runSync(
+      scheduler.commitTransition(
+        {
+          actions: [
+            { codexTurnId: turnId, kind: 'SteerTurn', logicalTurnId, messages: [steerMessage] },
+          ],
+          state: running,
+        },
+        RESTART_AT,
+      ),
+    );
+    for (const [kind, message] of [
+      ['Initial', initialMessage],
+      ['Steer', steerMessage],
+    ] as const) {
+      const [batch] = Effect.runSync(scheduler.loadInputBatches(logicalTurnId, kind));
+      if (batch === undefined) {
+        throw new Error(`expected persisted ${kind} input batch`);
+      }
+      const attemptId = Effect.runSync(
+        codex.beginCodexAttempt({
+          accountId: AccountId.make('test-account'),
+          batchId: batch.id,
+          fingerprint: canonicalInputFingerprint(message.text),
+          frontier: { itemIds: [], turnIds: [turnId] },
+          logicalTurnId,
+          startedAt: RESTART_AT,
+          submissionKind: kind === 'Initial' ? 'Start' : 'Steer',
+          threadId,
+        }),
+      );
+      Effect.runSync(codex.acceptCodexTurn(attemptId, threadId, turnId));
+    }
+    database.run(
+      `CREATE TEMP TRIGGER force_completion_scheduler_save_failure
+       BEFORE UPDATE OF active_logical_turn_id ON scheduler_state
+       WHEN OLD.active_logical_turn_id IS NOT NULL AND NEW.active_logical_turn_id IS NULL
+       BEGIN SELECT RAISE(ABORT, 'forced completion scheduler save failure'); END`,
+    );
+    const completedAt = new Date(RESTART_AT.getTime() + 1000);
+    const completion = transitionScheduler(running, {
+      at: completedAt,
+      kind: 'TurnCompleted',
+      logicalTurnId,
+      newGenerationId: GenerationId.make('unused-generation'),
+      nextLogicalTurnId: LogicalTurnId.make('unused-logical-turn'),
+    });
+    const completionCommit = scheduler.commitTransition(completion, completedAt);
+    const failed = Effect.runSync(Effect.result(completionCommit));
+    expect(Result.isFailure(failed)).toBe(true);
+    expect(
+      database
+        .query<{ state: string; submission_kind: string }, []>(
+          'SELECT submission_kind, state FROM codex_attempts ORDER BY submission_kind',
+        )
+        .all(),
+    ).toStrictEqual([
+      { state: 'Accepted', submission_kind: 'Start' },
+      { state: 'Accepted', submission_kind: 'Steer' },
+    ]);
+    expect(
+      database
+        .query<{ state: string }, []>(
+          "SELECT state FROM logical_turns WHERE id = 'logical-completion-restart'",
+        )
+        .get(),
+    ).toStrictEqual({ state: 'Running' });
+  } finally {
+    database.close();
+  }
+};
 
 it.effect('does not fail model work when a local status reply cannot be delivered', () =>
   Effect.gen(function* isolatedControlFailure() {
@@ -84,6 +217,46 @@ it.effect('keeps delivered output completion-owned when attempt bookkeeping fail
     ).toBe('Completed');
     expect(fixture.sent).toStrictEqual(['Completed answer']);
     fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('does not resubmit a steer after a failed completion commit and restart', () =>
+  Effect.gen(function* completionRestartRecovery() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({
+      beforeOpen: seedFailedCompletionCommit,
+      behavior: { gate: gate.promise },
+      now: (): Date => new Date(RESTART_AT.getTime() + 2000),
+      snapshot: {
+        id: 'thread-completion-restart',
+        turns: [{ id: 'turn-completion-restart', items: [], status: 'inProgress' }],
+      },
+    });
+
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    expect(fixture.inputs).toStrictEqual([]);
+    expect(fixture.steers).toStrictEqual([]);
+    expect(fixture.turnsStarted).toStrictEqual([]);
+    expect((yield* fixture.engine.snapshot).active?.logicalTurnId).toBe(
+      'logical-completion-restart',
+    );
+    expect(
+      fixture.database
+        .query<{ state: string; submission_kind: string }, []>(
+          'SELECT submission_kind, state FROM codex_attempts ORDER BY submission_kind',
+        )
+        .all(),
+    ).toStrictEqual([
+      { state: 'Accepted', submission_kind: 'Start' },
+      { state: 'Accepted', submission_kind: 'Steer' },
+    ]);
+
+    fixture.engine.close();
+    gate.reject(new Error('stop recovered monitor'));
+    yield* fixture.engine.drain;
     fixture.remove();
   }),
 );

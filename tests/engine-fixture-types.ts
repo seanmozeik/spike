@@ -40,6 +40,7 @@ interface EngineFixture {
 }
 
 interface EngineFixtureOptions {
+  readonly beforeOpen?: (databasePath: string) => void;
   readonly behavior?: TurnBehavior;
   readonly conversationProbe?: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs?: number;

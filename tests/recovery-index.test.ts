@@ -7,6 +7,7 @@ import { Effect } from 'effect';
 import { afterEach, expect } from 'vitest';
 
 import { inspectJournal, openJournal } from '../src/database';
+import { SCHEMA_VERSION } from '../src/journal/migrations';
 import { PENDING_INBOUND_QUERY } from '../src/journal/recovery-query';
 
 const roots: string[] = [];
@@ -23,7 +24,7 @@ const makeDatabasePath = (): string => {
   return path.join(root, 'spike.db');
 };
 
-it.effect('migrates a real schema v15 journal through durable schedules v17', () =>
+it.effect('migrates a real schema v15 journal through the current schema', () =>
   Effect.gen(function* migrateRecoveryIndex() {
     const databasePath = makeDatabasePath();
     const initial = yield* openJournal(databasePath);
@@ -37,7 +38,7 @@ it.effect('migrates a real schema v15 journal through durable schedules v17', ()
       .all()
       .map(({ name }) => name);
     expect(indexes).toContain('attachments_inbound_message');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(17);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
     migrated.close();
   }),
 );

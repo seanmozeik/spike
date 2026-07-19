@@ -70,11 +70,6 @@ interface CodexJournal extends AccountJournal, GenerationThreadJournal {
     attemptId: CodexAttemptId,
     accountId: AccountId,
   ) => Effect.Effect<void, JournalTransactionError>;
-  readonly finishLogicalTurn: (
-    logicalTurnId: LogicalTurnId,
-    outcome: 'Completed' | 'Failed',
-    finishedAt: Date,
-  ) => Effect.Effect<void, JournalTransactionError>;
   readonly recordAgentItem: (
     attemptId: CodexAttemptId,
     itemId: CodexItemId,
@@ -168,17 +163,6 @@ const makeRecordItem =
       );
     });
 
-const makeFinishLogicalTurn =
-  (database: Database): CodexJournal['finishLogicalTurn'] =>
-  (logicalTurnId, outcome, finishedAt) =>
-    tryJournalTransaction('finishLogicalTurn', 'finishLogicalTurn failed', () => {
-      database.run(
-        `UPDATE codex_attempts SET state = ?, finished_at = ?
-           WHERE logical_turn_id = ? AND state = 'Accepted'`,
-        [outcome, finishedAt.toISOString(), logicalTurnId],
-      );
-    });
-
 const makeReassignCodexAttempt =
   (database: Database): CodexJournal['reassignCodexAttempt'] =>
   (attemptId, accountId) =>
@@ -208,7 +192,6 @@ const makeCodexJournal = (database: Database): CodexJournal => ({
   ...makeGenerationThreadJournal(database),
   acceptCodexTurn: makeAcceptTurn(database),
   beginCodexAttempt: makeBeginAttempt(database),
-  finishLogicalTurn: makeFinishLogicalTurn(database),
   loadNonterminalAttempts: Effect.sync(() =>
     database
       .query<AttemptRow, []>(

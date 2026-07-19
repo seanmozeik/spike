@@ -8,7 +8,6 @@ const POOLED_MESSAGE_ROW_ID = 20;
 const PENDING_MESSAGE_ROW_ID = 30;
 const INBOUND_MESSAGE_COUNT = 3;
 const SCHEMA_VERSION_SIXTEEN = 16;
-const SCHEMA_VERSION_SEVENTEEN = 17;
 
 const databaseNames = (database: Database, query: string): readonly string[] =>
   database
@@ -228,10 +227,4 @@ const assertVersionSixteenFixture = (databasePath: string): void => {
   }
 };
 
-export {
-  assertVersionSixteenFixture,
-  databaseNames,
-  makePopulatedVersionSixteen,
-  SCHEMA_VERSION_SEVENTEEN,
-  schemaVersion,
-};
+export { assertVersionSixteenFixture, databaseNames, makePopulatedVersionSixteen, schemaVersion };

@@ -4,6 +4,7 @@ import { SCHEMA_VERSION } from '../src/journal/migrations';
 import { applyMigrations } from '../src/journal/migrations-runner';
 import {
   legacyCreatedAt,
+  legacyStaleAttemptStartedAt,
   readPreservedJournalRecords,
   type PreservedJournalRecords,
 } from './package-validation-journal-records';
@@ -77,6 +78,11 @@ const seedVersionOneRecords = (database: Database): void => {
     `INSERT INTO codex_attempts(id, logical_turn_id, state, started_at, finished_at)
      VALUES ('legacy-attempt', 'legacy-turn', 'Completed', ?, ?)`,
     [legacyCreatedAt, legacyCreatedAt],
+  );
+  database.run(
+    `INSERT INTO codex_attempts(id, logical_turn_id, state, started_at)
+     VALUES ('stale-terminal-attempt', 'legacy-turn', 'Prepared', ?)`,
+    [legacyStaleAttemptStartedAt],
   );
   database.run(
     `INSERT INTO outbound_messages(

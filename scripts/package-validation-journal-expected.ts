@@ -1,7 +1,30 @@
 import {
   legacyCreatedAt,
+  legacyStaleAttemptStartedAt,
   type PreservedJournalRecords,
 } from './package-validation-journal-records';
+
+const completedLegacyAttempt = {
+  account_id: null,
+  codex_thread_id: null,
+  codex_turn_id: null,
+  finished_at: legacyCreatedAt,
+  id: 'legacy-attempt',
+  logical_turn_id: 'legacy-turn',
+  started_at: legacyCreatedAt,
+  state: 'Completed',
+};
+
+const staleTerminalAttempt = {
+  account_id: null,
+  codex_thread_id: null,
+  codex_turn_id: null,
+  finished_at: null,
+  id: 'stale-terminal-attempt',
+  logical_turn_id: 'legacy-turn',
+  started_at: legacyStaleAttemptStartedAt,
+  state: 'Prepared',
+};
 
 const expectedVersionOneRecords = {
   accountObservations: [
@@ -33,18 +56,7 @@ const expectedVersionOneRecords = {
       uti: 'public.png',
     },
   ],
-  attempts: [
-    {
-      account_id: null,
-      codex_thread_id: null,
-      codex_turn_id: null,
-      finished_at: legacyCreatedAt,
-      id: 'legacy-attempt',
-      logical_turn_id: 'legacy-turn',
-      started_at: legacyCreatedAt,
-      state: 'Completed',
-    },
-  ],
+  attempts: [completedLegacyAttempt, staleTerminalAttempt],
   batchMessages: [
     { inbound_message_id: 'legacy-message', input_batch_id: 'legacy-batch', ordinal: 0 },
   ],
@@ -155,4 +167,12 @@ const expectedVersionOneRecords = {
   ],
 } satisfies PreservedJournalRecords;
 
-export { expectedVersionOneRecords };
+const expectedUpgradedVersionOneRecords = {
+  ...expectedVersionOneRecords,
+  attempts: [
+    completedLegacyAttempt,
+    { ...staleTerminalAttempt, finished_at: legacyCreatedAt, state: 'Failed' },
+  ],
+} satisfies PreservedJournalRecords;
+
+export { expectedUpgradedVersionOneRecords, expectedVersionOneRecords };

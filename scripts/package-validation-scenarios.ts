@@ -25,7 +25,10 @@ import {
   preservedJournalRecords,
   seedCurrentApprovalRecord,
 } from './package-validation-journal';
-import { expectedVersionOneRecords } from './package-validation-journal-expected';
+import {
+  expectedUpgradedVersionOneRecords,
+  expectedVersionOneRecords,
+} from './package-validation-journal-expected';
 import {
   expectedCurrentMigrationContract,
   expectedVersionOneSchema,
@@ -196,7 +199,7 @@ const validateUpgrade = async (
     'upgrade oldest schema',
   );
   assert.equal(journalVersion(paths.database), currentSchemaVersion);
-  assert.deepEqual(preservedJournalRecords(paths.database), beforeJournalRecords);
+  assert.deepEqual(preservedJournalRecords(paths.database), expectedUpgradedVersionOneRecords);
   assert.deepEqual(readCurrentMigrationContract(paths.database), expectedCurrentMigrationContract);
   assert.deepEqual(await preservedDigests(paths), beforeFiles);
 
@@ -204,6 +207,7 @@ const validateUpgrade = async (
   seedCurrentScheduleRecords(paths.database);
   const currentRecords = preservedJournalRecords(paths.database);
   assert.equal(currentRecords.approvals.length, 1);
+  assert.deepEqual(currentRecords.attempts, expectedUpgradedVersionOneRecords.attempts);
   const firstJournal = journalSnapshot(paths.database);
 
   upgradeFailure(

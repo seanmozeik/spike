@@ -17,6 +17,7 @@ import type {
   SchedulerState,
   SchedulerTransition,
 } from '../scheduler/model';
+import { finishLogicalTurnAttempts } from './attempt-lifecycle';
 import { rotateCurrentGeneration } from './scheduler-generation';
 import { makeLoadSchedulerState } from './scheduler-load';
 import { makeLoadInputBatches, type PersistedInputBatch } from './scheduler-recovery';
@@ -99,12 +100,7 @@ const failTurn = (
   action: Extract<SchedulerAction, { readonly kind: 'FailTurn' }>,
   failedAt: string,
 ): void => {
-  database.run(
-    `UPDATE codex_attempts SET state = 'Failed', finished_at = ?
-     WHERE logical_turn_id = ?
-       AND state IN ('Prepared','Submitted','SubmissionUnknown','Accepted')`,
-    [failedAt, action.logicalTurnId],
-  );
+  finishLogicalTurnAttempts(database, action.logicalTurnId, 'Failed', failedAt);
   const result = database.run(
     `UPDATE logical_turns SET state = 'Failed', completed_at = ?
      WHERE id = ? AND state IN ('Submitted','Running')`,
@@ -121,10 +117,14 @@ const completeTurn = (
   action: Extract<SchedulerAction, { readonly kind: 'CompleteTurn' }>,
   completedAt: string,
 ): void => {
-  database.run(
+  finishLogicalTurnAttempts(database, action.logicalTurnId, 'Completed', completedAt);
+  const result = database.run(
     "UPDATE logical_turns SET state = 'Completed', completed_at = ? WHERE id = ? AND state = 'Running'",
     [completedAt, action.logicalTurnId],
   );
+  if (result.changes !== 1) {
+    throw new Error('completed transition expected one running logical turn');
+  }
   finishScheduledRuns(database, action.logicalTurnId, 'Completed', completedAt);
 };
 

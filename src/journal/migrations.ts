@@ -1,7 +1,7 @@
 import { ATTACHMENTS_INBOUND_MESSAGE_INDEX } from './recovery-query';
 import { scheduleMigrationStatements } from './schedule-migration-statements';
 
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (

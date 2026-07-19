@@ -7,13 +7,13 @@ import { Effect } from 'effect';
 import { afterEach, expect } from 'vitest';
 
 import { openJournal } from '../src/database';
+import { SCHEMA_VERSION } from '../src/journal/migrations';
 import { PENDING_INBOUND_QUERY } from '../src/journal/recovery-query';
 import { needsDurableScheduleInboundRebuild } from '../src/journal/versioned-migrations';
 import {
   assertVersionSixteenFixture,
   databaseNames,
   makePopulatedVersionSixteen,
-  SCHEMA_VERSION_SEVENTEEN,
   schemaVersion,
 } from './schedule-migration-fixture';
 
@@ -50,7 +50,7 @@ it.effect(
 
       const migrated = yield* openJournal(databasePath);
       try {
-        expect(schemaVersion(migrated.database)).toBe(SCHEMA_VERSION_SEVENTEEN);
+        expect(schemaVersion(migrated.database)).toBe(SCHEMA_VERSION);
         expect(
           migrated.database
             .query<

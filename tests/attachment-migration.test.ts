@@ -10,6 +10,7 @@ import { canonicalInputFingerprint } from '../src/codex/reconcile';
 import { openJournal } from '../src/database';
 import { ChatGuid, LogicalTurnId } from '../src/domain/ids';
 import { makeCodexJournal } from '../src/journal/codex-journal';
+import { SCHEMA_VERSION } from '../src/journal/migrations';
 import { makeSchedulerJournal } from '../src/journal/scheduler-journal';
 import { makeJournal } from '../src/journal/service';
 import {
@@ -26,7 +27,7 @@ afterEach(() => {
   }
 });
 
-it.effect('migrates a real v13 journal through durable schedules v17', () =>
+it.effect('migrates a real v13 journal through the current schema', () =>
   Effect.gen(function* migrateAttachmentState() {
     const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-v13-'));
     roots.push(root);
@@ -44,7 +45,7 @@ it.effect('migrates a real v13 journal through durable schedules v17', () =>
       migrated.database
         .query<{ version: number }, []>('SELECT MAX(version) AS version FROM schema_meta')
         .get()?.version,
-    ).toBe(17);
+    ).toBe(SCHEMA_VERSION);
     expect(
       migrated.database
         .query<{ name: string }, []>("PRAGMA index_list('attachments')")
@@ -147,7 +148,7 @@ it.effect('migrates a real v13 journal through durable schedules v17', () =>
   }),
 );
 
-it.effect('migrates a real v14 attachment journal through durable schedules v17', () =>
+it.effect('migrates a real v14 attachment journal through the current schema', () =>
   Effect.gen(function* migrateVersionFourteen() {
     const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-v14-'));
     roots.push(root);
@@ -163,7 +164,7 @@ it.effect('migrates a real v14 attachment journal through durable schedules v17'
       migrated.database
         .query<{ version: number }, []>('SELECT MAX(version) AS version FROM schema_meta')
         .get()?.version,
-    ).toBe(17);
+    ).toBe(SCHEMA_VERSION);
     expect(
       migrated.database
         .query<{ name: string }, []>('PRAGMA table_info(account_observations)')

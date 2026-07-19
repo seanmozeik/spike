@@ -11,7 +11,6 @@ import { ownsActiveTurn } from '../scheduler/ownership';
 import { classifyAccountFailure } from './account-failover';
 import { report, type EngineContext } from './context';
 import type {
-  CompletionTerminalObligation,
   FailureTerminalEvent,
   FailureTerminalObligation,
   TurnTerminalObligation,
@@ -81,23 +80,6 @@ const registerSuccessorFailure = (
   }
 };
 
-const finishDeliveredAttempt = (
-  context: EngineContext,
-  obligation: CompletionTerminalObligation,
-): Effect.Effect<boolean> =>
-  context.codexJournal
-    .finishLogicalTurn(obligation.identity.logicalTurnId, 'Completed', obligation.event.at)
-    .pipe(
-      Effect.result,
-      Effect.map((finished) => {
-        if (Result.isFailure(finished)) {
-          report(context, finished.failure);
-          return false;
-        }
-        return true;
-      }),
-    );
-
 const finishSuccessfulTerminal = (
   context: EngineContext,
   obligation: TurnTerminalObligation,
@@ -152,10 +134,6 @@ const processTerminal = Effect.fn('SpikeEngine.processTurnTerminal')(function* p
       report(context, obligation.error);
     }
     return 'Continue' as const;
-  }
-
-  if (obligation.kind === 'Completion' && !(yield* finishDeliveredAttempt(context, obligation))) {
-    return 'Blocked' as const;
   }
 
   const dispatched = yield* Effect.result(controller.dispatch(obligation.event));

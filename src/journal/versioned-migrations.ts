@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite';
 
 import { reconcileClaimedObservedAttachments } from './attachment-reconciliation';
+import { repairTerminalTurnAttempts } from './attempt-lifecycle';
 import {
   ensureInputBatchIdentityIndexes,
   migrateInputBatchIdentity,
@@ -18,6 +19,7 @@ const ACCOUNT_SELECTION_VERSION = 14;
 const ATTACHMENT_STAGING_VERSION = 15;
 const RECOVERY_QUERY_INDEX_VERSION = 16;
 const DURABLE_SCHEDULES_VERSION = 17;
+const TERMINAL_TURN_ATTEMPT_REPAIR_VERSION = 18;
 
 const needsDurableScheduleInboundRebuild = (previousVersion: number): boolean =>
   previousVersion > 0 && previousVersion < DURABLE_SCHEDULES_VERSION;
@@ -245,6 +247,12 @@ const migrateDurableSchedules = (database: Database, previousVersion: number): v
   createInboundIdentityIndexes(database);
 };
 
+const repairStaleTerminalTurnAttempts = (database: Database, previousVersion: number): void => {
+  if (previousVersion > 0 && previousVersion < TERMINAL_TURN_ATTEMPT_REPAIR_VERSION) {
+    repairTerminalTurnAttempts(database);
+  }
+};
+
 const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
   migrateInitialSchema(database, previousVersion);
   migrateSchedulerSchema(database, previousVersion);
@@ -255,6 +263,7 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   migrateAttachmentStaging(database, previousVersion);
   migrateRecoveryQueryIndexes(database, previousVersion);
   migrateDurableSchedules(database, previousVersion);
+  repairStaleTerminalTurnAttempts(database, previousVersion);
 };
 
 export { applyVersionedMigrations, needsDurableScheduleInboundRebuild };
