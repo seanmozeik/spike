@@ -7,11 +7,12 @@ import { makeCodexJournal } from '../journal/codex-journal';
 import type { PendingControl } from '../journal/control-recovery';
 import type { PendingInboundMessage } from '../journal/inbound-recovery';
 import { makeSchedulerJournal } from '../journal/scheduler-journal';
-import { cursorRowId, makeJournal } from '../journal/service';
+import { makeJournal } from '../journal/service';
 import { makeSchedulerController, type SchedulerController } from '../scheduler/controller';
 import type { SchedulerState } from '../scheduler/model';
 import { controlReplyText, report, type EngineContext, type SpikeEngineOptions } from './context';
 import { initializeConversation } from './conversation-lifecycle';
+import { pollInbox } from './inbox-poll';
 import { failTurn, retryTurnTerminals } from './turn-failure';
 import { recoverActive } from './turn-recovery';
 import { makeTurnTerminalQueue } from './turn-terminal-model';
@@ -158,15 +159,7 @@ const pollOnce = (
     }
     yield* controller.activate;
     yield* recoverControlReplies(context);
-    const cursor = yield* context.journal.inboxCursor(context.options.chatGuid);
-    const observed = yield* context.options.inbox.observeAfter(cursorRowId(cursor));
-    if (observed.length > 0) {
-      yield* context.journal.ingestObservedMessages(
-        context.options.chatGuid,
-        context.now(),
-        observed,
-      );
-    }
+    yield* pollInbox(context);
     if (context.approval !== null) {
       yield* context.approval.poll;
     }

@@ -8,7 +8,7 @@ import { MessagesRowId, type ChatGuid } from '../domain/ids';
 import type { ObservedMessage } from '../domain/inbound';
 import { journalTransactionError, type JournalTransactionError } from '../errors';
 import { makeListPendingControls, type PendingControl } from './control-recovery';
-import { makeInitializeInboxCursor } from './cursor';
+import { makeAdvanceInboxCursor, makeInitializeInboxCursor } from './cursor';
 import { makeListPendingInbound, type PendingInboundMessage } from './inbound-recovery';
 import { newestMessage } from './observed-messages';
 import { makeRedact } from './retention';
@@ -46,6 +46,11 @@ interface AttachmentOwnerRow {
 }
 
 interface Journal {
+  readonly advanceInboxCursor: (
+    chatGuid: ChatGuid,
+    frontier: MessagesRowId,
+    advancedAt: Date,
+  ) => Effect.Effect<void, JournalTransactionError>;
   readonly ingestObservedMessages: (
     chatGuid: ChatGuid,
     observedAt: Date,
@@ -232,9 +237,20 @@ const readInbound = (database: Database): readonly PersistedInboundMessage[] =>
     }));
 
 const makeJournal = (database: Database, conversation: ConfiguredConversation): Journal => {
+  const advanceInboxCursor = makeAdvanceInboxCursor(database);
   const ingest = makeIngest(database, conversation);
   const redact = makeRedact(database);
   return {
+    advanceInboxCursor: (chatGuid, frontier, advancedAt) =>
+      chatGuid === conversation.chatGuid
+        ? advanceInboxCursor(chatGuid, frontier, advancedAt)
+        : Effect.fail(
+            journalTransactionError(
+              'advanceInboxCursor',
+              'idle cursor target does not match the configured conversation',
+              new Error('configured conversation mismatch'),
+            ),
+          ),
     inboxCursor: (chatGuid) => Effect.sync(() => readCursor(database, chatGuid)),
     ingestObservedMessages: (chatGuid, observedAt, messages) =>
       Effect.try({

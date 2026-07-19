@@ -347,6 +347,41 @@ it.effect('redispatches a durably ingested message after a crash advanced the in
   }),
 );
 
+it.effect('persists an idle frontier and ingests the next inbound exactly once', () =>
+  Effect.gen(function* idleFrontier() {
+    const fixture = yield* makeEngineFixture({
+      behavior: { finalAnswer: 'After idle.' },
+      idleFrontier: 100,
+      prepare: (database) =>
+        Effect.sync(() => {
+          database.run(
+            `INSERT INTO inbox_cursor(chat_guid, last_rowid, last_message_guid, updated_at)
+             VALUES (?, 0, NULL, ?)`,
+            [CHAT_GUID, new Date('2026-07-14T11:59:00.000Z').toISOString()],
+          );
+        }),
+    });
+    yield* fixture.engine.pollOnce;
+    expect(
+      fixture.database
+        .query<{ last_rowid: number }, []>('SELECT last_rowid FROM inbox_cursor')
+        .get()?.last_rowid,
+    ).toBe(100);
+
+    fixture.push(inbound(101, 'arrived after idle'));
+    yield* settle(fixture.engine);
+    yield* fixture.engine.pollOnce;
+    expect(fixture.inputs).toStrictEqual(['arrived after idle']);
+    expect(fixture.sent).toStrictEqual(['After idle']);
+    expect(
+      fixture.database
+        .query<{ last_rowid: number }, []>('SELECT last_rowid FROM inbox_cursor')
+        .get()?.last_rowid,
+    ).toBe(101);
+    fixture.remove();
+  }),
+);
+
 it.effect('seeds a fresh journal at the current chat frontier without replaying history', () =>
   Effect.gen(function* freshInstall() {
     const fixture = yield* makeEngineFixture({ preexisting: [inbound(391, 'old chat')] });

@@ -20,8 +20,8 @@ import { ChatGuid, MessageGuid, MessagesRowId } from '../src/domain/ids';
 import type { ObservedMessage } from '../src/domain/inbound';
 import { makeConversationDiagnostic } from '../src/journal/conversation-diagnostic';
 import type { LikeAcknowledgement } from '../src/like/adapter';
-import type { MessagesInboxHandle } from '../src/messages-inbox';
 import { makeSpikeEngine, type SpikeEngine } from '../src/service/engine';
+import { makeInbox } from './engine-inbox-fixture';
 import { openFixtureJournal } from './engine-journal-fixture';
 import { makeRuntimeHarness, type RuntimeTrace, type TurnBehavior } from './fake-codex-runtime';
 
@@ -49,6 +49,7 @@ interface EngineFixtureOptions {
   readonly behavior?: TurnBehavior;
   readonly conversationProbe?: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs?: number;
+  readonly idleFrontier?: number;
   readonly now?: () => Date;
   readonly prepare?: (database: Database) => Effect.Effect<void, unknown>;
   readonly preexisting?: readonly ObservedMessage[];
@@ -105,22 +106,6 @@ const makeTestDelivery = (
     withConversationAvailability(makeTransport(sent, behavior), conversation),
   );
 
-const latestRowId = (queue: readonly ObservedMessage[]): MessagesRowId => {
-  let latest = 0;
-  for (const message of queue) {
-    latest = Math.max(latest, message.rowId);
-  }
-  return MessagesRowId.make(latest);
-};
-
-const makeInbox = (queue: ObservedMessage[]): MessagesInboxHandle => ({
-  close: (): void => undefined,
-  frontier: Effect.sync(() => latestRowId(queue)),
-  observeAfter: (cursor): Effect.Effect<readonly ObservedMessage[]> =>
-    Effect.succeed(queue.filter(({ rowId }) => rowId > cursor)),
-  refresh: Effect.void,
-});
-
 const makeLike = (likes: string[]): LikeAcknowledgement => ({
   acknowledge: (_id, text): Effect.Effect<void> =>
     Effect.sync(() => {
@@ -151,6 +136,7 @@ interface MakeFixtureOptions {
   readonly behavior: TurnBehavior;
   readonly conversationProbe: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs: number | undefined;
+  readonly idleFrontier: number | undefined;
   readonly now: () => Date;
   readonly prepare: ((database: Database) => Effect.Effect<void, unknown>) | undefined;
   readonly preexisting: readonly ObservedMessage[] | undefined;
@@ -208,6 +194,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
   behavior,
   conversationProbe,
   conversationValidationIntervalMs,
+  idleFrontier,
   now,
   prepare,
   preexisting,
@@ -241,7 +228,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
     database: handle.database,
     delivery: makeTestDelivery(handle, sent, behavior, conversation),
     handle: '+15555550199',
-    inbox: makeInbox(queue),
+    inbox: makeInbox(queue, idleFrontier),
     like: makeLike(likes),
     now,
     renderStatus: () => renderStatus(behavior),
@@ -256,6 +243,7 @@ const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeo
     behavior: options.behavior ?? {},
     conversationProbe: options.conversationProbe ?? ((): Effect.Effect<void> => Effect.void),
     conversationValidationIntervalMs: options.conversationValidationIntervalMs,
+    idleFrontier: options.idleFrontier,
     now: options.now ?? ((): Date => new Date('2026-07-14T12:00:00.000Z')),
     preexisting: options.preexisting,
     prepare: options.prepare,
@@ -272,6 +260,7 @@ const makeMigratedEngineFixture = (
     behavior,
     conversationProbe: (): Effect.Effect<void> => Effect.void,
     conversationValidationIntervalMs: undefined,
+    idleFrontier: undefined,
     now: (): Date => new Date('2026-07-14T12:00:00.000Z'),
     preexisting: undefined,
     prepare: undefined,

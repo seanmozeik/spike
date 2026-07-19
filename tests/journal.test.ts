@@ -64,6 +64,36 @@ it.effect('atomically persists inbound rows and cursor, dedupes, and resumes aft
   }),
 );
 
+it.effect('advances an idle cursor monotonically and preserves its last inbound identity', () =>
+  Effect.gen(function* idleCursorFixture() {
+    const databasePath = makeDatabasePath();
+    const firstHandle = yield* openJournal(databasePath);
+    const first = makeJournal(firstHandle.database, { chatGuid: CHAT_GUID, handle: HANDLE });
+    const ingestedAt = new Date('2026-07-14T12:00:00.000Z');
+    const advancedAt = new Date('2026-07-14T12:01:00.000Z');
+    const staleAt = new Date('2026-07-14T12:02:00.000Z');
+    yield* first.ingestObservedMessages(CHAT_GUID, ingestedAt, [observed(12)]);
+    yield* first.advanceInboxCursor(CHAT_GUID, MessagesRowId.make(20), advancedAt);
+    yield* first.advanceInboxCursor(CHAT_GUID, MessagesRowId.make(15), staleAt);
+    expect(yield* first.inboxCursor(CHAT_GUID)).toStrictEqual({
+      chatGuid: CHAT_GUID,
+      lastMessageGuid: 'guid-12',
+      lastRowId: 20,
+      updatedAt: advancedAt.toISOString(),
+    });
+    firstHandle.close();
+
+    const restartedHandle = yield* openJournal(databasePath);
+    const restarted = makeJournal(restartedHandle.database, {
+      chatGuid: CHAT_GUID,
+      handle: HANDLE,
+    });
+    expect((yield* restarted.inboxCursor(CHAT_GUID))?.lastRowId).toBe(20);
+    expect((yield* restarted.listInbound).map(({ rowId }) => rowId)).toStrictEqual([12]);
+    restartedHandle.close();
+  }),
+);
+
 it.effect('rolls back inserted rows and cursor together when an observed batch is invalid', () =>
   Effect.gen(function* rollbackFixture() {
     const handle = yield* openJournal(makeDatabasePath());
