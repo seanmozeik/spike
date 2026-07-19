@@ -49,6 +49,7 @@ const makeRuntime = (
   rateLimits: Effect.succeed({}),
   readThread,
   respondToServerRequest: (): Promise<void> => Promise.resolve(),
+  respondToServerRequestError: (): Promise<void> => Promise.resolve(),
   resumeThread: (): Effect.Effect<void> => Effect.void,
   startThread: Effect.succeed(CodexThreadId.make('thread')),
   startTurn,

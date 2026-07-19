@@ -95,6 +95,7 @@ it.effect('reconstructs pooled timing and acknowledgement state after restart', 
     const resetState = {
       active: null,
       codexThreadId: null,
+      configurationCurrent: true,
       generationBroken: false,
       generationId: GenerationId.make('generation-2'),
       pool: [],
@@ -106,6 +107,16 @@ it.effect('reconstructs pooled timing and acknowledgement state after restart', 
          id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
        ) VALUES (?, 'guid-command', 3, 'chat', 'handle', 'iMessage', '/new', ?, ?)`,
       [commandId, commandAt.toISOString(), commandAt.toISOString()],
+    );
+    handle.database.run(
+      `INSERT INTO approval_requests(
+         id, connection_id, rpc_request_id_json, method, logical_turn_id, operation,
+         params_json, file_paths_json, state, requested_at, expires_at
+       ) VALUES (
+         'approval-pending-reset', 'connection', '1', 'execCommandApproval', ?, 'Command',
+         '{}', '[]', 'Pending', ?, ?
+       )`,
+      [logicalTurnId, now.toISOString(), new Date(now.getTime() + 60_000).toISOString()],
     );
     yield* journal.commitTransition(
       {
@@ -128,6 +139,13 @@ it.effect('reconstructs pooled timing and acknowledgement state after restart', 
         .query<{ state: string }, [string]>('SELECT state FROM generations WHERE id = ?')
         .get(initial.generationId)?.state,
     ).toBe('Superseded');
+    expect(
+      handle.database
+        .query<{ state: string }, []>(
+          "SELECT state FROM approval_requests WHERE id = 'approval-pending-reset'",
+        )
+        .get(),
+    ).toStrictEqual({ state: 'Orphaned' });
     expect(
       handle.database
         .query<{ count: number }, []>('SELECT COUNT(*) AS count FROM handled_control_messages')

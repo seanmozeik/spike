@@ -7,7 +7,8 @@ type EngineWakeKind =
   | 'Messages'
   | 'Reconcile'
   | 'Recovery'
-  | 'Redaction';
+  | 'Redaction'
+  | 'ScheduleDue';
 
 interface WakeTimer {
   readonly fiber: Fiber.Fiber<void>;

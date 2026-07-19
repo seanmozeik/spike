@@ -61,6 +61,7 @@ const restartPreparedAttempt = async (request: CodexInput): Promise<RestartedAtt
       logicalTurnId: request.logicalTurnId,
       startedAt: new Date('2026-07-19T12:00:00.000Z'),
       submissionKind: request.kind,
+      threadId: request.threadId,
     }),
   );
   fixture.handle.close();

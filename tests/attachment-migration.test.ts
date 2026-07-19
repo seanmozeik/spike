@@ -26,7 +26,7 @@ afterEach(() => {
   }
 });
 
-it.effect('migrates a real v13 journal through account v14, attachment v15, and recovery v16', () =>
+it.effect('migrates a real v13 journal through durable schedules v17', () =>
   Effect.gen(function* migrateAttachmentState() {
     const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-v13-'));
     roots.push(root);
@@ -44,7 +44,7 @@ it.effect('migrates a real v13 journal through account v14, attachment v15, and 
       migrated.database
         .query<{ version: number }, []>('SELECT MAX(version) AS version FROM schema_meta')
         .get()?.version,
-    ).toBe(16);
+    ).toBe(17);
     expect(
       migrated.database
         .query<{ name: string }, []>("PRAGMA index_list('attachments')")
@@ -147,7 +147,7 @@ it.effect('migrates a real v13 journal through account v14, attachment v15, and 
   }),
 );
 
-it.effect('migrates a real v14 attachment journal through v15 and v16', () =>
+it.effect('migrates a real v14 attachment journal through durable schedules v17', () =>
   Effect.gen(function* migrateVersionFourteen() {
     const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-v14-'));
     roots.push(root);
@@ -163,7 +163,7 @@ it.effect('migrates a real v14 attachment journal through v15 and v16', () =>
       migrated.database
         .query<{ version: number }, []>('SELECT MAX(version) AS version FROM schema_meta')
         .get()?.version,
-    ).toBe(16);
+    ).toBe(17);
     expect(
       migrated.database
         .query<{ name: string }, []>('PRAGMA table_info(account_observations)')

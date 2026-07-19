@@ -52,6 +52,7 @@ it.effect('persists the pre-submit frontier and reconciled turn through named tr
       logicalTurnId: LogicalTurnId.make('logical-turn'),
       startedAt: new Date(),
       submissionKind: 'Start',
+      threadId: CodexThreadId.make('thread'),
     });
     expect(yield* journal.loadNonterminalAttempts).toMatchObject([
       { batchId: 'input-batch', state: 'Prepared', submissionKind: 'Start' },

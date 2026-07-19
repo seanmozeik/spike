@@ -14,37 +14,31 @@ import { checkAccessibility } from './accessibility-check';
 import { attachmentStagingCheck } from './attachment-check';
 import { eventLoopCheck } from './event-loop-check';
 import { checkHooks } from './hooks-check';
+import { readScheduleDiagnostics } from './snapshot-guard';
 
 type CheckState = 'fail' | 'pass' | 'warn';
-
 interface DiagnosticCheck {
   readonly detail: string;
   readonly name: string;
   readonly state: CheckState;
 }
-
 interface DoctorReport {
   readonly checks: readonly DiagnosticCheck[];
   readonly healthy: boolean;
   readonly ok: true;
 }
-
 type DiagnosticConfig =
   | { readonly app: SpikeConfig; readonly codex: Record<string, unknown>; readonly error: null }
   | { readonly app: null; readonly codex: null; readonly error: string };
-
 const check = (name: string, state: CheckState, detail: string): DiagnosticCheck => ({
   detail,
   name,
   state,
 });
-
 const numericField = (value: Record<string, unknown>, key: string): number =>
   typeof value[key] === 'number' ? value[key] : 0;
-
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
-
 const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
   const displayed = numericField(value, 'displayed');
   const orphaned = numericField(value, 'orphaned');
@@ -57,7 +51,6 @@ const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
   }
   return check('approvals', state, `${String(pending)} pending, ${String(orphaned)} orphaned`);
 };
-
 const outageCheck = (value: unknown): DiagnosticCheck => {
   const outage = isObject(value) ? value : {};
   const open = Array.isArray(outage['open'])
@@ -67,6 +60,21 @@ const outageCheck = (value: unknown): DiagnosticCheck => {
     'outages',
     open.length === 0 ? 'pass' : 'fail',
     open.length === 0 ? 'none open' : open.join(', '),
+  );
+};
+const scheduleCheck = (value: unknown): DiagnosticCheck => {
+  if (value === undefined) {
+    return check('schedules', 'warn', 'not reported by daemon');
+  }
+  const diagnostics = readScheduleDiagnostics(value);
+  if (diagnostics === null) {
+    return check('schedules', 'fail', 'invalid schedule diagnostics');
+  }
+  const { active, cancelled, completed, nextDueAt, paused, queued, running } = diagnostics;
+  return check(
+    'schedules',
+    'pass',
+    `${String(active)} active, ${String(paused)} paused, ${String(completed)} completed, ${String(cancelled)} cancelled, ${String(queued)} queued, ${String(running)} running, next ${nextDueAt ?? 'none'}`,
   );
 };
 
@@ -274,6 +282,7 @@ const makeDoctorReport = async (
       appServer['healthy'] === true ? 'responsive' : 'unavailable',
     ),
     approvalCheck(approvals),
+    scheduleCheck(status['schedules']),
     outageCheck(status['outages']),
     eventLoopCheck(status['eventLoop']),
     accounts,

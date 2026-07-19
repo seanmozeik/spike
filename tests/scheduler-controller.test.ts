@@ -1,6 +1,6 @@
 import { it } from '@effect/vitest';
-import { Effect, Fiber } from 'effect';
-import { expect } from 'vitest';
+import { Deferred, Effect } from 'effect';
+import { expect, it as vitestIt } from 'vitest';
 
 import {
   CodexThreadId,
@@ -17,6 +17,7 @@ import type { SchedulerEvent, SchedulerState } from '../src/scheduler/model';
 const initial: SchedulerState = {
   active: null,
   codexThreadId: null,
+  configurationCurrent: true,
   generationBroken: false,
   generationId: GenerationId.make('generation'),
   pool: [],
@@ -165,73 +166,69 @@ it.effect('/new binds a ready thread and replies even when old-thread cleanup fa
   }),
 );
 
-it.effect('/new waits for an owned turn-notice critical section', () =>
-  Effect.gen(function* serializedTurnNotice() {
-    const started = Promise.withResolvers<undefined>();
-    const release = Promise.withResolvers<undefined>();
-    let resetCommitted = false;
-    const active = {
-      ...initial,
-      active: {
-        acknowledged: false,
-        codexTurnId: CodexTurnId.make('codex-turn'),
-        logicalTurnId: LogicalTurnId.make('turn-1'),
-      },
-    } satisfies SchedulerState;
-    const ports: SchedulerPorts = {
-      bindThread: (): Effect.Effect<null> => Effect.succeed(null),
-      cleanupGeneration: (): Effect.Effect<void> => Effect.void,
-      replyLocal: (): Effect.Effect<void> => Effect.void,
-      reportFailure: (): Effect.Effect<void> => Effect.void,
-      schedulePool: (): Effect.Effect<void> => Effect.void,
-      startTurn: () =>
-        Effect.succeed({
-          threadId: CodexThreadId.make('thread'),
-          turnId: CodexTurnId.make('codex-turn'),
-        }),
-      steerTurn: (): Effect.Effect<void> => Effect.void,
-    };
-    const guardedJournal: SchedulerJournal = {
-      ...journal(),
-      commitTransition: (transition): Effect.Effect<void> =>
-        Effect.sync(() => {
-          if (transition.actions.some(({ kind }) => kind === 'ResetGeneration')) {
-            resetCommitted = true;
-          }
-        }),
-    };
-    const controller = yield* makeSchedulerController(active, guardedJournal, ports);
-    const notice = yield* controller
-      .runIfTurnOwned(
+vitestIt('/new waits for an owned turn-notice critical section', async () => {
+  await Effect.runPromise(
+    Effect.gen(function* serializedTurnNotice() {
+      const started = yield* Deferred.make<boolean>();
+      const order: string[] = [];
+      const active = {
+        ...initial,
+        active: {
+          acknowledged: false,
+          codexTurnId: CodexTurnId.make('codex-turn'),
+          logicalTurnId: LogicalTurnId.make('turn-1'),
+        },
+      } satisfies SchedulerState;
+      const ports: SchedulerPorts = {
+        bindThread: (): Effect.Effect<null> => Effect.succeed(null),
+        cleanupGeneration: (): Effect.Effect<void> => Effect.void,
+        replyLocal: (): Effect.Effect<void> => Effect.void,
+        reportFailure: (): Effect.Effect<void> => Effect.void,
+        schedulePool: (): Effect.Effect<void> => Effect.void,
+        startTurn: () =>
+          Effect.succeed({
+            threadId: CodexThreadId.make('thread'),
+            turnId: CodexTurnId.make('codex-turn'),
+          }),
+        steerTurn: (): Effect.Effect<void> => Effect.void,
+      };
+      const guardedJournal: SchedulerJournal = {
+        ...journal(),
+        commitTransition: (transition): Effect.Effect<void> =>
+          Effect.sync(() => {
+            if (transition.actions.some(({ kind }) => kind === 'ResetGeneration')) {
+              order.push('reset');
+            }
+          }),
+      };
+      const controller = yield* makeSchedulerController(active, guardedJournal, ports);
+      const notice = controller.runIfTurnOwned(
         { generationId: active.generationId, logicalTurnId: active.active.logicalTurnId },
         Effect.gen(function* heldNotice() {
-          started.resolve();
-          yield* Effect.promise(() => release.promise);
+          order.push('notice-start');
+          yield* Deferred.succeed(started, true);
+          yield* Effect.yieldNow;
+          order.push('notice-end');
         }),
-      )
-      .pipe(Effect.forkChild);
-    yield* Effect.promise(() => started.promise);
-    const reset = yield* controller
-      .dispatch({
-        kind: 'Inbound',
-        message: {
-          attachments: [],
-          id: InboundMessageId.make('new-command'),
-          receivedAt: new Date(),
-          text: '/new',
-        },
-        newGenerationId: GenerationId.make('generation-2'),
-        nextLogicalTurnId: LogicalTurnId.make('unused'),
-      })
-      .pipe(Effect.forkChild);
-    yield* Effect.yieldNow;
-    expect(resetCommitted).toBe(false);
+      );
+      const reset = Effect.gen(function* resetAfterNoticeStarts() {
+        yield* Deferred.await(started);
+        yield* controller.dispatch({
+          kind: 'Inbound',
+          message: {
+            attachments: [],
+            id: InboundMessageId.make('new-command'),
+            receivedAt: new Date(),
+            text: '/new',
+          },
+          newGenerationId: GenerationId.make('generation-2'),
+          nextLogicalTurnId: LogicalTurnId.make('unused'),
+        });
+      });
+      yield* Effect.all([notice, reset], { concurrency: 'unbounded', discard: true });
 
-    release.resolve();
-    yield* Fiber.join(notice);
-    yield* Fiber.join(reset);
-
-    expect(resetCommitted).toBe(true);
-    expect((yield* controller.snapshot).generationId).toBe('generation-2');
-  }),
-);
+      expect(order).toEqual(['notice-start', 'notice-end', 'reset']);
+      expect((yield* controller.snapshot).generationId).toBe('generation-2');
+    }),
+  );
+});

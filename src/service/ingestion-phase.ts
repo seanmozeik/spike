@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
-import { parseControlCommand } from '../domain/control-command';
 import {
   GenerationId,
   type InboundMessageId,
@@ -16,9 +15,9 @@ import type { SchedulerEvent } from '../scheduler/model';
 import { captureAccountFailure, requestPendingAccountFailover } from './account-failover';
 import { report, type EngineContext } from './context';
 import { initializeConversation } from './conversation-lifecycle';
+import { repairDispatchFailure } from './dispatch-repair';
 import { mark } from './event-loop-diagnostics';
 import { pollInbox } from './inbox-poll';
-import { failTurn } from './turn-failure';
 
 const APPROVAL_EXPIRY_TIMER = 'approval-expiry';
 const MAX_CONFIRMATION_PASSES = 3;
@@ -55,7 +54,6 @@ const dispatchPending = (
       if (message.acknowledgementText !== null) {
         yield* runLike(context, message.id, message.acknowledgementText, at);
       }
-      const state = yield* controller.snapshot;
       const nextLogicalTurnId = LogicalTurnId.make(randomUUID());
       const event = {
         kind: 'Inbound',
@@ -73,17 +71,13 @@ const dispatchPending = (
         if (yield* captureAccountFailure(context, controller, dispatched.failure)) {
           return { error: dispatched.failure };
         }
-        const command = parseControlCommand(message.text);
-        if (state.active === null && !state.generationBroken && command === null) {
-          yield* failTurn(
-            context,
-            { generationId: state.generationId, logicalTurnId: nextLogicalTurnId },
-            dispatched.failure,
-          );
-        } else {
-          report(context, dispatched.failure);
-          context.wakes.signal('Recovery');
-        }
+        yield* repairDispatchFailure(
+          context,
+          yield* controller.snapshot,
+          nextLogicalTurnId,
+          null,
+          dispatched.failure,
+        );
         return { error: dispatched.failure };
       }
     }

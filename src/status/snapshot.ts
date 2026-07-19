@@ -14,6 +14,7 @@ import { spikeVersion } from '../version';
 import type { StatusSnapshot } from './model';
 import { readOpenOutageKinds } from './outages';
 import { readRateLimits } from './rate-limits';
+import { readScheduleStatus } from './schedule-status';
 import { isStatusSnapshotShape } from './snapshot-guard';
 
 interface SchedulerStatusRow {
@@ -117,6 +118,25 @@ const readLiveCodex = async (
   return { healthy: true, rateLimits: usage, usage };
 };
 
+const readApprovals = (database: Database): StatusSnapshot['approvals'] => {
+  const row = database
+    .query<{ displayed: number; orphaned: number; pending: number; recently_resolved: number }, []>(
+      `SELECT
+         SUM(CASE WHEN state = 'Pending' THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN state = 'Pending' AND delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS displayed,
+         SUM(CASE WHEN state = 'Orphaned' THEN 1 ELSE 0 END) AS orphaned,
+         SUM(CASE WHEN state != 'Pending' AND resolved_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS recently_resolved
+       FROM approval_requests`,
+    )
+    .get();
+  return {
+    displayed: row?.displayed ?? 0,
+    orphaned: row?.orphaned ?? 0,
+    pending: row?.pending ?? 0,
+    recentlyResolved: row?.recently_resolved ?? 0,
+  };
+};
+
 const readDatabaseStatus = (
   database: Database,
 ): {
@@ -125,28 +145,9 @@ const readDatabaseStatus = (
   readonly like: LikeStatusRow | null;
   readonly outages: NonNullable<StatusSnapshot['outages']>;
   readonly scheduler: SchedulerStatusRow | null;
+  readonly schedules: NonNullable<StatusSnapshot['schedules']>;
 } => ({
-  approvals: ((): StatusSnapshot['approvals'] => {
-    const row = database
-      .query<
-        { displayed: number; orphaned: number; pending: number; recently_resolved: number },
-        []
-      >(
-        `SELECT
-           SUM(CASE WHEN state = 'Pending' THEN 1 ELSE 0 END) AS pending,
-           SUM(CASE WHEN state = 'Pending' AND delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS displayed,
-           SUM(CASE WHEN state = 'Orphaned' THEN 1 ELSE 0 END) AS orphaned,
-           SUM(CASE WHEN state != 'Pending' AND resolved_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS recently_resolved
-         FROM approval_requests`,
-      )
-      .get();
-    return {
-      displayed: row?.displayed ?? 0,
-      orphaned: row?.orphaned ?? 0,
-      pending: row?.pending ?? 0,
-      recentlyResolved: row?.recently_resolved ?? 0,
-    };
-  })(),
+  approvals: readApprovals(database),
   attachment: readAttachmentStagingDiagnostic(database),
   like:
     database
@@ -165,6 +166,7 @@ const readDatabaseStatus = (
          WHERE s.singleton = 1`,
       )
       .get() ?? null,
+  schedules: readScheduleStatus(database),
 });
 
 const turnStatus = (
@@ -200,6 +202,12 @@ const eventLoopStatus = (
   eventLoop: EngineEventLoopDiagnostics | null,
 ): Pick<StatusSnapshot, 'eventLoop'> => (eventLoop === null ? {} : { eventLoop });
 
+const systemStatus = (): StatusSnapshot['system'] => ({
+  cpuLoad: Number((loadavg()[0] ?? 0).toFixed(2)),
+  memoryPressurePercent: memoryPressure(),
+  uptimeSeconds: Math.floor(uptime()),
+});
+
 const makeStatusSnapshot = async (
   database: Database,
   paths: SpikePaths,
@@ -212,7 +220,8 @@ const makeStatusSnapshot = async (
     configStatus(paths),
     readLiveCodex(runtime),
   ]);
-  const { approvals, attachment, like, outages, scheduler } = readDatabaseStatus(database);
+  const { approvals, attachment, like, outages, scheduler, schedules } =
+    readDatabaseStatus(database);
   const limits = readRateLimits(live.rateLimits);
   const providerActive = runtime?.accountId.startsWith('provider:') === true;
   const effectiveCounts = providerActive ? { configured: 1, eligible: 1 } : counts;
@@ -241,12 +250,9 @@ const makeStatusSnapshot = async (
     },
     ok: true,
     outages,
+    schedules,
     service: { healthy: true, pid: process.pid, startedAt, version: spikeVersion },
-    system: {
-      cpuLoad: Number((loadavg()[0] ?? 0).toFixed(2)),
-      memoryPressurePercent: memoryPressure(),
-      uptimeSeconds: Math.floor(uptime()),
-    },
+    system: systemStatus(),
     turn: turnStatus(database, scheduler),
   };
 };

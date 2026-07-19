@@ -136,6 +136,7 @@ const startCodexTurn = Effect.fn('Test.startRetentionTurn')(function* startTurn(
     logicalTurnId,
     startedAt: OLD,
     submissionKind: 'Start',
+    threadId: CodexThreadId.make(`thread-${suffix}`),
   });
   yield* fixture.codex.acceptCodexTurn(
     attemptId,

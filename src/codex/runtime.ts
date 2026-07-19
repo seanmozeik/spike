@@ -7,6 +7,7 @@ import type { SpikeConfig } from '../app-config';
 import { CodexThreadId, CodexTurnId } from '../domain/ids';
 import { CodexRuntimeError } from '../errors';
 import type { SpikePaths } from '../paths';
+import { scheduleDynamicTools } from '../schedule/tool-spec';
 import { assembleSystemPrompt } from '../system-prompt';
 import { activateAccount, type AccountPoolOptions, type AccountRecord } from './account-pool';
 import type { ClassifiedOutput } from './output-classifier';
@@ -117,7 +118,14 @@ const parseLoadedThreads = (
 
 const threadStartParams = (prompt: string, workingDirectory: string): Record<string, unknown> => ({
   baseInstructions: prompt,
+  config: {
+    'features.current_time_reminder.clock_source': 'external',
+    'features.current_time_reminder.delivery_mode': 'after_user_or_tool_output',
+    'features.current_time_reminder.enabled': true,
+    'features.current_time_reminder.reminder_interval_seconds': 0,
+  },
   cwd: workingDirectory,
+  dynamicTools: scheduleDynamicTools,
   historyMode: 'legacy',
 });
 
@@ -182,6 +190,7 @@ const makeCodexRuntime = (
   loadedThreads: request(handle, 'thread/loaded/list', {}).pipe(Effect.flatMap(parseLoadedThreads)),
   rateLimits: request(handle, 'account/rateLimits/read', undefined, STATUS_RPC_TIMEOUT_MS),
   respondToServerRequest: handle.respondToServerRequest,
+  respondToServerRequestError: handle.respondToServerRequestError,
   startThread: request(handle, 'thread/start', threadStartParams(prompt, workingDirectory)).pipe(
     Effect.flatMap((response) => responseId('thread/start', response, 'thread')),
     Effect.map((id) => CodexThreadId.make(id)),

@@ -8,15 +8,18 @@ import {
   InboundMessageId,
   LogicalTurnId,
 } from '../domain/ids';
+import { SCHEDULE_CONFIGURATION_VERSION } from '../schedule/configuration';
 import type { PooledMessage, SchedulerState } from '../scheduler/model';
 import { poolDeadline } from '../scheduler/transition';
 import { readStagedImages } from './attachment-input';
+import { insertCurrentGeneration } from './scheduler-generation';
 
 interface SchedulerRow {
   readonly active_acknowledged: number;
   readonly active_codex_turn_id: null | string;
   readonly active_logical_turn_id: null | string;
   readonly codex_thread_id: null | string;
+  readonly config_version: null | string;
   readonly generation_broken: number;
   readonly generation_id: string;
 }
@@ -35,11 +38,7 @@ const currentGeneration = (database: Database, now: string): GenerationId => {
     return GenerationId.make(current.id);
   }
   const generationId = GenerationId.make(randomUUID());
-  database.run(
-    `INSERT INTO generations(id, sequence, state, created_at)
-     VALUES (?, COALESCE((SELECT MAX(sequence) + 1 FROM generations), 1), 'Current', ?)`,
-    [generationId, now],
-  );
+  insertCurrentGeneration(database, generationId, now);
   return generationId;
 };
 
@@ -99,7 +98,7 @@ const readPool = (database: Database): readonly PooledMessage[] =>
 const readSchedulerState = (database: Database, generationId: GenerationId): SchedulerState => {
   const row = database
     .query<SchedulerRow, []>(
-      `SELECT s.generation_id, g.codex_thread_id, s.active_logical_turn_id,
+      `SELECT s.generation_id, g.codex_thread_id, g.config_version, s.active_logical_turn_id,
               s.active_codex_turn_id, s.active_acknowledged, s.generation_broken
        FROM scheduler_state s
        JOIN generations g ON g.id = s.generation_id
@@ -107,7 +106,19 @@ const readSchedulerState = (database: Database, generationId: GenerationId): Sch
     )
     .get();
   if (row === null || row.generation_id !== generationId) {
-    return { active: null, codexThreadId: null, generationBroken: false, generationId, pool: [] };
+    const generation = database
+      .query<{ readonly config_version: null | string }, [string]>(
+        'SELECT config_version FROM generations WHERE id = ?',
+      )
+      .get(generationId);
+    return {
+      active: null,
+      codexThreadId: null,
+      configurationCurrent: generation?.config_version === SCHEDULE_CONFIGURATION_VERSION,
+      generationBroken: false,
+      generationId,
+      pool: [],
+    };
   }
   return {
     active:
@@ -120,6 +131,7 @@ const readSchedulerState = (database: Database, generationId: GenerationId): Sch
             logicalTurnId: LogicalTurnId.make(row.active_logical_turn_id),
           },
     codexThreadId: row.codex_thread_id === null ? null : CodexThreadId.make(row.codex_thread_id),
+    configurationCurrent: row.config_version === SCHEDULE_CONFIGURATION_VERSION,
     generationBroken: row.generation_broken === 1,
     generationId: GenerationId.make(row.generation_id),
     pool: readPool(database),

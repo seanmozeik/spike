@@ -59,7 +59,14 @@ const recoverPendingSteers = (
               kind: 'Steer',
               logicalTurnId: batch.logicalTurnId,
               threadId,
-            }).pipe(Effect.asVoid);
+            }).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  context.scheduleRequests?.attemptAccepted();
+                }),
+              ),
+              Effect.asVoid,
+            );
       yield* recovery;
     }
   });
@@ -85,6 +92,9 @@ const recoverActive = (
       const started = yield* submit(context, state, batch);
       ({ threadId, turnId } = started);
       submittedNow = true;
+      if (state.codexThreadId !== threadId) {
+        yield* controller.dispatch({ codexThreadId: threadId, kind: 'ThreadBound' });
+      }
       yield* controller.dispatch({
         at: context.now(),
         codexTurnId: turnId,

@@ -135,7 +135,9 @@ const makeStagePendingAttachments = (
           `SELECT attachment.id, attachment.source_path
                FROM attachments attachment
                JOIN inbound_messages inbound ON inbound.id = attachment.inbound_message_id
-               WHERE attachment.state = 'Observed' AND inbound.payload_redacted_at IS NULL
+                   WHERE attachment.state = 'Observed'
+                     AND inbound.source_kind = 'Messages'
+                     AND inbound.payload_redacted_at IS NULL
                  AND NOT EXISTS (
                    SELECT 1 FROM input_batch_messages batch
                    WHERE batch.inbound_message_id = attachment.inbound_message_id

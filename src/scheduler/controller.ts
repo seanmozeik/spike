@@ -39,6 +39,7 @@ interface SchedulerPorts {
   readonly bindThread: () => Effect.Effect<CodexThreadId | null, SchedulerControllerError>;
   readonly cleanupGeneration: (
     previous: SchedulerState,
+    kind: 'ResetGeneration' | 'RotateConfiguration',
   ) => Effect.Effect<void, SchedulerControllerError>;
   readonly replyLocal: (
     kind: 'NewChat' | 'Status',
@@ -133,8 +134,8 @@ const runSideEffects = Effect.fn('SpikeScheduler.runSideEffects')(function* runS
         kind: 'TurnStarted',
         logicalTurnId: action.logicalTurnId,
       });
-    } else if (action.kind === 'ResetGeneration') {
-      const cleanup = yield* Effect.result(ports.cleanupGeneration(previous));
+    } else if (action.kind === 'ResetGeneration' || action.kind === 'RotateConfiguration') {
+      const cleanup = yield* Effect.result(ports.cleanupGeneration(previous, action.kind));
       if (Result.isFailure(cleanup)) {
         yield* ports.reportFailure(cleanup.failure);
       }

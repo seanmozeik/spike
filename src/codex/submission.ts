@@ -113,6 +113,7 @@ const submitCodexInput = Effect.fn('SpikeCodex.submit')(function* submitCodexInp
     logicalTurnId: input.logicalTurnId,
     startedAt: new Date(),
     submissionKind: input.kind,
+    threadId: input.threadId,
   });
   const first = yield* sendInput(runtime, input, attemptId).pipe(Effect.result);
   if (Result.isSuccess(first)) {

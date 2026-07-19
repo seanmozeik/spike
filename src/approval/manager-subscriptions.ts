@@ -1,4 +1,5 @@
 import type { JsonRpcNotification } from '../codex/rpc';
+import { APPROVAL_METHODS } from '../codex/rpc-server-request';
 import type { JsonRpcId } from '../codex/server-request-registry';
 import type { ApprovalContext } from './manager-types';
 
@@ -15,7 +16,7 @@ const resolvedRequestId = (notification: JsonRpcNotification): JsonRpcId | null 
 };
 
 const subscribeRuntime = (context: ApprovalContext): readonly (() => void)[] => [
-  context.options.runtime.addServerRequestListener((request) => {
+  context.options.runtime.addServerRequestListener(APPROVAL_METHODS, (request) => {
     context.pendingEvents.push({ kind: 'Request', request });
     context.options.onWake?.();
   }),

@@ -6,6 +6,7 @@ const SECONDS_PER_MINUTE = 60;
 const SECONDS_PER_HOUR = 3600;
 const SECONDS_PER_DAY = 86_400;
 const MILLISECONDS_PER_SECOND = 1000;
+const SCHEDULE_LINE_INDEX = 7;
 
 const duration = (seconds: number | null): string => {
   if (seconds === null) {
@@ -55,6 +56,13 @@ const formatStatus = (status: StatusSnapshot): string => {
     `Ack ${relativeTime(status.turn.lastWorkAcknowledgementAt)} · final ${relativeTime(status.turn.lastFinalAt)}`,
     `Mac ${duration(status.system.uptimeSeconds)} up · load ${String(status.system.cpuLoad)} · pressure ${String(status.system.memoryPressurePercent)}% · ${like}`,
   ];
+  if (status.schedules !== undefined) {
+    lines.splice(
+      SCHEDULE_LINE_INDEX,
+      0,
+      `Schedules ${String(status.schedules.active)} active · ${String(status.schedules.paused)} paused · ${String(status.schedules.completed)} completed · ${String(status.schedules.cancelled)} cancelled · runs ${String(status.schedules.queued)} queued · ${String(status.schedules.running)} running · next ${relativeTime(status.schedules.nextDueAt)}`,
+    );
+  }
   const { attachments } = status;
   if (attachments !== undefined && !attachments.available && attachments.diagnostic !== null) {
     lines.push(attachments.diagnostic);

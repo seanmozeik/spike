@@ -28,6 +28,7 @@ interface BeginCodexAttempt {
   readonly logicalTurnId: LogicalTurnId;
   readonly startedAt: Date;
   readonly submissionKind: 'Start' | 'Steer';
+  readonly threadId: CodexThreadId;
 }
 
 interface CodexAttemptRecord {
@@ -148,8 +149,8 @@ const makeBeginAttempt =
         database.run(
           `INSERT INTO codex_attempts(
           id, logical_turn_id, input_batch_id, account_id, state, input_fingerprint,
-          frontier_json, submission_kind, started_at
-        ) VALUES (?, ?, ?, ?, 'Prepared', ?, ?, ?, ?)`,
+          frontier_json, submission_kind, codex_thread_id, started_at
+        ) VALUES (?, ?, ?, ?, 'Prepared', ?, ?, ?, ?, ?)`,
           [
             id,
             input.logicalTurnId,
@@ -158,6 +159,7 @@ const makeBeginAttempt =
             input.fingerprint,
             JSON.stringify(input.frontier),
             input.submissionKind,
+            input.threadId,
             input.startedAt.toISOString(),
           ],
         );

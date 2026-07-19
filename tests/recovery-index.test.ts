@@ -23,7 +23,7 @@ const makeDatabasePath = (): string => {
   return path.join(root, 'spike.db');
 };
 
-it.effect('migrates a real schema v15 journal to the v16 recovery index', () =>
+it.effect('migrates a real schema v15 journal through durable schedules v17', () =>
   Effect.gen(function* migrateRecoveryIndex() {
     const databasePath = makeDatabasePath();
     const initial = yield* openJournal(databasePath);
@@ -37,7 +37,7 @@ it.effect('migrates a real schema v15 journal to the v16 recovery index', () =>
       .all()
       .map(({ name }) => name);
     expect(indexes).toContain('attachments_inbound_message');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(16);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(17);
     migrated.close();
   }),
 );

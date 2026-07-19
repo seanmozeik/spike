@@ -14,6 +14,7 @@ import type { SpikeEngine } from '../src/service/engine';
 import type { TurnBehavior } from './fake-codex-runtime';
 
 interface EngineFixture {
+  readonly archived: string[];
   readonly attachmentInputs: string[][];
   readonly attachmentStagingRoot: string;
   readonly closeCodexConnection: () => void;
@@ -24,6 +25,7 @@ interface EngineFixture {
   readonly handle: JournalHandle;
   readonly inputs: string[];
   readonly inboxScans: number;
+  readonly interrupted: string[];
   readonly likes: string[];
   readonly push: (...messages: readonly ObservedMessage[]) => void;
   readonly reads: string[];

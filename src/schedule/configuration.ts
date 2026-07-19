@@ -1,0 +1,3 @@
+const SCHEDULE_CONFIGURATION_VERSION = 'durable-schedules-v1';
+
+export { SCHEDULE_CONFIGURATION_VERSION };

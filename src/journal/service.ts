@@ -45,8 +45,9 @@ type PersistMessage = (message: ObservedMessage, observedAt: string) => number;
 type IngestTransaction = (observedAt: string, messages: readonly ObservedMessage[]) => number;
 
 const INSERT_MESSAGE = `INSERT OR IGNORE INTO inbound_messages(
-  id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  id, source_kind, source_id, message_guid, messages_rowid, chat_guid, handle,
+  service, text, sent_at, observed_at
+) VALUES (?, 'Messages', ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 const INSERT_ATTACHMENT = `INSERT OR IGNORE INTO attachments(
   id, inbound_message_id, attachment_guid, state, filename, transfer_name,
   mime_type, uti, total_bytes, source_path, ordinal, created_at
@@ -113,16 +114,17 @@ const makePersistAttachments = (database: Database): PersistAttachments => {
 const makePersistMessage = (database: Database): PersistMessage => {
   const insertMessage = database.prepare<
     never,
-    [string, string, number, string, string, string, null | string, string, string]
+    [string, string, string, number, string, string, string, null | string, string, string]
   >(INSERT_MESSAGE);
   const findInbound = database.prepare<{ id: string }, [string]>(
-    'SELECT id FROM inbound_messages WHERE message_guid = ?',
+    "SELECT id FROM inbound_messages WHERE source_kind = 'Messages' AND message_guid = ?",
   );
   const persistAttachments = makePersistAttachments(database);
   return (message: ObservedMessage, observedAt: string): number => {
     const inboundId = randomUUID();
     const result = insertMessage.run(
       inboundId,
+      message.messageGuid,
       message.messageGuid,
       message.rowId,
       message.chatGuid,
@@ -194,7 +196,9 @@ const readInbound = (database: Database): readonly PersistedInboundMessage[] =>
   database
     .query<InboundRow, []>(
       `SELECT id, message_guid, messages_rowid, text
-     FROM inbound_messages ORDER BY messages_rowid ASC`,
+       FROM inbound_messages
+       WHERE source_kind = 'Messages'
+       ORDER BY messages_rowid ASC`,
     )
     .all()
     .map((row) => ({

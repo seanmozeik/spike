@@ -2,14 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
-import { parseControlCommand } from '../domain/control-command';
 import { GenerationId, LogicalTurnId } from '../domain/ids';
 import type { PendingInboundMessage } from '../journal/inbound-recovery';
 import type { SchedulerController } from '../scheduler/controller';
 import type { SchedulerEvent } from '../scheduler/model';
 import { captureAccountFailure } from './account-failover';
-import { report, type EngineContext } from './context';
-import { failTurn } from './turn-failure';
+import type { EngineContext } from './context';
+import { repairDispatchFailure } from './dispatch-repair';
 
 const inboundEvent = (
   message: PendingInboundMessage,
@@ -40,7 +39,6 @@ const dispatchPending = (
           { startImmediately: true },
         ).pipe(Effect.asVoid);
       }
-      const state = yield* controller.snapshot;
       const nextLogicalTurnId = LogicalTurnId.make(randomUUID());
       const dispatched = yield* Effect.result(
         controller.dispatch(inboundEvent(message, nextLogicalTurnId)),
@@ -49,16 +47,13 @@ const dispatchPending = (
         if (yield* captureAccountFailure(context, controller, dispatched.failure)) {
           return;
         }
-        const command = parseControlCommand(message.text);
-        if (state.active === null && !state.generationBroken && command === null) {
-          yield* failTurn(
-            context,
-            { generationId: state.generationId, logicalTurnId: nextLogicalTurnId },
-            dispatched.failure,
-          );
-        } else {
-          report(context, dispatched.failure);
-        }
+        yield* repairDispatchFailure(
+          context,
+          yield* controller.snapshot,
+          nextLogicalTurnId,
+          null,
+          dispatched.failure,
+        );
         return;
       }
     }

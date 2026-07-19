@@ -6,6 +6,7 @@ import type {
   InboundMessageId,
   LogicalTurnId,
 } from '../domain/ids';
+import type { ScheduleId } from '../schedule/model';
 
 interface PooledMessage {
   readonly attachments: readonly StagedImageAttachment[];
@@ -28,6 +29,7 @@ interface TurnIdentity {
 interface SchedulerState {
   readonly active: ActiveTurn | null;
   readonly codexThreadId: CodexThreadId | null;
+  readonly configurationCurrent: boolean;
   readonly generationBroken: boolean;
   readonly generationId: GenerationId;
   readonly pool: readonly PooledMessage[];
@@ -40,7 +42,24 @@ type SchedulerEvent =
       readonly newGenerationId: GenerationId;
       readonly nextLogicalTurnId: LogicalTurnId;
     }
-  | { readonly deadlineAt: Date; readonly kind: 'PoolTimer' }
+  | {
+      readonly expectedDueAt: Date;
+      readonly expectedRevision: number;
+      readonly kind: 'ScheduleDue';
+      readonly message: PooledMessage;
+      readonly nextDueAt: Date | null;
+      readonly nextLogicalTurnId: LogicalTurnId;
+      readonly newGenerationId: GenerationId;
+      readonly runId: string;
+      readonly scheduleId: ScheduleId;
+      readonly scheduledFor: Date;
+    }
+  | {
+      readonly deadlineAt: Date;
+      readonly kind: 'PoolTimer';
+      readonly newGenerationId: GenerationId;
+      readonly nextLogicalTurnId: LogicalTurnId;
+    }
   | {
       readonly at: Date;
       readonly codexTurnId: CodexTurnId;
@@ -51,15 +70,23 @@ type SchedulerEvent =
       readonly at: Date;
       readonly kind: 'TurnCompleted';
       readonly logicalTurnId: LogicalTurnId;
+      readonly newGenerationId: GenerationId;
       readonly nextLogicalTurnId: LogicalTurnId;
     }
   | {
       readonly at: Date;
       readonly kind: 'TurnFailed';
       readonly logicalTurnId: LogicalTurnId;
+      readonly newGenerationId: GenerationId;
       readonly nextLogicalTurnId: LogicalTurnId;
     }
-  | { readonly at: Date; readonly kind: 'GenerationBroken'; readonly logicalTurnId: LogicalTurnId }
+  | {
+      readonly at: Date;
+      readonly kind: 'GenerationBroken';
+      readonly logicalTurnId: LogicalTurnId;
+      readonly newGenerationId: GenerationId;
+      readonly nextLogicalTurnId: LogicalTurnId;
+    }
   | {
       readonly at: Date;
       readonly kind: 'AcknowledgementEmitted';
@@ -69,6 +96,21 @@ type SchedulerEvent =
 
 type SchedulerAction =
   | { readonly kind: 'BindThread' }
+  | {
+      readonly expectedDueAt: Date;
+      readonly expectedRevision: number;
+      readonly kind: 'ClaimSchedule';
+      readonly message: PooledMessage;
+      readonly nextDueAt: Date | null;
+      readonly runId: string;
+      readonly scheduleId: ScheduleId;
+      readonly scheduledFor: Date;
+    }
+  | {
+      readonly kind: 'RotateConfiguration';
+      readonly newGenerationId: GenerationId;
+      readonly oldGenerationId: GenerationId;
+    }
   | {
       readonly kind: 'StartTurn';
       readonly logicalTurnId: LogicalTurnId;

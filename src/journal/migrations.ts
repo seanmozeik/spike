@@ -1,6 +1,7 @@
 import { ATTACHMENTS_INBOUND_MESSAGE_INDEX } from './recovery-query';
+import { scheduleMigrationStatements } from './schedule-migration-statements';
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -27,15 +28,24 @@ const migrationStatements = [
     ON generations(state) WHERE state = 'Current'`,
   `CREATE TABLE IF NOT EXISTS inbound_messages (
     id TEXT PRIMARY KEY,
-    message_guid TEXT NOT NULL UNIQUE,
-    messages_rowid INTEGER NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL DEFAULT 'Messages'
+      CHECK(source_kind IN ('Messages','ScheduleRun')),
+    source_id TEXT,
+    message_guid TEXT,
+    messages_rowid INTEGER,
     chat_guid TEXT NOT NULL,
     handle TEXT NOT NULL,
-    service TEXT NOT NULL CHECK(service = 'iMessage'),
+    service TEXT NOT NULL CHECK(service IN ('iMessage','Schedule')),
     text TEXT,
     sent_at TEXT NOT NULL,
     observed_at TEXT NOT NULL,
-    payload_redacted_at TEXT
+    payload_redacted_at TEXT,
+    CHECK(
+      (source_kind = 'Messages' AND message_guid IS NOT NULL
+        AND messages_rowid IS NOT NULL AND service = 'iMessage')
+      OR (source_kind = 'ScheduleRun' AND source_id IS NOT NULL
+        AND message_guid IS NULL AND messages_rowid IS NULL AND service = 'Schedule')
+    )
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS attachments (
     id TEXT PRIMARY KEY,
@@ -261,6 +271,7 @@ const migrationStatements = [
     outcome TEXT NOT NULL CHECK(outcome IN ('Resolved','NoPending','Invalid')),
     handled_at TEXT NOT NULL
   ) STRICT`,
+  ...scheduleMigrationStatements,
 ] as const;
 
 export { migrationStatements, SCHEMA_VERSION };

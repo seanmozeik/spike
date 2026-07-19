@@ -57,7 +57,9 @@
     "@clack/prompts": "^1.7.0",
     "@effect/platform-bun": "4.0.0-beta.98",
     "effect": "4.0.0-beta.98",
-    "smol-toml": "^1.6.1"
+    "rrule-temporal": "2.0.0",
+    "smol-toml": "^1.6.1",
+    "temporal-polyfill": "1.0.1"
   },
   "devDependencies": {
     "@effect/tsgo": "^0.18.1",

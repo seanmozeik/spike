@@ -6,6 +6,7 @@ import { TestClock } from 'effect/testing';
 import { expect } from 'vitest';
 
 import { makeJournal } from '../src/journal/service';
+import { SCHEDULE_CONFIGURATION_VERSION } from '../src/schedule/configuration';
 import { CHAT_GUID, inbound, makeEngineFixture, settle } from './engine-fixture';
 import { seedActiveTurn } from './engine-seeds';
 
@@ -833,7 +834,7 @@ it.effect('terminates a non-generation startup recovery failure after one attemp
   }),
 );
 
-it.effect('replaces an unused bound thread after the bind-before-first-turn crash window', () =>
+it.effect('retires a recovered thread when stale configuration rotates after completion', () =>
   Effect.gen(function* replaceUnusedThread() {
     const fixture = yield* makeEngineFixture({
       behavior: {
@@ -865,38 +866,43 @@ it.effect('replaces an unused bound thread after the bind-before-first-turn cras
     });
     yield* settle(fixture.engine);
     expect({
+      archived: fixture.archived,
       attempts: fixture.database
         .query<{ state: string }, []>('SELECT state FROM codex_attempts')
         .all(),
+      current: fixture.database
+        .query<{ codex_thread_id: null | string; config_version: null | string }, []>(
+          "SELECT codex_thread_id, config_version FROM generations WHERE state = 'Current'",
+        )
+        .get(),
       failures: fixture.database
         .query<{ error_tag: string; message: string }, []>(
           'SELECT error_tag, message FROM failures',
         )
         .all(),
       resumed: fixture.resumed,
-      thread: fixture.database
-        .query<{ codex_thread_id: string }, []>(
-          "SELECT codex_thread_id FROM generations WHERE state = 'Current'",
+      retiredThread: fixture.database
+        .query<{ codex_thread_id: null | string }, []>(
+          "SELECT codex_thread_id FROM generations WHERE state = 'Superseded' ORDER BY sequence DESC LIMIT 1",
         )
         .get()?.codex_thread_id,
       turnsStarted: fixture.turnsStarted,
     }).toStrictEqual({
+      archived: ['thread-new'],
       attempts: [{ state: 'Completed' }],
+      current: { codex_thread_id: null, config_version: SCHEDULE_CONFIGURATION_VERSION },
       failures: [],
       resumed: ['thread-1'],
-      thread: 'thread-new',
+      retiredThread: 'thread-new',
       turnsStarted: ['turn-1'],
     });
     expect(fixture.sent).toStrictEqual(['Recovered first turn']);
     expect(fixture.reads).toStrictEqual([]);
-    expect(
-      fixture.database
-        .query<{ codex_thread_id: string }, []>(
-          "SELECT codex_thread_id FROM generations WHERE state = 'Current'",
-        )
-        .get()?.codex_thread_id,
-    ).toBe('thread-new');
-    expect((yield* fixture.engine.snapshot).generationBroken).toBe(false);
+    expect(yield* fixture.engine.snapshot).toMatchObject({
+      codexThreadId: null,
+      configurationCurrent: true,
+      generationBroken: false,
+    });
     fixture.remove();
   }),
 );

@@ -24,6 +24,7 @@ it('identifies the installed Spike version to the Codex app-server', async () =>
       return Promise.resolve({});
     },
     respondToServerRequest: (): Promise<void> => Promise.resolve(),
+    respondToServerRequestError: (): Promise<void> => Promise.resolve(),
   } satisfies RpcHandle;
 
   await Effect.runPromise(initializeRpc(handle));

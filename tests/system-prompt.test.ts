@@ -38,6 +38,15 @@ describe('Spike system prompt', () => {
     expect(DEFAULT_USER_CONTEXT).not.toMatch(/\bS(?:ean)\b/u);
   });
 
+  it('assembles the schedule clarification and privacy invariants', () => {
+    const prompt = assembleSystemPrompt('', personality);
+    expect(prompt).toContain(
+      'Clarify any date or time that cannot be anchored to one exact instant',
+    );
+    expect(prompt).toContain('Confirm the effective local time and recurrence in plain language');
+    expect(prompt).toContain('Schedule IDs are internal and must never appear in a reply');
+  });
+
   it.each([
     ['off', 'Do not use emoji.'],
     ['on', 'Emoji are allowed when they fit naturally.'],

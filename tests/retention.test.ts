@@ -204,6 +204,7 @@ it.effect('terminalizes reset attempts and redacts legacy superseded-turn items'
     const replacement = {
       active: null,
       codexThreadId: null,
+      configurationCurrent: true,
       generationBroken: false,
       generationId: GenerationId.make('replacement-generation'),
       pool: [],

@@ -29,10 +29,10 @@ const recoverControlReplies = (context: EngineContext): Effect.Effect<void, unkn
 const processRecovery = (
   context: EngineContext,
   controller: SchedulerController,
-): Effect.Effect<void, unknown> =>
+): Effect.Effect<boolean, unknown> =>
   Effect.gen(function* recoverEngineState() {
     if (!(yield* ensureConversation(context))) {
-      return;
+      return false;
     }
     yield* context.journal.auditStagedAttachments;
     yield* retryTurnTerminals(context);
@@ -45,7 +45,7 @@ const processRecovery = (
         if (state.active === null) {
           report(context, recovery.failure);
         } else if (yield* captureAccountFailure(context, controller, recovery.failure)) {
-          return;
+          return false;
         } else {
           yield* failTurn(
             context,
@@ -56,9 +56,11 @@ const processRecovery = (
       }
     }
     yield* controller.activate;
+    context.schedulerReady.value = true;
     yield* recoverControlReplies(context);
     yield* pollApprovalEvents(context);
     yield* requestPendingAccountFailover(context, controller);
+    return true;
   });
 
 export { processRecovery };

@@ -91,6 +91,7 @@ const resetTurn = (database: Database): Effect.Effect<void, unknown> => {
       state: {
         active: null,
         codexThreadId: null,
+        configurationCurrent: true,
         generationBroken: false,
         generationId: nextGenerationId,
         pool: [],

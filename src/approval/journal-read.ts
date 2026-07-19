@@ -55,7 +55,7 @@ const listCommands = (
     database
       .query<{ id: string; sent_at: string; text: string }, [number, number]>(
         `SELECT im.id, im.sent_at, im.text FROM inbound_messages im
-         WHERE im.text IS NOT NULL
+         WHERE im.source_kind = 'Messages' AND im.text IS NOT NULL
            AND im.messages_rowid > ? AND im.messages_rowid <= ?
            AND NOT EXISTS (SELECT 1 FROM handled_approval_messages h WHERE h.inbound_message_id = im.id)
            AND NOT EXISTS (SELECT 1 FROM input_batch_messages b WHERE b.inbound_message_id = im.id)

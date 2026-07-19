@@ -1,5 +1,6 @@
 import { Duration, Effect, Result, type Semaphore } from 'effect';
 
+import { runSchedulePhase, scheduleNextWake } from '../schedule/phase';
 import type { SchedulerController } from '../scheduler/controller';
 import { report, type EngineContext } from './context';
 import { markReconciliation } from './event-loop-diagnostics';
@@ -74,7 +75,7 @@ const runApprovalPhase = (context: EngineContext): Effect.Effect<boolean> =>
 const runExplicitRecovery = (
   context: EngineContext,
   controller: SchedulerController,
-): Effect.Effect<void, unknown> =>
+): Effect.Effect<boolean, unknown> =>
   Effect.gen(function* recoverForExplicitPoll() {
     const result = yield* Effect.result(processRecovery(context, controller));
     if (Result.isFailure(result)) {
@@ -86,8 +87,16 @@ const runExplicitRecovery = (
       );
       return yield* Effect.fail(result.failure);
     }
+    if (!result.success) {
+      yield* context.wakes.scheduleAfter(
+        RECOVERY_RETRY_TIMER,
+        'Recovery',
+        context.options.phaseRetryMs ?? DEFAULT_PHASE_RETRY_MS,
+      );
+      return false;
+    }
     yield* context.wakes.cancel(RECOVERY_RETRY_TIMER);
-    return yield* Effect.void;
+    return true;
   });
 
 const runExplicitPoll = (
@@ -101,7 +110,9 @@ const runExplicitPoll = (
     if (context.accountFailover.requested) {
       return;
     }
-    yield* runExplicitRecovery(context, controller);
+    if (!(yield* runExplicitRecovery(context, controller))) {
+      return;
+    }
     yield* runRetriablePhase(context, INGESTION_RETRY_TIMER, 'Messages', ingestion);
   });
 
@@ -127,14 +138,22 @@ const runRecoveryWake = (
 ): Effect.Effect<boolean, unknown> =>
   Effect.gen(function* recoverForWakes() {
     if (!wakes.has('Recovery') && !wakes.has('Reconcile') && !databaseReplaced) {
-      return true;
+      return context.schedulerReady.value;
     }
-    const recovered = yield* runRetriablePhase(
-      context,
-      RECOVERY_RETRY_TIMER,
-      'Recovery',
-      processRecovery(context, controller),
-    );
+    const result = yield* Effect.result(processRecovery(context, controller));
+    const recovered = Result.isSuccess(result) && result.success;
+    if (recovered) {
+      yield* context.wakes.cancel(RECOVERY_RETRY_TIMER);
+    } else {
+      if (Result.isFailure(result)) {
+        report(context, result.failure);
+      }
+      yield* context.wakes.scheduleAfter(
+        RECOVERY_RETRY_TIMER,
+        'Recovery',
+        context.options.phaseRetryMs ?? DEFAULT_PHASE_RETRY_MS,
+      );
+    }
     if (context.turnTerminals.pending.size > 0) {
       yield* context.wakes.scheduleAfter(
         RECOVERY_RETRY_TIMER,
@@ -203,6 +222,18 @@ const runWakeBatch = Effect.fn('SpikeEngine.runWakeBatch')(function* runWakeBatc
     return;
   }
   const recovered = yield* runRecoveryWake(context, controller, wakes, databaseReplaced);
+  if (wakes.has('ScheduleDue')) {
+    const conversationAvailable = yield* context.options.conversation.isAvailable;
+    if (recovered && context.schedulerReady.value && conversationAvailable) {
+      const scheduled = yield* Effect.result(runSchedulePhase(context, controller));
+      if (Result.isFailure(scheduled)) {
+        report(context, scheduled.failure);
+      }
+    } else {
+      context.wakes.signal('Recovery');
+      yield* scheduleNextWake(context, context.options.phaseRetryMs ?? DEFAULT_PHASE_RETRY_MS);
+    }
+  }
   if (wakes.has('Approval')) {
     yield* runApprovalPhase(context);
   }

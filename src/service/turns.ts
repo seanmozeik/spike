@@ -1,16 +1,26 @@
+import { randomUUID } from 'node:crypto';
+
 import { Effect, Fiber, Result } from 'effect';
 
-import type { CodexThreadId, CodexTurnId, LogicalTurnId } from '../domain/ids';
+import {
+  GenerationId,
+  LogicalTurnId as LogicalTurnIdSchema,
+  type CodexThreadId,
+  type CodexTurnId,
+  type LogicalTurnId,
+} from '../domain/ids';
 import type { SchedulerControllerError, SchedulerPorts } from '../scheduler/controller';
 import type { PooledMessage, SchedulerState, TurnIdentity } from '../scheduler/model';
+import { captureAccountFailure } from './account-failover';
 import { controlReplyText, report, type EngineContext } from './context';
+import { repairDispatchFailure } from './dispatch-repair';
 import { startMonitor } from './monitor';
-import { failTurn } from './turn-failure';
 import { ensureThread, loadPersistedBatch, submit } from './turn-submission';
 
 const cleanupGeneration = (
   context: EngineContext,
   previous: SchedulerState,
+  kind: 'ResetGeneration' | 'RotateConfiguration',
 ): Effect.Effect<void, SchedulerControllerError> => {
   const threadId = previous.codexThreadId;
   if (threadId === null) {
@@ -18,10 +28,23 @@ const cleanupGeneration = (
   }
   const turnId = previous.active?.codexTurnId ?? null;
   return Effect.gen(function* cleanupOldGeneration() {
-    if (turnId !== null) {
-      yield* context.options.runtime.interruptTurn(threadId, turnId);
+    let interruptFailure: SchedulerControllerError | null = null;
+    if (kind === 'ResetGeneration' && turnId !== null) {
+      const interrupted = yield* Effect.result(
+        context.options.runtime.interruptTurn(threadId, turnId),
+      );
+      if (Result.isFailure(interrupted)) {
+        interruptFailure = interrupted.failure;
+      }
     }
-    yield* context.options.runtime.archiveThread(threadId);
+    const archived = yield* Effect.result(context.options.runtime.archiveThread(threadId));
+    if (Result.isFailure(archived)) {
+      return yield* archived.failure;
+    }
+    if (interruptFailure !== null) {
+      return yield* interruptFailure;
+    }
+    return yield* Effect.void;
   });
 };
 
@@ -31,13 +54,20 @@ const dispatchPoolTimer = Effect.fn('SpikeEngine.dispatchPoolTimer')(function* d
   identity: TurnIdentity | null,
 ) {
   const controller = yield* Effect.promise(() => context.controllerReady.promise);
-  const dispatched = yield* Effect.result(controller.dispatch({ deadlineAt, kind: 'PoolTimer' }));
+  const nextLogicalTurnId = LogicalTurnIdSchema.make(randomUUID());
+  const dispatch = controller.dispatch({
+    deadlineAt,
+    kind: 'PoolTimer',
+    newGenerationId: GenerationId.make(randomUUID()),
+    nextLogicalTurnId,
+  });
+  const dispatched = yield* Effect.result(dispatch);
   if (Result.isFailure(dispatched)) {
-    if (identity === null) {
-      report(context, dispatched.failure);
-    } else {
-      yield* failTurn(context, identity, dispatched.failure);
+    if (yield* captureAccountFailure(context, controller, dispatched.failure)) {
+      return;
     }
+    const state = yield* controller.snapshot;
+    yield* repairDispatchFailure(context, state, nextLogicalTurnId, identity, dispatched.failure);
   }
 });
 
@@ -114,8 +144,8 @@ const makePorts = (context: EngineContext): SchedulerPorts => ({
       const controller = yield* Effect.promise(() => context.controllerReady.promise);
       return (yield* ensureThread(context, yield* controller.snapshot)).threadId;
     }),
-  cleanupGeneration: (previous): Effect.Effect<void, SchedulerControllerError> =>
-    cleanupGeneration(context, previous),
+  cleanupGeneration: (previous, kind): Effect.Effect<void, SchedulerControllerError> =>
+    cleanupGeneration(context, previous, kind),
   replyLocal: (kind, _state, commandMessageId): Effect.Effect<void, SchedulerControllerError> =>
     replyLocal(context, kind, commandMessageId),
   reportFailure: (error): Effect.Effect<void> =>

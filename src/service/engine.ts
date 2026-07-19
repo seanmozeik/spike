@@ -7,6 +7,10 @@ import { makeCodexJournal } from '../journal/codex-journal';
 import { makeSchedulerJournal } from '../journal/scheduler-journal';
 import { makeJournal } from '../journal/service';
 import type { MessagesWatcher, MessagesWatcherDiagnostics } from '../messages-watcher';
+import { makeScheduleJournal } from '../schedule/journal';
+import { systemScheduleRequestScheduler } from '../schedule/pending-tool-calls';
+import { scheduleNextWake } from '../schedule/phase';
+import { makeScheduleServerRequests } from '../schedule/server-requests';
 import { makeSchedulerController, type SchedulerController } from '../scheduler/controller';
 import type { SchedulerState } from '../scheduler/model';
 import {
@@ -102,8 +106,11 @@ const makeContext = (
     options,
     pendingScanFloor: { value: MessagesRowId.make(0) },
     recoveryPending: { value: true },
+    scheduleJournal: makeScheduleJournal(options.database),
+    scheduleRequests: null,
     scheduledFibers: new Set(),
     schedulerJournal: makeSchedulerJournal(options.database),
+    schedulerReady: { value: false },
     schedulingClosed: { value: false },
     turnTerminals: makeTurnTerminalQueue(),
     wakes,
@@ -177,6 +184,8 @@ const assembleEngine = (
     scanFloor: Effect.sync(() => context.pendingScanFloor.value),
     shutdown: Effect.gen(function* shutdownEngine() {
       close();
+      context.scheduleRequests?.close();
+      context.scheduleRequests = null;
       const scheduled = [...context.scheduledFibers];
       yield* Fiber.interruptAll(scheduled);
       context.scheduledFibers.clear();
@@ -203,6 +212,20 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
   const now = options.now ?? ((): Date => new Date());
   const wakes = yield* makeEngineWakeHub();
   const context = makeContext(options, now, wakes);
+  context.scheduleRequests = makeScheduleServerRequests({
+    database: options.database,
+    journal: context.scheduleJournal,
+    now,
+    onError: (cause) => {
+      report(context, cause);
+    },
+    onMutation: () => {
+      wakes.signal('ScheduleDue');
+    },
+    pendingTimeoutMs: 30_000,
+    runtime: options.runtime,
+    scheduler: systemScheduleRequestScheduler,
+  });
   const startupAvailable = yield* options.conversation.revalidate(now(), 'Startup');
   const initial = yield* loadAuditedSchedulerState(context, now());
   if (startupAvailable) {
@@ -219,6 +242,7 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
   wakes.signal('AccountObservation');
   wakes.signal('Recovery');
   wakes.signal('Messages');
+  yield* scheduleNextWake(context);
   return assembleEngine(context, controller, phases, watcher);
 });
 

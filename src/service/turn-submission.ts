@@ -124,6 +124,7 @@ const submit = (
             frontier: ensured.unused ? 'Empty' : 'Read',
           })
         : yield* recoverCodexInput(context.options.runtime, context.codexJournal, attempt, input);
+    context.scheduleRequests?.attemptAccepted();
     return { threadId, turnId };
   });
 

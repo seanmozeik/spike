@@ -17,6 +17,10 @@ const FAILURE_NOTICE_IDENTITY_VERSION = 13;
 const ACCOUNT_SELECTION_VERSION = 14;
 const ATTACHMENT_STAGING_VERSION = 15;
 const RECOVERY_QUERY_INDEX_VERSION = 16;
+const DURABLE_SCHEDULES_VERSION = 17;
+
+const needsDurableScheduleInboundRebuild = (previousVersion: number): boolean =>
+  previousVersion > 0 && previousVersion < DURABLE_SCHEDULES_VERSION;
 
 const hasColumn = (database: Database, table: string, column: string): boolean =>
   database
@@ -154,6 +158,69 @@ const migrateRecoveryQueryIndexes = (database: Database, previousVersion: number
   database.run(ATTACHMENTS_INBOUND_MESSAGE_INDEX);
 };
 
+const createInboundIdentityIndexes = (database: Database): void => {
+  database.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS inbound_messages_message_guid
+     ON inbound_messages(message_guid) WHERE source_kind = 'Messages'`,
+  );
+  database.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS inbound_messages_messages_rowid
+     ON inbound_messages(messages_rowid) WHERE source_kind = 'Messages'`,
+  );
+  database.run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS inbound_messages_source
+     ON inbound_messages(source_kind, source_id) WHERE source_id IS NOT NULL`,
+  );
+};
+
+const rebuildInboundMessages = (database: Database): void => {
+  database.run(
+    `CREATE TABLE inbound_messages_v17 (
+      id TEXT PRIMARY KEY,
+      source_kind TEXT NOT NULL DEFAULT 'Messages'
+        CHECK(source_kind IN ('Messages','ScheduleRun')),
+      source_id TEXT,
+      message_guid TEXT,
+      messages_rowid INTEGER,
+      chat_guid TEXT NOT NULL,
+      handle TEXT NOT NULL,
+      service TEXT NOT NULL CHECK(service IN ('iMessage','Schedule')),
+      text TEXT,
+      sent_at TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      payload_redacted_at TEXT,
+      CHECK(
+        (source_kind = 'Messages' AND message_guid IS NOT NULL
+          AND messages_rowid IS NOT NULL AND service = 'iMessage')
+        OR (source_kind = 'ScheduleRun' AND source_id IS NOT NULL
+          AND message_guid IS NULL AND messages_rowid IS NULL AND service = 'Schedule')
+      )
+    ) STRICT`,
+  );
+  database.run(
+    `INSERT INTO inbound_messages_v17(
+       id, source_kind, source_id, message_guid, messages_rowid, chat_guid, handle,
+       service, text, sent_at, observed_at, payload_redacted_at
+     ) SELECT id, 'Messages', message_guid, message_guid, messages_rowid, chat_guid, handle,
+              service, text, sent_at, observed_at, payload_redacted_at
+       FROM inbound_messages`,
+  );
+  database.run('DROP TABLE inbound_messages');
+  database.run('ALTER TABLE inbound_messages_v17 RENAME TO inbound_messages');
+};
+
+const migrateDurableSchedules = (database: Database, previousVersion: number): void => {
+  if (needsDurableScheduleInboundRebuild(previousVersion)) {
+    rebuildInboundMessages(database);
+  }
+  if (!hasColumn(database, 'schedules', 'revision')) {
+    database.run(
+      'ALTER TABLE schedules ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0)',
+    );
+  }
+  createInboundIdentityIndexes(database);
+};
+
 const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
   migrateInitialSchema(database, previousVersion);
   migrateSchedulerSchema(database, previousVersion);
@@ -163,6 +230,7 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   migrateAccountSelection(database, previousVersion);
   migrateAttachmentStaging(database, previousVersion);
   migrateRecoveryQueryIndexes(database, previousVersion);
+  migrateDurableSchedules(database, previousVersion);
 };
 
-export { applyVersionedMigrations };
+export { applyVersionedMigrations, needsDurableScheduleInboundRebuild };

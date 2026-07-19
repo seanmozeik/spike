@@ -15,6 +15,7 @@ import {
 } from '../src/messages-watcher';
 
 const roots: string[] = [];
+const WATCH_EVENT_TIMEOUT_MS = 5000;
 
 class FakeWatchHandle implements WatchHandle {
   closed = false;
@@ -84,9 +85,12 @@ const makeDatabasePath = (): string => {
 };
 
 const waitForNextEvent = async (events: { value: number }, after: number): Promise<void> => {
-  await vi.waitFor(() => {
-    expect(events.value).toBeGreaterThan(after);
-  });
+  await vi.waitFor(
+    () => {
+      expect(events.value).toBeGreaterThan(after);
+    },
+    { timeout: WATCH_EVENT_TIMEOUT_MS },
+  );
 };
 
 const exerciseSidecarReplacement = async (

@@ -22,6 +22,10 @@ const REDACT_INBOUND = `UPDATE inbound_messages
     OR EXISTS (
       SELECT 1 FROM handled_approval_messages ham WHERE ham.inbound_message_id = inbound_messages.id
     )
+    OR EXISTS (
+      SELECT 1 FROM scheduled_runs sr WHERE sr.inbound_message_id = inbound_messages.id
+        AND sr.state IN ('Completed','Failed')
+    )
   )`;
 const REDACT_ATTACHMENTS = `UPDATE attachments
   SET filename = NULL, transfer_name = NULL, source_path = NULL, staged_path = NULL,
@@ -61,6 +65,17 @@ const REDACT_APPROVAL_REQUESTS = `UPDATE approval_requests
       reason = NULL, response_json = NULL, delivery_error = NULL, payload_redacted_at = ?
   WHERE payload_redacted_at IS NULL AND requested_at < ?
     AND state IN ('Approved','Denied','Expired','Cancelled','Orphaned')`;
+const REDACT_SCHEDULES = `UPDATE schedules
+  SET prompt = NULL, payload_redacted_at = ?, revision = revision + 1
+  WHERE payload_redacted_at IS NULL AND updated_at < ?
+    AND state IN ('Completed','Cancelled')`;
+const REDACT_SCHEDULE_RUNS = `UPDATE scheduled_runs
+  SET error = NULL, payload_redacted_at = ?
+  WHERE payload_redacted_at IS NULL AND completed_at < ?
+    AND state IN ('Completed','Failed')`;
+const REDACT_SCHEDULE_TOOL_CALLS = `UPDATE schedule_tool_calls
+  SET response_json = NULL, payload_redacted_at = ?
+  WHERE payload_redacted_at IS NULL AND created_at < ?`;
 const PRUNE_FAILURES = 'DELETE FROM failures WHERE created_at < ?';
 const PRUNE_ACCOUNT_OBSERVATIONS = 'DELETE FROM account_observations WHERE observed_at < ?';
 
@@ -95,6 +110,9 @@ const makeRedact = (database: Database, attachmentStore?: AttachmentStore): Reda
     database.run(REDACT_OUTBOUND_CHUNKS, [redactedAt, cutoff]);
     database.run(REDACT_CODEX_AGENT_ITEMS, [redactedAt, cutoff]);
     database.run(REDACT_APPROVAL_REQUESTS, [redactedAt, cutoff]);
+    database.run(REDACT_SCHEDULES, [redactedAt, cutoff]);
+    database.run(REDACT_SCHEDULE_RUNS, [redactedAt, cutoff]);
+    database.run(REDACT_SCHEDULE_TOOL_CALLS, [redactedAt, cutoff]);
     database.run(PRUNE_FAILURES, [cutoff]);
     database.run(PRUNE_ACCOUNT_OBSERVATIONS, [cutoff]);
     return result.changes;

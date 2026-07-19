@@ -264,6 +264,10 @@ const spawnRpcHandle = (options: SpawnRpcOptions): RpcHandle => {
       serverRequests.resolve(id);
       await writer.write({ id, jsonrpc: '2.0', result });
     },
+    respondToServerRequestError: async (id, error) => {
+      serverRequests.resolve(id);
+      await writer.write({ error, id, jsonrpc: '2.0' });
+    },
   };
 };
 

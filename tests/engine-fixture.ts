@@ -149,6 +149,7 @@ const buildFixture = ({
   sent,
   trace,
 }: FixtureParts): EngineFixtureShape => ({
+  archived: trace.archived,
   attachmentInputs: trace.attachmentInputs,
   attachmentStagingRoot: path.join(root, 'staged-attachments'),
   conversation,
@@ -162,6 +163,7 @@ const buildFixture = ({
     return scanTrace.scans;
   },
   inputs: trace.inputs,
+  interrupted: trace.interrupted,
   likes,
   push: (...messages): void => {
     queue.push(...messages);

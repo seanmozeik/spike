@@ -44,6 +44,16 @@ interface StatusSnapshot {
   readonly ok: true;
   /** Missing when talking to a daemon that predates durable Codex outage reporting. */
   readonly outages?: { readonly open: readonly string[] };
+  /** Missing when talking to a daemon that predates durable schedules. */
+  readonly schedules?: {
+    readonly active: number;
+    readonly cancelled: number;
+    readonly completed: number;
+    readonly nextDueAt: string | null;
+    readonly paused: number;
+    readonly queued: number;
+    readonly running: number;
+  };
   readonly service: {
     readonly healthy: true;
     readonly pid: number;
