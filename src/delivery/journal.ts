@@ -1,9 +1,7 @@
 import type { Database } from 'bun:sqlite';
 
-import { Effect } from 'effect';
-
 import { DeliveryAttemptId, OutboundChunkId, OutboundMessageId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction } from '../errors';
 import { makeClaimAttempt, makeClaimTurnAttempt } from './claim';
 import type { DeliveryChunk, DeliveryJournal } from './model';
 import { makePrepare } from './prepare';
@@ -18,13 +16,6 @@ interface ChunkRow {
   readonly state: DeliveryChunk['state'];
   readonly text: null | string;
 }
-
-const journalError = (transaction: string, cause: unknown): JournalTransactionError =>
-  new JournalTransactionError({
-    cause,
-    message: `delivery journal transaction failed: ${transaction}`,
-    transaction,
-  });
 
 const readChunks = (database: Database, outboundMessageId: string): readonly DeliveryChunk[] =>
   database
@@ -51,9 +42,10 @@ const readChunks = (database: Database, outboundMessageId: string): readonly Del
     }));
 
 const makeListRecoverable = (database: Database): DeliveryJournal['listRecoverable'] =>
-  Effect.try({
-    catch: (cause) => journalError('listRecoverable', cause),
-    try: () =>
+  tryJournalTransaction(
+    'listRecoverable',
+    'delivery journal transaction failed: listRecoverable',
+    () =>
       database
         .query<{ id: string }, []>(
           `SELECT id FROM outbound_messages WHERE state IN ('Prepared','Delivering') ORDER BY created_at`,
@@ -61,47 +53,45 @@ const makeListRecoverable = (database: Database): DeliveryJournal['listRecoverab
         .all()
         .flatMap(({ id }) => readChunks(database, id))
         .filter(({ state }) => state !== 'Reconciled' && state !== 'Failed'),
-  });
+  );
 
 const makeMarkAttemptUnknown =
   (database: Database): DeliveryJournal['markAttemptUnknown'] =>
   (attemptId, error, finishedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('markAttemptUnknown', cause),
-      try: () => {
+    tryJournalTransaction(
+      'markAttemptUnknown',
+      'delivery journal transaction failed: markAttemptUnknown',
+      () => {
         database.run(
           `UPDATE delivery_attempts SET state = 'Unknown', finished_at = ?, error = ?
            WHERE id = ? AND state IN ('Started','Sent','Unknown')`,
           [finishedAt.toISOString(), error, attemptId],
         );
       },
-    });
+    );
 
 const makeMarkFailed =
   (database: Database): DeliveryJournal['markFailed'] =>
   (chunkId, error, finishedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('markFailed', cause),
-      try: () => {
-        const transaction = database.transaction(() => {
-          database.run(
-            `UPDATE delivery_attempts SET state = 'Failed', finished_at = ?, error = ?
+    tryJournalTransaction('markFailed', 'delivery journal transaction failed: markFailed', () => {
+      const transaction = database.transaction(() => {
+        database.run(
+          `UPDATE delivery_attempts SET state = 'Failed', finished_at = ?, error = ?
              WHERE id = (
                SELECT id FROM delivery_attempts
                WHERE outbound_chunk_id = ? ORDER BY attempt_number DESC LIMIT 1
              ) AND state IN ('Started','Sent','Unknown')`,
-            [finishedAt.toISOString(), error, chunkId],
-          );
-          database.run("UPDATE outbound_chunks SET state = 'Failed' WHERE id = ?", [chunkId]);
-          database.run(
-            `UPDATE outbound_messages SET state = 'Failed'
+          [finishedAt.toISOString(), error, chunkId],
+        );
+        database.run("UPDATE outbound_chunks SET state = 'Failed' WHERE id = ?", [chunkId]);
+        database.run(
+          `UPDATE outbound_messages SET state = 'Failed'
              WHERE id = (SELECT outbound_message_id FROM outbound_chunks WHERE id = ?)
                AND state IN ('Prepared','Delivering','Delivered','Failed')`,
-            [chunkId],
-          );
-        });
-        transaction();
-      },
+          [chunkId],
+        );
+      });
+      transaction();
     });
 
 const makeMarkReconciled = (database: Database): DeliveryJournal['markReconciled'] => {
@@ -138,12 +128,13 @@ const makeMarkReconciled = (database: Database): DeliveryJournal['markReconciled
     },
   );
   return (attemptId, chunkId, messageRowId, messageGuid, finishedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('markReconciled', cause),
-      try: () => {
+    tryJournalTransaction(
+      'markReconciled',
+      'delivery journal transaction failed: markReconciled',
+      () => {
         transaction(attemptId, chunkId, messageRowId, messageGuid, finishedAt.toISOString());
       },
-    });
+    );
 };
 
 const makeMarkSent = (database: Database): DeliveryJournal['markSent'] => {
@@ -171,11 +162,8 @@ const makeMarkSent = (database: Database): DeliveryJournal['markSent'] => {
     },
   );
   return (attemptId, chunkId, finishedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('markSent', cause),
-      try: () => {
-        transaction(attemptId, chunkId, finishedAt.toISOString());
-      },
+    tryJournalTransaction('markSent', 'delivery journal transaction failed: markSent', () => {
+      transaction(attemptId, chunkId, finishedAt.toISOString());
     });
 };
 

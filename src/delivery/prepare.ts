@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import { type LogicalTurnId, type OutageEpisodeId, OutboundMessageId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import type { TurnIdentity } from '../scheduler/model';
 import { chunkFinalAnswer } from './chunk';
 import type {
@@ -194,14 +194,10 @@ const makePrepareTurnNotice = (
       ownsTurn(target, identity) ? prepareRows(target, input) : null,
   );
   return (identity, sourceId, noticeKind, text, createdAt) =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'prepare turn notice failed',
-          transaction: 'prepareTurnNotice',
-        }),
-      try: (): PreparedTurnNotice | null => {
+    tryJournalTransaction(
+      'prepareTurnNotice',
+      'prepare turn notice failed',
+      (): PreparedTurnNotice | null => {
         const input = turnNoticeInput(identity, sourceId, noticeKind, text);
         const id = transaction.immediate(
           database,
@@ -210,7 +206,7 @@ const makePrepareTurnNotice = (
         );
         return id === null ? null : { ...readPrepared(id, input.kind), identity, noticeKind };
       },
-    });
+    );
 };
 
 const makePrepare = (
@@ -222,17 +218,9 @@ const makePrepare = (
     input: PendingPrepareInput,
     createdAt: Date,
   ): Effect.Effect<PreparedDelivery, JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'prepare delivery failed',
-          transaction: 'prepareDelivery',
-        }),
-      try: () => {
-        const id = transaction(database, { createdAt: createdAt.toISOString(), ...input });
-        return readPrepared(id, input.kind);
-      },
+    tryJournalTransaction('prepareDelivery', 'prepare delivery failed', () => {
+      const id = transaction(database, { createdAt: createdAt.toISOString(), ...input });
+      return readPrepared(id, input.kind);
     });
   return {
     control: (sourceId, text, createdAt) => prepare(controlInput(sourceId, text), createdAt),

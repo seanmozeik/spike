@@ -1,3 +1,5 @@
+import { isObject } from '../object-guard';
+
 interface AgentMessageItem {
   readonly id: string;
   readonly phase: 'commentary' | 'final_answer' | null;
@@ -28,9 +30,6 @@ interface OutputAccumulator {
 }
 
 const ACKNOWLEDGEMENT_LIMIT = 240;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const agentMessage = (item: unknown): AgentMessageItem | null => {
   if (!isObject(item) || item['type'] !== 'agentMessage') {

@@ -13,7 +13,8 @@ import {
   type CodexTurnId,
   type LogicalTurnId,
 } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
+import { isObject } from '../object-guard';
 import { makeAccountJournal, type AccountJournal } from './account-journal';
 import {
   makeGenerationThreadJournal,
@@ -86,17 +87,11 @@ interface CodexJournal extends AccountJournal, GenerationThreadJournal {
   ) => Effect.Effect<void, JournalTransactionError>;
 }
 
-const journalError = (transaction: string, cause: unknown): JournalTransactionError =>
-  new JournalTransactionError({ cause, message: `${transaction} failed`, transaction });
-
 const changedOne = (changes: number, operation: string): void => {
   if (changes !== 1) {
     throw new Error(`${operation} expected one row, changed ${String(changes)}`);
   }
 };
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const stringArray = (value: unknown): readonly string[] | null =>
   Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
@@ -126,111 +121,86 @@ const parseAttempt = (row: AttemptRow): CodexAttemptRecord => ({
 const makeAcceptTurn =
   (database: Database): CodexJournal['acceptCodexTurn'] =>
   (attemptId, threadId, turnId) =>
-    Effect.try({
-      catch: (cause) => journalError('acceptCodexTurn', cause),
-      try: () => {
-        const result = database.run(
-          `UPDATE codex_attempts SET state = 'Accepted', codex_thread_id = ?,
+    tryJournalTransaction('acceptCodexTurn', 'acceptCodexTurn failed', () => {
+      const result = database.run(
+        `UPDATE codex_attempts SET state = 'Accepted', codex_thread_id = ?,
              codex_turn_id = CASE WHEN submission_kind = 'Steer' THEN NULL ELSE ? END
          WHERE id = ? AND state IN ('Prepared','Submitted','SubmissionUnknown')`,
-          [threadId, turnId, attemptId],
-        );
-        changedOne(result.changes, 'acceptCodexTurn');
-      },
+        [threadId, turnId, attemptId],
+      );
+      changedOne(result.changes, 'acceptCodexTurn');
     });
 
 const makeBeginAttempt =
   (database: Database): CodexJournal['beginCodexAttempt'] =>
   (input) =>
-    Effect.try({
-      catch: (cause) => journalError('beginCodexAttempt', cause),
-      try: () => {
-        const id = CodexAttemptId.make(randomUUID());
-        database.run(
-          `INSERT INTO codex_attempts(
+    tryJournalTransaction('beginCodexAttempt', 'beginCodexAttempt failed', () => {
+      const id = CodexAttemptId.make(randomUUID());
+      database.run(
+        `INSERT INTO codex_attempts(
           id, logical_turn_id, input_batch_id, account_id, state, input_fingerprint,
           frontier_json, submission_kind, codex_thread_id, started_at
         ) VALUES (?, ?, ?, ?, 'Prepared', ?, ?, ?, ?, ?)`,
-          [
-            id,
-            input.logicalTurnId,
-            input.batchId,
-            input.accountId,
-            input.fingerprint,
-            JSON.stringify(input.frontier),
-            input.submissionKind,
-            input.threadId,
-            input.startedAt.toISOString(),
-          ],
-        );
-        return id;
-      },
+        [
+          id,
+          input.logicalTurnId,
+          input.batchId,
+          input.accountId,
+          input.fingerprint,
+          JSON.stringify(input.frontier),
+          input.submissionKind,
+          input.threadId,
+          input.startedAt.toISOString(),
+        ],
+      );
+      return id;
     });
 
 const makeRecordItem =
   (database: Database): CodexJournal['recordAgentItem'] =>
   (attemptId, itemId, kind, payload, observedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('recordAgentItem', cause),
-      try: () => {
-        database.run(
-          `INSERT OR IGNORE INTO codex_agent_items(
+    tryJournalTransaction('recordAgentItem', 'recordAgentItem failed', () => {
+      database.run(
+        `INSERT OR IGNORE INTO codex_agent_items(
           id, codex_attempt_id, codex_item_id, kind, payload_json, observed_at
         ) VALUES (?, ?, ?, ?, ?, ?)`,
-          [
-            randomUUID(),
-            attemptId,
-            itemId,
-            kind,
-            JSON.stringify(payload),
-            observedAt.toISOString(),
-          ],
-        );
-      },
+        [randomUUID(), attemptId, itemId, kind, JSON.stringify(payload), observedAt.toISOString()],
+      );
     });
 
 const makeFinishLogicalTurn =
   (database: Database): CodexJournal['finishLogicalTurn'] =>
   (logicalTurnId, outcome, finishedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('finishLogicalTurn', cause),
-      try: () => {
-        database.run(
-          `UPDATE codex_attempts SET state = ?, finished_at = ?
+    tryJournalTransaction('finishLogicalTurn', 'finishLogicalTurn failed', () => {
+      database.run(
+        `UPDATE codex_attempts SET state = ?, finished_at = ?
            WHERE logical_turn_id = ? AND state = 'Accepted'`,
-          [outcome, finishedAt.toISOString(), logicalTurnId],
-        );
-      },
+        [outcome, finishedAt.toISOString(), logicalTurnId],
+      );
     });
 
 const makeReassignCodexAttempt =
   (database: Database): CodexJournal['reassignCodexAttempt'] =>
   (attemptId, accountId) =>
-    Effect.try({
-      catch: (cause) => journalError('reassignCodexAttempt', cause),
-      try: () => {
-        const result = database.run(
-          `UPDATE codex_attempts SET account_id = ?
-           WHERE id = ? AND state IN ('Prepared','SubmissionUnknown')`,
-          [accountId, attemptId],
-        );
-        changedOne(result.changes, 'reassignCodexAttempt');
-      },
+    tryJournalTransaction('reassignCodexAttempt', 'reassignCodexAttempt failed', () => {
+      const result = database.run(
+        `UPDATE codex_attempts SET account_id = ?
+         WHERE id = ? AND state IN ('Prepared','SubmissionUnknown')`,
+        [accountId, attemptId],
+      );
+      changedOne(result.changes, 'reassignCodexAttempt');
     });
 
 const makeUnknown =
   (database: Database): CodexJournal['recordSubmissionUnknown'] =>
   (attemptId) =>
-    Effect.try({
-      catch: (cause) => journalError('recordSubmissionUnknown', cause),
-      try: () => {
-        const result = database.run(
-          `UPDATE codex_attempts SET state = 'SubmissionUnknown'
+    tryJournalTransaction('recordSubmissionUnknown', 'recordSubmissionUnknown failed', () => {
+      const result = database.run(
+        `UPDATE codex_attempts SET state = 'SubmissionUnknown'
          WHERE id = ? AND state IN ('Prepared','Submitted')`,
-          [attemptId],
-        );
-        changedOne(result.changes, 'recordSubmissionUnknown');
-      },
+        [attemptId],
+      );
+      changedOne(result.changes, 'recordSubmissionUnknown');
     });
 
 const makeCodexJournal = (database: Database): CodexJournal => ({

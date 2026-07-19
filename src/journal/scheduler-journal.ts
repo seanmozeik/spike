@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import type { LogicalTurnId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import {
   claimSchedule,
   finishScheduledRuns,
@@ -34,13 +34,6 @@ interface SchedulerJournal {
   ) => Effect.Effect<readonly PersistedInputBatch[], JournalTransactionError>;
   readonly loadOrCreate: (now: Date) => Effect.Effect<SchedulerState, JournalTransactionError>;
 }
-
-const journalError = (transaction: string, cause: unknown): JournalTransactionError =>
-  new JournalTransactionError({
-    cause,
-    message: `scheduler journal transaction failed: ${transaction}`,
-    transaction,
-  });
 
 const insertInputBatch = (
   database: Database,
@@ -276,12 +269,13 @@ const makeCommitTransition = (database: Database): SchedulerJournal['commitTrans
     },
   );
   return (transition, committedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('commitTransition', cause),
-      try: () => {
+    tryJournalTransaction(
+      'commitTransition',
+      'scheduler journal transaction failed: commitTransition',
+      () => {
         transaction(transition, committedAt.toISOString());
       },
-    });
+    );
 };
 
 const makeSchedulerJournal = (database: Database): SchedulerJournal => ({

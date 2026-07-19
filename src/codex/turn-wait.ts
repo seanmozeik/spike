@@ -2,15 +2,13 @@ import { Effect } from 'effect';
 
 import type { CodexThreadId, CodexTurnId } from '../domain/ids';
 import { CodexRuntimeError } from '../errors';
+import { isObject } from '../object-guard';
 import { collectOutput, type ClassifiedOutput, type CodexNotification } from './output-classifier';
 import type { JsonRpcNotification, RpcHandle } from './rpc';
 import type { TurnEventHandlers } from './runtime-types';
 
 const TURN_WAIT_TIMEOUT_MS = 3_600_000;
 const noOp = (): void => undefined;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const belongsToTurn = (
   notification: JsonRpcNotification,

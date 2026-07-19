@@ -1,3 +1,5 @@
+import { isObject } from '../object-guard';
+
 interface RateLimitWindow {
   readonly remainingPercent: number;
   readonly resetsAt: string | null;
@@ -13,9 +15,6 @@ const SECONDS_TO_MILLISECONDS = 1000;
 const MILLISECOND_TIMESTAMP_THRESHOLD = 1e12;
 const FIVE_HOUR_MINUTES = 300;
 const WEEKLY_MINUTES = 10_080;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const normalizeReset = (value: unknown): string | null => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {

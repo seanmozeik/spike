@@ -1,11 +1,11 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import { prepareOutageRows } from '../delivery/prepare';
 import { OutageEpisodeId } from '../domain/ids';
-import { journalTransactionError, type JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 
 type CodexOutageKind = 'CodexAuthentication' | 'CodexCapacity' | 'CodexRuntime';
 
@@ -42,9 +42,6 @@ const CODEX_OUTAGE_KINDS = [
   'CodexRuntime',
 ] as const satisfies readonly CodexOutageKind[];
 
-const journalError = (transaction: string, cause: unknown): JournalTransactionError =>
-  journalTransactionError(transaction, `outage journal transaction failed: ${transaction}`, cause);
-
 const makeOpen = (database: Database): OutageJournal['open'] => {
   const transaction = database.transaction(
     (kind: CodexOutageKind, text: string, at: Date): OpenOutageResult => {
@@ -72,10 +69,9 @@ const makeOpen = (database: Database): OutageJournal['open'] => {
     },
   );
   return (kind, text, at) =>
-    Effect.try({
-      catch: (cause) => journalError('openOutage', cause),
-      try: () => transaction(kind, text, at),
-    });
+    tryJournalTransaction('openOutage', 'outage journal transaction failed: openOutage', () =>
+      transaction(kind, text, at),
+    );
 };
 
 const makeResolve = (database: Database): OutageJournal['resolve'] => {
@@ -95,16 +91,18 @@ const makeResolve = (database: Database): OutageJournal['resolve'] => {
     return open.length;
   });
   return (at) =>
-    Effect.try({
-      catch: (cause) => journalError('resolveOutages', cause),
-      try: () => transaction(at.toISOString()),
-    });
+    tryJournalTransaction(
+      'resolveOutages',
+      'outage journal transaction failed: resolveOutages',
+      () => transaction(at.toISOString()),
+    );
 };
 
 const makeOutageJournal = (database: Database): OutageJournal => ({
-  listOpen: Effect.try({
-    catch: (cause) => journalError('listOpenOutages', cause),
-    try: () =>
+  listOpen: tryJournalTransaction(
+    'listOpenOutages',
+    'outage journal transaction failed: listOpenOutages',
+    () =>
       database
         .query<OpenOutageRow, []>(
           "SELECT id, kind, opened_at FROM outage_episodes WHERE state = 'Open' ORDER BY opened_at, id",
@@ -115,7 +113,7 @@ const makeOutageJournal = (database: Database): OutageJournal => ({
           kind: row.kind,
           openedAt: new Date(row.opened_at),
         })),
-  }),
+  ),
   open: makeOpen(database),
   resolve: makeResolve(database),
 });

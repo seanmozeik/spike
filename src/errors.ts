@@ -1,4 +1,4 @@
-import { Schema } from 'effect';
+import { Effect, Schema } from 'effect';
 
 export class SpikeRuntimeError extends Schema.TaggedErrorClass<SpikeRuntimeError>()(
   'SpikeRuntimeError',
@@ -30,6 +30,13 @@ export const journalTransactionError = (
   message: string,
   cause: unknown,
 ): JournalTransactionError => new JournalTransactionError({ cause, message, transaction });
+
+export const tryJournalTransaction = <A>(
+  transaction: string,
+  message: string,
+  run: () => A,
+): Effect.Effect<A, JournalTransactionError> =>
+  Effect.try({ catch: (cause) => journalTransactionError(transaction, message, cause), try: run });
 
 export class CodexRuntimeError extends Schema.TaggedErrorClass<CodexRuntimeError>()(
   'CodexRuntimeError',

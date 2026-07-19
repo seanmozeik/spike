@@ -1,10 +1,8 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
-
 import { DeliveryAttemptId, type OutboundChunkId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction } from '../errors';
 import type { TurnIdentity } from '../scheduler/model';
 import type { DeliveryChunk, DeliveryJournal } from './model';
 
@@ -97,23 +95,15 @@ const claimAttempt = (
     : insertAttempt(database, chunkId, frontierRowId, startedAt);
 };
 
-const claimError = (transaction: string, cause: unknown): JournalTransactionError =>
-  new JournalTransactionError({
-    cause,
-    message: `delivery journal transaction failed: ${transaction}`,
-    transaction,
-  });
-
 const makeClaimAttempt = (database: Database): DeliveryJournal['claimAttempt'] => {
   const transaction = database.transaction(
     (chunkId: OutboundChunkId, frontierRowId: number, startedAt: string) =>
       claimAttempt(database, chunkId, frontierRowId, startedAt, null),
   );
   return (chunkId, frontierRowId, startedAt) =>
-    Effect.try({
-      catch: (cause) => claimError('claimAttempt', cause),
-      try: () => transaction.immediate(chunkId, frontierRowId, startedAt.toISOString()),
-    });
+    tryJournalTransaction('claimAttempt', 'delivery journal transaction failed: claimAttempt', () =>
+      transaction.immediate(chunkId, frontierRowId, startedAt.toISOString()),
+    );
 };
 
 const makeClaimTurnAttempt = (database: Database): DeliveryJournal['claimTurnAttempt'] => {
@@ -122,10 +112,11 @@ const makeClaimTurnAttempt = (database: Database): DeliveryJournal['claimTurnAtt
       claimAttempt(database, chunkId, frontierRowId, startedAt, identity),
   );
   return (identity, chunkId, frontierRowId, startedAt) =>
-    Effect.try({
-      catch: (cause) => claimError('claimTurnAttempt', cause),
-      try: () => transaction.immediate(identity, chunkId, frontierRowId, startedAt.toISOString()),
-    });
+    tryJournalTransaction(
+      'claimTurnAttempt',
+      'delivery journal transaction failed: claimTurnAttempt',
+      () => transaction.immediate(identity, chunkId, frontierRowId, startedAt.toISOString()),
+    );
 };
 
 export { makeClaimAttempt, makeClaimTurnAttempt };

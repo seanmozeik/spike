@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import type { ControlCommand } from '../domain/control-command';
 import { InboundMessageId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 
 interface PendingControl {
   readonly command: ControlCommand;
@@ -18,14 +18,10 @@ interface PendingControlRow {
 
 const makeListPendingControls =
   (database: Database) => (): Effect.Effect<readonly PendingControl[], JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'failed to load control replies awaiting delivery',
-          transaction: 'listPendingControls',
-        }),
-      try: () =>
+    tryJournalTransaction(
+      'listPendingControls',
+      'failed to load control replies awaiting delivery',
+      () =>
         database
           .query<PendingControlRow, []>(
             `SELECT hcm.inbound_message_id, hcm.command
@@ -43,7 +39,7 @@ const makeListPendingControls =
             command: row.command,
             inboundMessageId: InboundMessageId.make(row.inbound_message_id),
           })),
-    });
+    );
 
 export { makeListPendingControls };
 export type { PendingControl };

@@ -1,9 +1,9 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
-import { journalTransactionError, type JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 
 interface OutageDiagnostic {
   readonly open: (at: Date) => Effect.Effect<boolean, JournalTransactionError>;
@@ -60,25 +60,17 @@ const makeOutageDiagnostic = (database: Database, spec: OutageDiagnosticSpec): O
   const resolve = makeResolve(database, spec.kind);
   return {
     open: (at) =>
-      Effect.try({
-        catch: (cause) =>
-          journalTransactionError(
-            'openOutageDiagnostic',
-            `failed to persist the ${spec.kind} outage diagnostic`,
-            cause,
-          ),
-        try: () => open(at.toISOString()),
-      }),
+      tryJournalTransaction(
+        'openOutageDiagnostic',
+        `failed to persist the ${spec.kind} outage diagnostic`,
+        () => open(at.toISOString()),
+      ),
     resolve: (at) =>
-      Effect.try({
-        catch: (cause) =>
-          journalTransactionError(
-            'resolveOutageDiagnostic',
-            `failed to resolve the ${spec.kind} outage diagnostic`,
-            cause,
-          ),
-        try: () => resolve(at.toISOString()),
-      }),
+      tryJournalTransaction(
+        'resolveOutageDiagnostic',
+        `failed to resolve the ${spec.kind} outage diagnostic`,
+        () => resolve(at.toISOString()),
+      ),
   };
 };
 

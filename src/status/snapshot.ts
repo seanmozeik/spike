@@ -8,6 +8,7 @@ import { Effect } from 'effect';
 import { loadSpikeConfig } from '../app-config';
 import type { CodexRuntime } from '../codex/runtime';
 import { readAttachmentStagingDiagnostic } from '../journal/attachment-diagnostic';
+import { isObject } from '../object-guard';
 import type { SpikePaths } from '../paths';
 import type { EngineEventLoopDiagnostics } from '../service/event-loop-diagnostics';
 import { spikeVersion } from '../version';
@@ -32,9 +33,6 @@ interface LikeStatusRow {
 
 const PERCENT = 100;
 const SECONDS_TO_MILLISECONDS = 1000;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const readString = (value: unknown, key: string, fallback: string): string => {
   if (!isObject(value)) {

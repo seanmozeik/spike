@@ -7,7 +7,7 @@ import { makeAttachmentStore } from '../attachments/store';
 import { belongsToConversation, type ConfiguredConversation } from '../conversation-guard';
 import { MessagesRowId, type ChatGuid } from '../domain/ids';
 import type { ObservedMessage } from '../domain/inbound';
-import { journalTransactionError } from '../errors';
+import { journalTransactionError, tryJournalTransaction } from '../errors';
 import { makeAuditStagedAttachments } from './attachment-audit';
 import { makeStagePendingAttachments } from './attachment-staging';
 import { makeListPendingControls } from './control-recovery';
@@ -249,29 +249,24 @@ const makeJournal = (
     auditStagedAttachments: attachments.audit,
     inboxCursor: (chatGuid) => Effect.sync(() => readCursor(database, chatGuid)),
     ingestObservedMessages: (chatGuid, observedAt, messages) =>
-      Effect.try({
-        catch: (cause) =>
-          journalTransactionError(
-            'ingestObservedMessages',
-            'failed to atomically persist observed Messages rows and cursor',
-            cause,
-          ),
-        try: () => {
+      tryJournalTransaction(
+        'ingestObservedMessages',
+        'failed to atomically persist observed Messages rows and cursor',
+        () => {
           if (chatGuid !== conversation.chatGuid) {
             throw new Error('ingest target does not match the configured conversation');
           }
           return ingest(observedAt.toISOString(), messages);
         },
-      }),
+      ),
     initializeInboxCursor: makeInitializeInboxCursor(database),
     listInbound: Effect.sync(() => readInbound(database)),
     listPendingControls: makeListPendingControls(database)(),
     listPendingInbound: makeListPendingInbound(database),
     redactTerminalPayloads: (cutoff, redactedAt) =>
-      Effect.try({
-        catch: (cause) => journalTransactionError('redactTerminalPayloads', REDACTION_ERROR, cause),
-        try: () => attachments.redact(cutoff.toISOString(), redactedAt.toISOString()),
-      }),
+      tryJournalTransaction('redactTerminalPayloads', REDACTION_ERROR, () =>
+        attachments.redact(cutoff.toISOString(), redactedAt.toISOString()),
+      ),
     stagePendingAttachments: attachments.stage,
   };
 };

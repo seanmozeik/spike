@@ -1,10 +1,10 @@
+import { isObject } from './object-guard';
+
 const MAX_CAUSE_DEPTH = 8;
 
-const isObject = (value: unknown): value is object => typeof value === 'object' && value !== null;
-
-const stringProperty = (value: object, key: string): string | undefined => {
+const stringProperty = (value: Record<string, unknown>, key: string): string | undefined => {
   try {
-    const property = Reflect.get(value, key) as unknown;
+    const property = value[key];
     return typeof property === 'string' && property.trim() !== '' ? property.trim() : undefined;
   } catch {
     return undefined;
@@ -25,9 +25,9 @@ const singleErrorMessage = (value: unknown): string => {
   }
 };
 
-const nestedCause = (value: object): unknown => {
+const nestedCause = (value: Record<string, unknown>): unknown => {
   try {
-    return Reflect.get(value, 'cause');
+    return value['cause'];
   } catch {
     return undefined;
   }

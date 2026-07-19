@@ -2,6 +2,7 @@ import {
   ATTACHMENT_STAGING_DIAGNOSTIC,
   inspectAttachmentStagingDiagnostic,
 } from '../journal/attachment-diagnostic';
+import { isObject } from '../object-guard';
 import type { SpikePaths } from '../paths';
 
 interface AttachmentStagingCheck {
@@ -14,9 +15,6 @@ const result = (
   state: AttachmentStagingCheck['state'],
   detail: string,
 ): AttachmentStagingCheck => ({ detail, name: 'attachment staging', state });
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const liveAttachmentStagingCheck = (
   status: Record<string, unknown>,

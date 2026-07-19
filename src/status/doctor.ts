@@ -7,6 +7,7 @@ import { loadSpikeConfig, type SpikeConfig } from '../app-config';
 import { inspectJournal } from '../database';
 import { guiDomain, launchAgentLabel } from '../launchd';
 import { openMessagesInbox } from '../messages-inbox';
+import { isObject } from '../object-guard';
 import { liveOperatorCommands, type OperatorCommandPort } from '../operator/commands';
 import { classifyServiceInspection } from '../operator/lifecycle';
 import type { SpikePaths } from '../paths';
@@ -37,8 +38,6 @@ const check = (name: string, state: CheckState, detail: string): DiagnosticCheck
 });
 const numericField = (value: Record<string, unknown>, key: string): number =>
   typeof value[key] === 'number' ? value[key] : 0;
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
   const displayed = numericField(value, 'displayed');
   const orphaned = numericField(value, 'orphaned');

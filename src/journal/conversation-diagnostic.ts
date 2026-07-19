@@ -15,6 +15,5 @@ const makeConversationDiagnostic = (database: Database): ConversationDiagnostic 
     message: DIAGNOSTIC_MESSAGE,
     operation: 'messages-conversation-validation',
   });
-
 export { DIAGNOSTIC_MESSAGE, EPISODE_KIND, makeConversationDiagnostic };
 export type { ConversationDiagnostic };

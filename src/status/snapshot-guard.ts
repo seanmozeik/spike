@@ -1,5 +1,4 @@
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
+import { isObject } from '../object-guard';
 
 const hasValidOutages = (value: Record<string, unknown>): boolean => {
   const { outages } = value;

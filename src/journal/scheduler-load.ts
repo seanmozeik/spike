@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import { GenerationId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import type { SchedulerState } from '../scheduler/model';
 import { isGenerationSettled, rotateCurrentGeneration } from './scheduler-generation';
 import {
@@ -37,15 +37,11 @@ const makeLoadSchedulerState = (database: Database) => {
     return state;
   });
   return (now: Date): Effect.Effect<SchedulerState, JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'scheduler journal transaction failed: loadOrCreate',
-          transaction: 'loadOrCreate',
-        }),
-      try: () => transaction(now.toISOString()),
-    });
+    tryJournalTransaction(
+      'loadOrCreate',
+      'scheduler journal transaction failed: loadOrCreate',
+      () => transaction(now.toISOString()),
+    );
 };
 
 export { makeLoadSchedulerState };

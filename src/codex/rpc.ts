@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
 import { CodexRuntimeError } from '../errors';
+import { isObject } from '../object-guard';
 import { spikeVersion } from '../version';
 import { makeNotificationRegistry, type NotificationRegistry } from './notification-registry';
 import { routeServerRequest } from './rpc-server-request';
@@ -33,9 +34,6 @@ interface CloseRegistry {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RECENT_NOTIFICATIONS = 2000;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const isId = (value: unknown): value is JsonRpcId =>
   typeof value === 'number' || typeof value === 'string';

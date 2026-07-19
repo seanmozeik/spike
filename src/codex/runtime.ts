@@ -6,6 +6,7 @@ import { Effect, Result } from 'effect';
 import type { SpikeConfig } from '../app-config';
 import { CodexThreadId, CodexTurnId } from '../domain/ids';
 import { CodexRuntimeError } from '../errors';
+import { isObject } from '../object-guard';
 import type { SpikePaths } from '../paths';
 import { scheduleDynamicTools } from '../schedule/tool-spec';
 import { assembleSystemPrompt } from '../system-prompt';
@@ -17,9 +18,6 @@ import type { CodexRuntime } from './runtime-types';
 import type { CodexLogMode } from './stderr-log';
 import { classifyThreadLookup, isThreadNotLoaded } from './thread-errors';
 import { waitForTurn } from './turn-wait';
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const HEALTH_RPC_TIMEOUT_MS = 700;
 const STATUS_RPC_TIMEOUT_MS = 2000;

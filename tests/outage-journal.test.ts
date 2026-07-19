@@ -71,6 +71,14 @@ it.effect('rolls back the episode when its durable notice cannot be prepared', (
     );
 
     expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toMatchObject({
+        _tag: 'JournalTransactionError',
+        message: 'outage journal transaction failed: openOutage',
+        transaction: 'openOutage',
+      });
+      expect(result.failure).toHaveProperty('cause');
+    }
     expect(
       handle.database
         .query<{ count: number }, []>('SELECT COUNT(*) AS count FROM outage_episodes')

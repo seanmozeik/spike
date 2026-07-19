@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect } from 'effect';
 
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import { requiredText, trimmedOrNull } from './input-normalization';
 import { updateSchedule } from './journal-update';
 import {
@@ -162,55 +162,39 @@ const makeUpdate =
 const makeDue =
   (database: Database): ScheduleJournal['due'] =>
   (now) =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'failed to read due schedules',
-          transaction: 'scheduleDue',
-        }),
-      try: () => {
-        const row = database
-          .query<ScheduleRow, [string]>(
-            "SELECT * FROM schedules WHERE state = 'Active' AND next_due_at <= ? ORDER BY next_due_at, created_at LIMIT 1",
-          )
-          .get(now.toISOString());
-        if (row === null) {
-          return null;
-        }
-        const { next_due_at: nextDueAt, prompt } = row;
-        if (prompt === null || nextDueAt === null) {
-          return null;
-        }
-        return {
-          expectedDueAt: new Date(nextDueAt),
-          expectedRevision: row.revision,
-          id: ScheduleId.make(row.id),
-          kind: row.kind,
-          oneShotAt: new Date(row.one_shot_at),
-          prompt,
-          rrule: row.rrule,
-          timezone: row.timezone,
-        };
-      },
+    tryJournalTransaction('scheduleDue', 'failed to read due schedules', () => {
+      const row = database
+        .query<ScheduleRow, [string]>(
+          "SELECT * FROM schedules WHERE state = 'Active' AND next_due_at <= ? ORDER BY next_due_at, created_at LIMIT 1",
+        )
+        .get(now.toISOString());
+      if (row === null) {
+        return null;
+      }
+      const { next_due_at: nextDueAt, prompt } = row;
+      if (prompt === null || nextDueAt === null) {
+        return null;
+      }
+      return {
+        expectedDueAt: new Date(nextDueAt),
+        expectedRevision: row.revision,
+        id: ScheduleId.make(row.id),
+        kind: row.kind,
+        oneShotAt: new Date(row.one_shot_at),
+        prompt,
+        rrule: row.rrule,
+        timezone: row.timezone,
+      };
     });
 
 const makeNextDue = (database: Database): ScheduleJournal['nextDueAt'] =>
-  Effect.try({
-    catch: (cause) =>
-      new JournalTransactionError({
-        cause,
-        message: 'failed to read next schedule deadline',
-        transaction: 'scheduleNextDue',
-      }),
-    try: () => {
-      const value = database
-        .query<{ next_due_at: null | string }, []>(
-          "SELECT MIN(next_due_at) AS next_due_at FROM schedules WHERE state = 'Active'",
-        )
-        .get()?.next_due_at;
-      return value === null || value === undefined ? null : new Date(value);
-    },
+  tryJournalTransaction('scheduleNextDue', 'failed to read next schedule deadline', () => {
+    const value = database
+      .query<{ next_due_at: null | string }, []>(
+        "SELECT MIN(next_due_at) AS next_due_at FROM schedules WHERE state = 'Active'",
+      )
+      .get()?.next_due_at;
+    return value === null || value === undefined ? null : new Date(value);
   });
 
 const makeScheduleJournal = (database: Database): ScheduleJournal => ({

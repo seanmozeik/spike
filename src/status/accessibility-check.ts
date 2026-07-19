@@ -1,5 +1,6 @@
 import { Effect, Result } from 'effect';
 
+import { isObject } from '../object-guard';
 import type { OperatorCommandPort } from '../operator/commands';
 
 interface AccessibilityDiagnostic {
@@ -13,9 +14,6 @@ const check = (
   state: AccessibilityDiagnostic['state'],
   detail: string,
 ): AccessibilityDiagnostic => ({ detail, name, state });
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const checkAccessibility = async (
   helperPath: string,

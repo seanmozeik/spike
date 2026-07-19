@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import type { InboundMessageId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 
 interface LikeStatus {
   readonly available: boolean;
@@ -35,13 +35,6 @@ interface LikeJournal {
   ) => Effect.Effect<void, JournalTransactionError>;
   readonly status: Effect.Effect<LikeStatus, JournalTransactionError>;
 }
-
-const journalError = (transaction: string, cause: unknown): JournalTransactionError =>
-  new JournalTransactionError({
-    cause,
-    message: `Like journal transaction failed: ${transaction}`,
-    transaction,
-  });
 
 const emptyStatus = (): LikeStatus => ({
   available: false,
@@ -91,10 +84,9 @@ const makeBeginOnce = (database: Database): LikeJournal['beginOnce'] => {
     },
   );
   return (inboundMessageId, startedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('beginOnce', cause),
-      try: () => transaction(inboundMessageId, startedAt.toISOString()),
-    });
+    tryJournalTransaction('beginOnce', 'Like journal transaction failed: beginOnce', () =>
+      transaction(inboundMessageId, startedAt.toISOString()),
+    );
 };
 
 const makeFinish = (database: Database): LikeJournal['finish'] => {
@@ -132,21 +124,17 @@ const makeFinish = (database: Database): LikeJournal['finish'] => {
     },
   );
   return (attemptId, outcome, reason, finishedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('finish', cause),
-      try: () => {
-        transaction(attemptId, outcome, reason, finishedAt.toISOString());
-      },
+    tryJournalTransaction('finish', 'Like journal transaction failed: finish', () => {
+      transaction(attemptId, outcome, reason, finishedAt.toISOString());
     });
 };
 
 const makeLikeJournal = (database: Database): LikeJournal => ({
   beginOnce: makeBeginOnce(database),
   finish: makeFinish(database),
-  status: Effect.try({
-    catch: (cause) => journalError('status', cause),
-    try: () => readStatus(database),
-  }),
+  status: tryJournalTransaction('status', 'Like journal transaction failed: status', () =>
+    readStatus(database),
+  ),
 });
 
 export { makeLikeJournal };

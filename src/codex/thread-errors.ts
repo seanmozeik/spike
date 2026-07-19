@@ -1,11 +1,9 @@
 import { Effect } from 'effect';
 
 import { GenerationBroken, type CodexRuntimeError } from '../errors';
+import { isObject } from '../object-guard';
 
 const JSON_RPC_INVALID_REQUEST = -32_600;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const isMissingRollout = (error: CodexRuntimeError): boolean =>
   isObject(error.cause) &&

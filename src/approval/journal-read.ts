@@ -4,10 +4,9 @@ import type { Effect } from 'effect';
 
 import type { JsonRpcId } from '../codex/server-request-registry';
 import { InboundMessageId, type MessagesRowId } from '../domain/ids';
-import type { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import { parseApprovalCommand } from './command';
 import { parseRow, type ApprovalRow } from './journal-row';
-import { wrap } from './journal-shared';
 import type { ApprovalCommand, ApprovalCounts, ApprovalRecord } from './journal-types';
 
 type CountsEffect = Effect.Effect<ApprovalCounts, JournalTransactionError>;
@@ -25,71 +24,83 @@ const MILLISECONDS_PER_DAY =
   HOURS_PER_DAY * MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND;
 
 const counts = (database: Database, now: Date): CountsEffect =>
-  wrap('approvalCounts', () => {
-    const row = database
-      .query<
-        { displayed: number; orphaned: number; pending: number; recently_resolved: number },
-        [string]
-      >(
-        `SELECT SUM(state = 'Pending') AS pending,
+  tryJournalTransaction(
+    'approvalCounts',
+    'approval journal transaction failed: approvalCounts',
+    () => {
+      const row = database
+        .query<
+          { displayed: number; orphaned: number; pending: number; recently_resolved: number },
+          [string]
+        >(
+          `SELECT SUM(state = 'Pending') AS pending,
            SUM(state = 'Pending' AND delivered_at IS NOT NULL) AS displayed,
            SUM(state = 'Orphaned') AS orphaned,
            SUM(state != 'Pending' AND resolved_at >= ?) AS recently_resolved
          FROM approval_requests`,
-      )
-      .get(new Date(now.getTime() - MILLISECONDS_PER_DAY).toISOString());
-    return {
-      displayed: row?.displayed ?? 0,
-      orphaned: row?.orphaned ?? 0,
-      pending: row?.pending ?? 0,
-      recentlyResolved: row?.recently_resolved ?? 0,
-    } satisfies ApprovalCounts;
-  });
+        )
+        .get(new Date(now.getTime() - MILLISECONDS_PER_DAY).toISOString());
+      return {
+        displayed: row?.displayed ?? 0,
+        orphaned: row?.orphaned ?? 0,
+        pending: row?.pending ?? 0,
+        recentlyResolved: row?.recently_resolved ?? 0,
+      } satisfies ApprovalCounts;
+    },
+  );
 
 const listCommands = (
   database: Database,
   after: MessagesRowId,
   through: MessagesRowId,
 ): CommandsEffect =>
-  wrap('listApprovalCommands', () =>
-    database
-      .query<{ id: string; sent_at: string; text: string }, [number, number]>(
-        `SELECT im.id, im.sent_at, im.text FROM inbound_messages im
+  tryJournalTransaction(
+    'listApprovalCommands',
+    'approval journal transaction failed: listApprovalCommands',
+    () =>
+      database
+        .query<{ id: string; sent_at: string; text: string }, [number, number]>(
+          `SELECT im.id, im.sent_at, im.text FROM inbound_messages im
          WHERE im.source_kind = 'Messages' AND im.text IS NOT NULL
            AND im.messages_rowid > ? AND im.messages_rowid <= ?
            AND NOT EXISTS (SELECT 1 FROM handled_approval_messages h WHERE h.inbound_message_id = im.id)
            AND NOT EXISTS (SELECT 1 FROM input_batch_messages b WHERE b.inbound_message_id = im.id)
            AND NOT EXISTS (SELECT 1 FROM scheduler_pool_messages p WHERE p.inbound_message_id = im.id)
          ORDER BY im.messages_rowid`,
-      )
-      .all(after, through)
-      .filter((row) => parseApprovalCommand(row.text) !== null)
-      .map((row) => ({
-        id: InboundMessageId.make(row.id),
-        sentAt: new Date(row.sent_at),
-        text: row.text,
-      })),
+        )
+        .all(after, through)
+        .filter((row) => parseApprovalCommand(row.text) !== null)
+        .map((row) => ({
+          id: InboundMessageId.make(row.id),
+          sentAt: new Date(row.sent_at),
+          text: row.text,
+        })),
   );
 
 const nextExpiryAt = (database: Database): DateEffect =>
-  wrap('nextApprovalExpiry', () => {
-    const row = database
-      .query<{ expires_at: string | null }, []>(
-        "SELECT MIN(expires_at) AS expires_at FROM approval_requests WHERE state = 'Pending'",
-      )
-      .get();
-    return row?.expires_at === null || row?.expires_at === undefined
-      ? null
-      : new Date(row.expires_at);
-  });
+  tryJournalTransaction(
+    'nextApprovalExpiry',
+    'approval journal transaction failed: nextApprovalExpiry',
+    () => {
+      const row = database
+        .query<{ expires_at: string | null }, []>(
+          "SELECT MIN(expires_at) AS expires_at FROM approval_requests WHERE state = 'Pending'",
+        )
+        .get();
+      return row?.expires_at === null || row?.expires_at === undefined
+        ? null
+        : new Date(row.expires_at);
+    },
+  );
 
 const hasRequest = (
   database: Database,
   connectionId: string,
   rpcRequestId: JsonRpcId,
 ): BooleanEffect =>
-  wrap(
+  tryJournalTransaction(
     'hasApprovalRequest',
+    'approval journal transaction failed: hasApprovalRequest',
     () =>
       database
         .query<{ present: number }, [string, string]>(
@@ -100,7 +111,7 @@ const hasRequest = (
   );
 
 const listRecent = (database: Database, limit: number): RecordsEffect =>
-  wrap('listApprovals', () =>
+  tryJournalTransaction('listApprovals', 'approval journal transaction failed: listApprovals', () =>
     database
       .query<ApprovalRow, [number]>(
         `SELECT * FROM approval_requests
@@ -111,7 +122,7 @@ const listRecent = (database: Database, limit: number): RecordsEffect =>
   );
 
 const nextUndelivered = (database: Database): RecordEffect =>
-  wrap('nextApproval', () => {
+  tryJournalTransaction('nextApproval', 'approval journal transaction failed: nextApproval', () => {
     const displayed = database
       .query<{ id: string }, []>(
         "SELECT id FROM approval_requests WHERE state = 'Pending' AND delivered_at IS NOT NULL LIMIT 1",

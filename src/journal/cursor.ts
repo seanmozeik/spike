@@ -1,9 +1,9 @@
 import type { Database } from 'bun:sqlite';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import type { ChatGuid, MessagesRowId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 
 const makeInitializeInboxCursor =
   (database: Database) =>
@@ -12,14 +12,10 @@ const makeInitializeInboxCursor =
     frontier: MessagesRowId,
     initializedAt: Date,
   ): Effect.Effect<void, JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'failed to initialize the Messages frontier',
-          transaction: 'initializeInboxCursor',
-        }),
-      try: () => {
+    tryJournalTransaction(
+      'initializeInboxCursor',
+      'failed to initialize the Messages frontier',
+      () => {
         database.run(
           `INSERT OR IGNORE INTO inbox_cursor(
             chat_guid, last_rowid, last_message_guid, updated_at
@@ -27,7 +23,7 @@ const makeInitializeInboxCursor =
           [chatGuid, frontier, initializedAt.toISOString()],
         );
       },
-    });
+    );
 
 const makeAdvanceInboxCursor =
   (database: Database) =>
@@ -36,14 +32,10 @@ const makeAdvanceInboxCursor =
     frontier: MessagesRowId,
     advancedAt: Date,
   ): Effect.Effect<void, JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'failed to advance the idle Messages frontier',
-          transaction: 'advanceInboxCursor',
-        }),
-      try: () => {
+    tryJournalTransaction(
+      'advanceInboxCursor',
+      'failed to advance the idle Messages frontier',
+      () => {
         database.run(
           `INSERT INTO inbox_cursor(
             chat_guid, last_rowid, last_message_guid, updated_at
@@ -55,6 +47,6 @@ const makeAdvanceInboxCursor =
           [chatGuid, frontier, advancedAt.toISOString()],
         );
       },
-    });
+    );
 
 export { makeAdvanceInboxCursor, makeInitializeInboxCursor };

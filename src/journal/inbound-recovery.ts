@@ -1,11 +1,11 @@
 import type { Database } from 'bun:sqlite';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import type { StagedImageAttachment } from '../attachments/model';
 import { parseControlCommand } from '../domain/control-command';
 import { InboundMessageId, type MessagesRowId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import { readStagedImages, renderPersistedInputText } from './attachment-input';
 import { PENDING_INBOUND_QUERY } from './recovery-query';
 
@@ -84,15 +84,9 @@ const makeListPendingInbound =
     after: MessagesRowId,
     through: MessagesRowId,
   ): Effect.Effect<PendingInboundScan, JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'failed to load unassigned inbound messages',
-          transaction: 'listPendingInbound',
-        }),
-      try: () => dispatchableMessages(database, readPendingInboundRows(database, after, through)),
-    });
+    tryJournalTransaction('listPendingInbound', 'failed to load unassigned inbound messages', () =>
+      dispatchableMessages(database, readPendingInboundRows(database, after, through)),
+    );
 
 export { makeListPendingInbound };
 export type { PendingInboundMessage, PendingInboundScan };

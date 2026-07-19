@@ -180,6 +180,14 @@ it.effect('prepares idempotently and reconciles a confirmed one-bubble acknowled
       prepareTurnNotice(journal, 'blank-final', 'Final', '   ', new Date()),
     );
     expect(Result.isFailure(blank)).toBe(true);
+    if (Result.isFailure(blank)) {
+      expect(blank.failure).toMatchObject({
+        _tag: 'JournalTransactionError',
+        message: 'prepare turn notice failed',
+        transaction: 'prepareTurnNotice',
+      });
+      expect(blank.failure).toHaveProperty('cause');
+    }
     handle.close();
   }),
 );

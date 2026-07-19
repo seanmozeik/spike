@@ -1,3 +1,5 @@
+import { isObject } from '../object-guard';
+
 type EventLoopCheckState = 'fail' | 'pass' | 'warn';
 
 interface EventLoopCheck {
@@ -5,9 +7,6 @@ interface EventLoopCheck {
   readonly name: string;
   readonly state: EventLoopCheckState;
 }
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const numericField = (value: Record<string, unknown>, key: string): number =>
   typeof value[key] === 'number' ? value[key] : 0;

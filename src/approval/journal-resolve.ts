@@ -3,10 +3,9 @@ import type { Database } from 'bun:sqlite';
 import type { Effect } from 'effect';
 
 import type { JsonRpcId } from '../codex/server-request-registry';
-import type { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import { parseApprovalCommand } from './command';
 import { parseRow, type ApprovalRow } from './journal-row';
-import { wrap } from './journal-shared';
 import type { ApprovalCommand, ApprovalRecord, CommandResolution } from './journal-types';
 import { decisionResponse, type ApprovalState } from './model';
 
@@ -47,25 +46,31 @@ const pendingRows = (
     .all(parameter);
 
 const cancelConnection = (database: Database, connectionId: string, at: Date): RecordListEffect =>
-  wrap('cancelConnectionApprovals', () =>
-    transitionRows(
-      database,
-      pendingRows(database, 'connection_id = ?', connectionId),
-      'Cancelled',
-      at,
-      true,
-    ),
+  tryJournalTransaction(
+    'cancelConnectionApprovals',
+    'approval journal transaction failed: cancelConnectionApprovals',
+    () =>
+      transitionRows(
+        database,
+        pendingRows(database, 'connection_id = ?', connectionId),
+        'Cancelled',
+        at,
+        true,
+      ),
   );
 
 const expireDue = (database: Database, now: Date): RecordListEffect =>
-  wrap('expireApprovals', () =>
-    transitionRows(
-      database,
-      pendingRows(database, 'expires_at <= ?', now.toISOString()),
-      'Expired',
-      now,
-      true,
-    ),
+  tryJournalTransaction(
+    'expireApprovals',
+    'approval journal transaction failed: expireApprovals',
+    () =>
+      transitionRows(
+        database,
+        pendingRows(database, 'expires_at <= ?', now.toISOString()),
+        'Expired',
+        now,
+        true,
+      ),
   );
 
 const markConnection = (
@@ -75,35 +80,39 @@ const markConnection = (
   predicate: 'connection_id != ?' | 'connection_id = ?',
   transaction: string,
 ): RecordListEffect =>
-  wrap(transaction, () =>
+  tryJournalTransaction(transaction, `approval journal transaction failed: ${transaction}`, () =>
     transitionRows(database, pendingRows(database, predicate, connectionId), 'Orphaned', at, false),
   );
 
 const markOrphaned = (database: Database, connectionId: string, at: Date): RecordListEffect =>
-  wrap('orphanApprovals', () => {
-    const rows = database
-      .query<ApprovalRow, [string]>(
-        `SELECT * FROM approval_requests WHERE connection_id != ? AND (
+  tryJournalTransaction(
+    'orphanApprovals',
+    'approval journal transaction failed: orphanApprovals',
+    () => {
+      const rows = database
+        .query<ApprovalRow, [string]>(
+          `SELECT * FROM approval_requests WHERE connection_id != ? AND (
            state = 'Pending' OR (
              responded_at IS NULL AND response_json IS NOT NULL
              AND state IN ('Approved','Denied','Expired','Cancelled')
            )
          ) ORDER BY requested_at`,
-      )
-      .all(connectionId);
-    database.run(
-      `UPDATE approval_requests SET state = 'Orphaned', resolved_at = ?
+        )
+        .all(connectionId);
+      database.run(
+        `UPDATE approval_requests SET state = 'Orphaned', resolved_at = ?
        WHERE connection_id != ? AND state != 'Orphaned' AND (
          state = 'Pending' OR (responded_at IS NULL AND response_json IS NOT NULL)
        )`,
-      [at.toISOString(), connectionId],
-    );
-    const records: ApprovalRecord[] = [];
-    for (const row of rows) {
-      records.push({ ...parseRow(row), state: 'Orphaned' });
-    }
-    return records;
-  });
+        [at.toISOString(), connectionId],
+      );
+      const records: ApprovalRecord[] = [];
+      for (const row of rows) {
+        records.push({ ...parseRow(row), state: 'Orphaned' });
+      }
+      return records;
+    },
+  );
 
 const orphanConnection = (database: Database, connectionId: string, at: Date): RecordListEffect =>
   markConnection(database, connectionId, at, 'connection_id = ?', 'orphanConnectionApprovals');
@@ -170,24 +179,28 @@ const resolveCommand = (
   command: ApprovalCommand,
   at: Date,
 ): Effect.Effect<CommandResolution, JournalTransactionError> =>
-  wrap('resolveApprovalCommand', (): CommandResolution => {
-    const normalized = parseApprovalCommand(command.text);
-    if (normalized === null) {
-      return { kind: 'Ignored' };
-    }
-    const handled = database
-      .query<{ inbound_message_id: string }, [string]>(
-        'SELECT inbound_message_id FROM handled_approval_messages WHERE inbound_message_id = ?',
-      )
-      .get(command.id);
-    if (handled !== null) {
-      return { kind: 'Ignored' };
-    }
-    const transaction = database.transaction(
-      (): CommandResolution => resolveDisplayed(database, command, normalized, at),
-    );
-    return transaction();
-  });
+  tryJournalTransaction(
+    'resolveApprovalCommand',
+    'approval journal transaction failed: resolveApprovalCommand',
+    (): CommandResolution => {
+      const normalized = parseApprovalCommand(command.text);
+      if (normalized === null) {
+        return { kind: 'Ignored' };
+      }
+      const handled = database
+        .query<{ inbound_message_id: string }, [string]>(
+          'SELECT inbound_message_id FROM handled_approval_messages WHERE inbound_message_id = ?',
+        )
+        .get(command.id);
+      if (handled !== null) {
+        return { kind: 'Ignored' };
+      }
+      const transaction = database.transaction(
+        (): CommandResolution => resolveDisplayed(database, command, normalized, at),
+      );
+      return transaction();
+    },
+  );
 
 const resolveUpstream = (
   database: Database,
@@ -195,22 +208,26 @@ const resolveUpstream = (
   rpcRequestId: JsonRpcId,
   at: Date,
 ): Effect.Effect<ApprovalRecord | null, JournalTransactionError> =>
-  wrap('resolveApprovalUpstream', () => {
-    const row = database
-      .query<ApprovalRow, [string, string]>(
-        `SELECT * FROM approval_requests WHERE connection_id = ?
+  tryJournalTransaction(
+    'resolveApprovalUpstream',
+    'approval journal transaction failed: resolveApprovalUpstream',
+    () => {
+      const row = database
+        .query<ApprovalRow, [string, string]>(
+          `SELECT * FROM approval_requests WHERE connection_id = ?
          AND rpc_request_id_json = ? AND state = 'Pending'`,
-      )
-      .get(connectionId, JSON.stringify(rpcRequestId));
-    if (row === null) {
-      return null;
-    }
-    database.run(
-      "UPDATE approval_requests SET state = 'Cancelled', resolved_at = ? WHERE id = ? AND state = 'Pending'",
-      [at.toISOString(), row.id],
-    );
-    return { ...parseRow(row), state: 'Cancelled' as const };
-  });
+        )
+        .get(connectionId, JSON.stringify(rpcRequestId));
+      if (row === null) {
+        return null;
+      }
+      database.run(
+        "UPDATE approval_requests SET state = 'Cancelled', resolved_at = ? WHERE id = ? AND state = 'Pending'",
+        [at.toISOString(), row.id],
+      );
+      return { ...parseRow(row), state: 'Cancelled' as const };
+    },
+  );
 
 export {
   cancelConnection,

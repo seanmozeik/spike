@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import type { AccountAvailabilityMode, AccountObservation } from '../codex/account-pool';
 import type { AccountId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 
 interface AccountObservationRow {
   readonly account_id: string;
@@ -33,9 +33,6 @@ interface AccountJournal {
   ) => Effect.Effect<void, JournalTransactionError>;
 }
 
-const journalError = (transaction: string, cause: unknown): JournalTransactionError =>
-  new JournalTransactionError({ cause, message: `${transaction} failed`, transaction });
-
 const storedDate = (value: string, field: string): Date => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
@@ -57,47 +54,42 @@ const serializeUsage = (usage: unknown): string | null =>
   usage === undefined || usage === null ? null : JSON.stringify(usage);
 
 const loadObservations = (database: Database): AccountJournal['loadAccountObservations'] =>
-  Effect.try({
-    catch: (cause) => journalError('loadAccountObservations', cause),
-    try: () =>
-      database
-        .query<AccountObservationRow, []>(
-          `SELECT observation.account_id, observation.observed_at, observation.mode,
+  tryJournalTransaction('loadAccountObservations', 'loadAccountObservations failed', () =>
+    database
+      .query<AccountObservationRow, []>(
+        `SELECT observation.account_id, observation.observed_at, observation.mode,
                   observation.usage_json, observation.reset_at, observation.selected_at
            FROM account_observations observation
            WHERE observation.id IN (
              SELECT MAX(latest.id) FROM account_observations latest GROUP BY latest.account_id
            )
            ORDER BY observation.account_id`,
-        )
-        .all()
-        .map((row) => parseObservation(row)),
-  });
+      )
+      .all()
+      .map((row) => parseObservation(row)),
+  );
 
 const recordObservation =
   (database: Database): AccountJournal['recordAccountObservation'] =>
   (accountId, mode, usage, resetAt, observedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('recordAccountObservation', cause),
-      try: () => {
-        database.run(
-          `INSERT INTO account_observations(
+    tryJournalTransaction('recordAccountObservation', 'recordAccountObservation failed', () => {
+      database.run(
+        `INSERT INTO account_observations(
              account_id, observed_at, usable, mode, usage_json, reset_at, selected_at
            ) VALUES (?, ?, ?, ?, ?, ?, (
              SELECT selected_at FROM account_observations
              WHERE account_id = ? ORDER BY id DESC LIMIT 1
            ))`,
-          [
-            accountId,
-            observedAt.toISOString(),
-            mode === 'Available' ? 1 : 0,
-            mode,
-            serializeUsage(usage),
-            resetAt?.toISOString() ?? null,
-            accountId,
-          ],
-        );
-      },
+        [
+          accountId,
+          observedAt.toISOString(),
+          mode === 'Available' ? 1 : 0,
+          mode,
+          serializeUsage(usage),
+          resetAt?.toISOString() ?? null,
+          accountId,
+        ],
+      );
     });
 
 const recordSelection = (database: Database): AccountJournal['recordAccountSelection'] => {
@@ -126,11 +118,8 @@ const recordSelection = (database: Database): AccountJournal['recordAccountSelec
     );
   });
   return (accountId, selectedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('recordAccountSelection', cause),
-      try: () => {
-        transaction(accountId, selectedAt.toISOString());
-      },
+    tryJournalTransaction('recordAccountSelection', 'recordAccountSelection failed', () => {
+      transaction(accountId, selectedAt.toISOString());
     });
 };
 
