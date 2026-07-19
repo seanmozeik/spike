@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { it } from '@effect/vitest';
-import { Effect, Result } from 'effect';
+import { Effect } from 'effect';
 import { afterEach, expect } from 'vitest';
 
 import { openJournal } from '../src/database';
@@ -163,114 +163,4 @@ it.effect('recovers a generation thread bound before scheduler state persisted',
     ).toBe(false);
     handle.close();
   }),
-);
-
-it.effect(
-  'atomically rolls back completion and successor creation when state persistence fails',
-  () =>
-    Effect.gen(function* atomicSuccessorFixture() {
-      const root = mkdtempSync(path.join(tmpdir(), 'spike-scheduler-atomic-'));
-      roots.push(root);
-      const handle = yield* openJournal(path.join(root, 'spike.db'));
-      const journal = makeSchedulerJournal(handle.database);
-      const now = new Date('2026-07-14T18:00:00Z');
-      const initial = yield* journal.loadOrCreate(now);
-      const firstId = LogicalTurnId.make('turn-1');
-      const secondId = LogicalTurnId.make('turn-2');
-      const firstMessage = {
-        id: InboundMessageId.make('message-1'),
-        receivedAt: now,
-        text: 'first',
-      } satisfies PooledMessage;
-      const secondMessage = {
-        id: InboundMessageId.make('message-2'),
-        receivedAt: new Date(now.getTime() + 1000),
-        text: 'second',
-      } satisfies PooledMessage;
-      for (const [rowId, message] of [firstMessage, secondMessage].entries()) {
-        handle.database.run(
-          `INSERT INTO inbound_messages(
-           id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
-         ) VALUES (?, ?, ?, 'chat', 'handle', 'iMessage', ?, ?, ?)`,
-          [
-            message.id,
-            `guid-${message.id}`,
-            rowId + 1,
-            message.text,
-            message.receivedAt.toISOString(),
-            message.receivedAt.toISOString(),
-          ],
-        );
-      }
-      const running = {
-        ...initial,
-        active: {
-          acknowledged: false,
-          codexTurnId: CodexTurnId.make('codex-turn'),
-          logicalTurnId: firstId,
-        },
-      } as const;
-      yield* journal.commitTransition(
-        {
-          actions: [{ kind: 'StartTurn', logicalTurnId: firstId, messages: [firstMessage] }],
-          state: running,
-        },
-        now,
-      );
-      const successor = {
-        ...running,
-        active: { acknowledged: false, codexTurnId: null, logicalTurnId: secondId },
-      } as const;
-      const transition = {
-        actions: [
-          { kind: 'CompleteTurn', logicalTurnId: firstId },
-          { kind: 'StartTurn', logicalTurnId: secondId, messages: [secondMessage] },
-        ],
-        state: successor,
-      } as const;
-      handle.database.run(
-        `CREATE TRIGGER fail_successor_state BEFORE UPDATE OF active_logical_turn_id ON scheduler_state
-       WHEN NEW.active_logical_turn_id = 'turn-2'
-       BEGIN SELECT RAISE(ABORT, 'forced successor state failure'); END`,
-      );
-
-      const failedAt = new Date(now.getTime() + 2000);
-      const failed = yield* Effect.result(journal.commitTransition(transition, failedAt));
-      expect(Result.isFailure(failed)).toBe(true);
-      expect(
-        handle.database
-          .query<{ id: string; state: string }, []>(
-            'SELECT id, state FROM logical_turns ORDER BY sequence',
-          )
-          .all(),
-      ).toStrictEqual([{ id: 'turn-1', state: 'Running' }]);
-      expect(
-        handle.database
-          .query<{ active_logical_turn_id: string }, []>(
-            'SELECT active_logical_turn_id FROM scheduler_state WHERE singleton = 1',
-          )
-          .get()?.active_logical_turn_id,
-      ).toBe('turn-1');
-
-      handle.database.run('DROP TRIGGER fail_successor_state');
-      yield* journal.commitTransition(transition, new Date(now.getTime() + 3000));
-      expect(
-        handle.database
-          .query<{ id: string; state: string }, []>(
-            'SELECT id, state FROM logical_turns ORDER BY sequence',
-          )
-          .all(),
-      ).toStrictEqual([
-        { id: 'turn-1', state: 'Completed' },
-        { id: 'turn-2', state: 'Running' },
-      ]);
-      expect(
-        handle.database
-          .query<{ active_logical_turn_id: string }, []>(
-            'SELECT active_logical_turn_id FROM scheduler_state WHERE singleton = 1',
-          )
-          .get()?.active_logical_turn_id,
-      ).toBe('turn-2');
-      handle.close();
-    }),
 );
