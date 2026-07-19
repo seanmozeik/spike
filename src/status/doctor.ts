@@ -40,6 +40,9 @@ const check = (name: string, state: CheckState, detail: string): DiagnosticCheck
 const numericField = (value: Record<string, unknown>, key: string): number =>
   typeof value[key] === 'number' ? value[key] : 0;
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
 const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
   const displayed = numericField(value, 'displayed');
   const orphaned = numericField(value, 'orphaned');
@@ -53,8 +56,17 @@ const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
   return check('approvals', state, `${String(pending)} pending, ${String(orphaned)} orphaned`);
 };
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
+const outageCheck = (value: unknown): DiagnosticCheck => {
+  const outage = isObject(value) ? value : {};
+  const open = Array.isArray(outage['open'])
+    ? outage['open'].filter((kind): kind is string => typeof kind === 'string')
+    : [];
+  return check(
+    'outages',
+    open.length === 0 ? 'pass' : 'fail',
+    open.length === 0 ? 'none open' : open.join(', '),
+  );
+};
 
 const parseObject = (text: string): Record<string, unknown> => {
   const value: unknown = Bun.TOML.parse(text);
@@ -259,6 +271,7 @@ const makeDoctorReport = async (
       appServer['healthy'] === true ? 'responsive' : 'unavailable',
     ),
     approvalCheck(approvals),
+    outageCheck(status['outages']),
     accounts,
     ...messages,
     ...accessibility,

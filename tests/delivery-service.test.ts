@@ -257,7 +257,10 @@ it.effect('recovers an unknown attempt after restart without resending a confirm
     if (chunk === undefined) {
       throw new Error('expected prepared chunk');
     }
-    const attemptId = yield* journal.beginAttempt(chunk.id, 20, new Date());
+    const attemptId = yield* journal.claimAttempt(chunk.id, 20, new Date());
+    if (attemptId === null) {
+      throw new Error('restart delivery attempt was not claimed');
+    }
     yield* journal.markAttemptUnknown(attemptId, 'process exited', new Date());
     let sends = 0;
     const service = makeDeliveryService(
@@ -298,7 +301,10 @@ it.effect('treats a successful AppleScript send as terminal before confirmation'
     if (chunk === undefined) {
       throw new Error('expected prepared chunk');
     }
-    const attemptId = yield* journal.beginAttempt(chunk.id, 20, new Date());
+    const attemptId = yield* journal.claimAttempt(chunk.id, 20, new Date());
+    if (attemptId === null) {
+      throw new Error('sent delivery attempt was not claimed');
+    }
     yield* journal.markSent(attemptId, chunk.id, new Date());
     expect(yield* journal.listRecoverable).toHaveLength(0);
     expect(
@@ -327,7 +333,10 @@ it.effect('terminates any prior delivery attempt across process restarts without
     if (chunk === undefined) {
       throw new Error('expected prepared chunk');
     }
-    const attemptId = yield* journal.beginAttempt(chunk.id, 20, new Date());
+    const attemptId = yield* journal.claimAttempt(chunk.id, 20, new Date());
+    if (attemptId === null) {
+      throw new Error('exhausted delivery attempt was not claimed');
+    }
     yield* journal.markAttemptUnknown(attemptId, 'process exited', new Date());
     let sends = 0;
     const service = makeDeliveryService(

@@ -25,6 +25,7 @@ import { AccountId } from '../src/domain/ids';
 import { makeCodexJournal } from '../src/journal/codex-journal';
 import { spikePaths } from '../src/paths';
 import { withMessagesFixture } from './messages-fixture';
+import { makeDeliveredOutageFixture, outageDeliveryFixture } from './outage-fixture';
 
 const roots: string[] = [];
 const FAKE_CODEX_EXECUTABLE = fileURLToPath(
@@ -85,7 +86,9 @@ messages_database = ${JSON.stringify(messages.databasePath)}
       const originalPath = process.env['PATH'];
       process.env['PATH'] = `${fakeBin}:${originalPath ?? ''}`;
       try {
-        const daemon = yield* Effect.forkChild(serveDaemon(paths));
+        const daemon = yield* Effect.forkChild(
+          serveDaemon(paths, { outageDelivery: outageDeliveryFixture }),
+        );
         for (let index = 0; index < 100 && !existsSync(paths.socket); index += 1) {
           yield* Effect.promise(() => Bun.sleep(10));
         }
@@ -187,7 +190,9 @@ messages_database = ${JSON.stringify(messages.databasePath)}
       );
       handle.close();
 
-      const daemon = yield* Effect.forkChild(serveDaemon(paths));
+      const daemon = yield* Effect.forkChild(
+        serveDaemon(paths, { outageDelivery: makeDeliveredOutageFixture(paths.database) }),
+      );
       for (let index = 0; index < 100 && !existsSync(paths.socket); index += 1) {
         yield* Effect.promise(() => Bun.sleep(10));
       }

@@ -3,12 +3,14 @@ import type { Effect } from 'effect';
 import type {
   DeliveryAttemptId,
   LogicalTurnId,
+  OutageEpisodeId,
   OutboundChunkId,
   OutboundMessageId,
 } from '../domain/ids';
 import type { JournalTransactionError } from '../errors';
 
 type AssistantMessageKind = 'Final' | 'WorkAck';
+type DeliveryMessageKind = AssistantMessageKind | 'OutageNotice';
 
 interface DeliveryChunk {
   readonly attemptId: DeliveryAttemptId | null;
@@ -24,15 +26,15 @@ interface DeliveryChunk {
 interface PreparedDelivery {
   readonly chunks: readonly DeliveryChunk[];
   readonly id: OutboundMessageId;
-  readonly kind: AssistantMessageKind;
+  readonly kind: DeliveryMessageKind;
 }
 
 interface DeliveryJournal {
-  readonly beginAttempt: (
+  readonly claimAttempt: (
     chunkId: OutboundChunkId,
     frontierRowId: number,
     startedAt: Date,
-  ) => Effect.Effect<DeliveryAttemptId, JournalTransactionError>;
+  ) => Effect.Effect<DeliveryAttemptId | null, JournalTransactionError>;
   readonly listRecoverable: Effect.Effect<readonly DeliveryChunk[], JournalTransactionError>;
   readonly markAttemptUnknown: (
     attemptId: DeliveryAttemptId,
@@ -73,6 +75,17 @@ interface DeliveryJournal {
     text: string,
     createdAt: Date,
   ) => Effect.Effect<PreparedDelivery, JournalTransactionError>;
+  readonly prepareOutageNotice: (
+    outageEpisodeId: OutageEpisodeId,
+    text: string,
+    createdAt: Date,
+  ) => Effect.Effect<PreparedDelivery, JournalTransactionError>;
 }
 
-export type { AssistantMessageKind, DeliveryChunk, DeliveryJournal, PreparedDelivery };
+export type {
+  AssistantMessageKind,
+  DeliveryChunk,
+  DeliveryJournal,
+  DeliveryMessageKind,
+  PreparedDelivery,
+};

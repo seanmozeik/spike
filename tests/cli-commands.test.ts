@@ -31,7 +31,14 @@ const outputs = {
   logs: { ok: true, path: '/tmp/daemon.log', text: 'ready' },
   restart: { label: 'com.mozeik.spike', ok: true, status: 'started' },
   start: { label: 'com.mozeik.spike', ok: true, status: 'started' },
-  status: { loaded: true, ok: true, running: false, service: 'spike', socket: '/tmp/spike.sock' },
+  status: {
+    loaded: true,
+    ok: true,
+    outages: { open: [] },
+    running: false,
+    service: 'spike',
+    socket: '/tmp/spike.sock',
+  },
   stop: { label: 'com.mozeik.spike', ok: true, status: 'stopped' },
 } as const;
 

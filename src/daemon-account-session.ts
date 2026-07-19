@@ -22,6 +22,7 @@ import { makeDisabledLikeAcknowledgement, makeLikeAcknowledgement } from './like
 import { makeLikeJournal } from './like/journal';
 import { makeLikeNativeRunner } from './like/native-runner';
 import { openMessagesInbox, type MessagesInboxHandle } from './messages-inbox';
+import type { OutageService } from './outage/service';
 import type { SpikePaths } from './paths';
 import { makeSpikeEngine, type SpikeEngine } from './service/engine';
 import { formatStatus } from './status/format';
@@ -38,6 +39,7 @@ interface AccountSessionDependencies {
   readonly coordinator: AccountRuntimeCoordinator;
   readonly journal: JournalHandle;
   readonly options: AccountSessionOptions;
+  readonly outages: OutageService;
   readonly paths: SpikePaths;
   readonly runtimeSlot: RuntimeSlot;
   readonly startedAt: string;
@@ -167,7 +169,8 @@ const runAccountSession = (
   dependencies: AccountSessionDependencies,
 ): Effect.Effect<SessionEnd, unknown> =>
   Effect.gen(function* accountSession() {
-    const { config, coordinator, journal, options, paths, runtimeSlot, startedAt } = dependencies;
+    const { config, coordinator, journal, options, outages, paths, runtimeSlot, startedAt } =
+      dependencies;
     const runtime = yield* Effect.acquireRelease(coordinator.acquire, (activeRuntime) =>
       coordinator.release(activeRuntime),
     );
@@ -198,6 +201,7 @@ const runAccountSession = (
       yield* Fiber.interrupt(engineRun);
       return end;
     }
+    yield* outages.runtimeUnavailable(new Date());
     engine.quiesce();
     yield* Fiber.interrupt(engineRun);
     yield* drainAfterCodexClose(engine, paths);

@@ -13,6 +13,7 @@ import { serveDaemon } from '../src/daemon';
 import { SpikeRuntimeError } from '../src/errors';
 import { spikePaths, type SpikePaths } from '../src/paths';
 import { withMessagesFixture } from './messages-fixture';
+import { outageDeliveryFixture } from './outage-fixture';
 
 const roots: string[] = [];
 const FAKE_CODEX_EXECUTABLE = fileURLToPath(
@@ -105,7 +106,9 @@ it.effect('fails fast and removes the socket when initial app-server initializat
       prepareDaemon(paths, messages.databasePath, failing);
       yield* addAccount(paths, root, 'primary');
 
-      const daemon = yield* Effect.forkChild(serveDaemon(paths));
+      const daemon = yield* Effect.forkChild(
+        serveDaemon(paths, { outageDelivery: outageDeliveryFixture }),
+      );
       yield* waitForSocket(paths);
       const exit = yield* boundedDaemonExit(daemon);
 
@@ -138,7 +141,9 @@ exec ${JSON.stringify(FAKE_CODEX_EXECUTABLE)} "$@"
       yield* addAccount(paths, root, 'primary');
       yield* addAccount(paths, root, 'secondary');
 
-      const daemon = yield* Effect.forkChild(serveDaemon(paths));
+      const daemon = yield* Effect.forkChild(
+        serveDaemon(paths, { outageDelivery: outageDeliveryFixture }),
+      );
       yield* waitForSocket(paths);
       messages.insertMessage({ guid: 'replacement-open-failure', rowId: 1, text: 'rotate now' });
       const exit = yield* boundedDaemonExit(daemon);

@@ -1,6 +1,6 @@
 import { Effect, Result } from 'effect';
 
-import type { DeliveryAttemptId, LogicalTurnId } from '../domain/ids';
+import type { DeliveryAttemptId, LogicalTurnId, OutageEpisodeId } from '../domain/ids';
 import type { JournalTransactionError } from '../errors';
 import { MessagesDeliveryError } from './error';
 import type { DeliveryReceipt, MessagesTransport } from './messages-transport';
@@ -27,6 +27,11 @@ interface DeliveryService {
     createdAt: Date,
   ) => Effect.Effect<void, DeliveryError>;
   readonly recover: Effect.Effect<void, DeliveryError>;
+  readonly deliverOutageNotice: (
+    outageEpisodeId: OutageEpisodeId,
+    text: string,
+    createdAt: Date,
+  ) => Effect.Effect<void, DeliveryError>;
   readonly deliverControlMessage: (
     sourceId: string,
     text: string,
@@ -108,6 +113,7 @@ const deliverChunk = (
   transport: MessagesTransport,
   chunk: DeliveryChunk,
 ): Effect.Effect<void, DeliveryError> => {
+  let attemptStarted = chunk.attemptId !== null;
   const delivery = Effect.gen(function* deliverChunkEffect() {
     if (yield* reconcileExisting(journal, transport, chunk)) {
       return yield* Effect.void;
@@ -121,7 +127,11 @@ const deliverChunk = (
       return yield* confirmationTimeout();
     }
     const frontierRowId = yield* transport.frontier;
-    const attemptId = yield* journal.beginAttempt(chunk.id, frontierRowId, new Date());
+    const attemptId = yield* journal.claimAttempt(chunk.id, frontierRowId, new Date());
+    if (attemptId === null) {
+      return yield* Effect.void;
+    }
+    attemptStarted = true;
     const sent = yield* Effect.result(transport.send(chunk.text));
     yield* Result.isFailure(sent)
       ? journal.markAttemptUnknown(attemptId, compactError(sent.failure), new Date())
@@ -136,9 +146,9 @@ const deliverChunk = (
     yield* journal.markAttemptUnknown(attemptId, 'confirmation timeout', new Date());
     return yield* confirmationTimeout();
   });
-  return delivery.pipe(
-    Effect.catchTag('MessagesDeliveryError', terminalizeChunk.bind(null, journal, chunk)),
-  );
+  const handleDeliveryError = (error: MessagesDeliveryError): Effect.Effect<never, DeliveryError> =>
+    attemptStarted ? terminalizeChunk(journal, chunk, error) : Effect.fail(error);
+  return delivery.pipe(Effect.catchTag('MessagesDeliveryError', handleDeliveryError));
 };
 
 const deliverPrepared = Effect.fn('SpikeDelivery.deliverPrepared')(function* deliverPrepared(
@@ -179,6 +189,10 @@ const makeDeliveryService = (
   deliverFailureNotice: (logicalTurnId, text, createdAt): Effect.Effect<void, DeliveryError> =>
     journal
       .prepareFailureNotice(logicalTurnId, text, createdAt)
+      .pipe(Effect.flatMap((prepared) => deliverPrepared(journal, transport, prepared))),
+  deliverOutageNotice: (outageEpisodeId, text, createdAt): Effect.Effect<void, DeliveryError> =>
+    journal
+      .prepareOutageNotice(outageEpisodeId, text, createdAt)
       .pipe(Effect.flatMap((prepared) => deliverPrepared(journal, transport, prepared))),
   recover: Effect.gen(function* recoverDelivery() {
     const chunks = yield* journal.listRecoverable;

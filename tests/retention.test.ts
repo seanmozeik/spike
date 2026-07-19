@@ -45,7 +45,10 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
     if (deliveredChunk === undefined) {
       throw new Error('terminal delivery did not create a chunk');
     }
-    const deliveryAttempt = yield* fixture.delivery.beginAttempt(deliveredChunk.id, 0, OLD);
+    const deliveryAttempt = yield* fixture.delivery.claimAttempt(deliveredChunk.id, 0, OLD);
+    if (deliveryAttempt === null) {
+      throw new Error('terminal delivery attempt was not claimed');
+    }
     yield* fixture.delivery.markSent(deliveryAttempt, deliveredChunk.id, OLD);
     yield* fixture.codex.finishLogicalTurn(terminal.logicalTurnId, 'Completed', OLD);
     yield* fixture.scheduler.commitTransition(
@@ -152,7 +155,7 @@ it.effect('redacts Failed and Prepared sibling chunks after their parent fails',
     if (first === undefined) {
       throw new Error('failed delivery did not create a chunk');
     }
-    yield* fixture.delivery.beginAttempt(first.id, 0, OLD);
+    yield* fixture.delivery.claimAttempt(first.id, 0, OLD);
     yield* fixture.delivery.markFailed(first.id, 'delivery failed', OLD);
     yield* fixture.scheduler.commitTransition(
       {

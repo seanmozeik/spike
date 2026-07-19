@@ -27,6 +27,9 @@ type AccountRuntimeState =
 interface AccountRuntimeCoordinatorOptions {
   readonly logMode?: CodexLogMode;
   readonly now?: () => Date;
+  readonly onAvailable?: () => Effect.Effect<void, unknown>;
+  readonly onWaitingForAuthentication?: () => Effect.Effect<void, unknown>;
+  readonly onWaitingForCapacity?: (retryAt: Date) => Effect.Effect<void, unknown>;
   readonly openAccount?: (
     account: AccountRecord,
   ) => Effect.Effect<

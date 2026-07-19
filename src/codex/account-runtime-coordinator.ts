@@ -21,6 +21,7 @@ import {
   type AcquireDecision,
   type CoordinatorContext,
 } from './account-runtime-state';
+import { waitForAuthentication, waitForCapacity } from './account-runtime-transitions';
 import { addStoredAccount, listStoredAccounts } from './account-store';
 import { classifyCodexAvailability } from './availability';
 import {
@@ -75,10 +76,16 @@ class AccountRuntimeCoordinatorImpl implements AccountRuntimeCoordinatorContract
     const recordOpenFailure = (
       failure: WaitingForAuthentication | WaitingForCapacity,
     ): Effect.Effect<void, unknown> => this.recordOpenFailure(account, failure);
-    const activate = (runtime: CodexRuntime): Effect.Effect<void> =>
-      Effect.sync(() => {
-        this.active = runtime;
-      }).pipe(Effect.andThen(state.set({ accountId: account.id, kind: 'Active' })));
+    const activate = (runtime: CodexRuntime): Effect.Effect<void, unknown> =>
+      (options.onAvailable?.() ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            this.active = runtime;
+          }),
+        ),
+        Effect.andThen(state.set({ accountId: account.id, kind: 'Active' })),
+        Effect.tapError(() => Effect.promise(runtime.close)),
+      );
     return Effect.gen(function* openSelected() {
       const opened = yield* Effect.result(
         options.openAccount?.(account) ??
@@ -121,10 +128,18 @@ class AccountRuntimeCoordinatorImpl implements AccountRuntimeCoordinatorContract
             operation: 'account-runtime/provider-open',
           }),
       ),
-      Effect.tap((runtime) => {
-        this.active = runtime;
-        return state.set({ accountId: runtime.accountId, kind: 'Active' });
-      }),
+      Effect.flatMap((runtime) =>
+        (options.onAvailable?.() ?? Effect.void).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              this.active = runtime;
+            }),
+          ),
+          Effect.andThen(state.set({ accountId: runtime.accountId, kind: 'Active' })),
+          Effect.as(runtime),
+          Effect.tapError(() => Effect.promise(runtime.close)),
+        ),
+      ),
       Effect.map((runtime) => ({ kind: 'Acquired' as const, runtime })),
     );
   }
@@ -137,6 +152,7 @@ class AccountRuntimeCoordinatorImpl implements AccountRuntimeCoordinatorContract
     const openSelected = (account: AccountRecord): Effect.Effect<AcquireDecision, unknown> =>
       this.openSelected(account);
     return Effect.gen(function* selectAccountRuntime() {
+      const wakeVersion = state.version;
       const current = yield* state.current;
       if (current.kind === 'Closed') {
         return yield* coordinatorClosed();
@@ -168,15 +184,9 @@ class AccountRuntimeCoordinatorImpl implements AccountRuntimeCoordinatorContract
         return yield* openSelected(selected.account);
       }
       if (selected.kind === 'WaitingForCapacity' && selected.error.resetAt !== null) {
-        yield* state.set({ kind: 'WaitingForCapacity', retryAt: selected.error.resetAt });
-        return {
-          kind: 'Wait' as const,
-          retryAt: selected.error.resetAt,
-          wakeVersion: state.version,
-        };
+        return yield* waitForCapacity(state, options, selected.error.resetAt, wakeVersion);
       }
-      yield* state.set({ kind: 'WaitingForAuthentication' });
-      return { kind: 'Wait' as const, retryAt: null, wakeVersion: state.version };
+      return yield* waitForAuthentication(state, options, wakeVersion);
     });
   }
 

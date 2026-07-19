@@ -43,6 +43,7 @@ const formatStatus = (status: StatusSnapshot): string => {
   const like = status.like.available
     ? 'Like ready'
     : `Like degraded${status.like.lastFailureReason === null ? '' : ` (${status.like.lastFailureReason})`}`;
+  const openOutages = status.outages?.open ?? [];
   return [
     `Spike up · app-server ${status.appServer.healthy ? 'up' : 'down'} · ${status.service.version}`,
     `${status.config.model} · ${status.config.reasoning} · ${status.config.verbosity} · Fast ${status.config.fast ? 'on' : 'off'}`,
@@ -50,6 +51,7 @@ const formatStatus = (status: StatusSnapshot): string => {
     `5h ${limit(status.codex.fiveHour)} · weekly ${limit(status.codex.weekly)}`,
     `Turn ${status.turn.state} · pooled ${String(status.turn.pooledMessages)} · thread ${duration(status.turn.threadAgeSeconds)}`,
     `Approvals ${String(status.approvals.pending)} pending · ${String(status.approvals.displayed)} displayed · ${String(status.approvals.orphaned)} orphaned`,
+    `Outages ${openOutages.length === 0 ? 'none' : openOutages.join(', ')}`,
     `Ack ${relativeTime(status.turn.lastWorkAcknowledgementAt)} · final ${relativeTime(status.turn.lastFinalAt)}`,
     `Mac ${duration(status.system.uptimeSeconds)} up · load ${String(status.system.cpuLoad)} · pressure ${String(status.system.memoryPressurePercent)}% · ${like}`,
   ].join('\n');

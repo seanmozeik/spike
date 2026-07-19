@@ -11,6 +11,7 @@ import { spikePaths } from '../src/paths';
 import { duration, formatStatus, relativeTime } from '../src/status/format';
 import { readRateLimits } from '../src/status/rate-limits';
 import {
+  isStatusSnapshot,
   makeStatusSnapshot,
   parseMemoryPressure,
   type StatusSnapshot,
@@ -42,6 +43,7 @@ const snapshot = (): StatusSnapshot => ({
     lastSuccessAt: null,
   },
   ok: true,
+  outages: { open: [] },
   service: { healthy: true, pid: 123, startedAt: '2026-07-14T18:00:00.000Z', version: '0.0.1' },
   system: { cpuLoad: 1.25, memoryPressurePercent: 42.5, uptimeSeconds: 7200 },
   turn: {
@@ -90,13 +92,31 @@ describe('compact status', () => {
 
   it('renders one compact bubble with every operator signal', () => {
     const output = formatStatus(snapshot());
-    expect(output.split('\n')).toHaveLength(8);
+    expect(output.split('\n')).toHaveLength(9);
     expect(output).toContain('example-model · medium · low · Fast on');
     expect(output).toContain('5h 80% left');
     expect(output).toContain('weekly 65% left');
     expect(output).toContain('Turn running · pooled 2 · thread 1h');
     expect(output).toContain('Approvals 2 pending · 1 displayed · 0 orphaned');
+    expect(output).toContain('Outages none');
     expect(output).toContain('pressure 42.5% · Like degraded (locked)');
+  });
+
+  it('renders a complete pre-outage daemon snapshot during a rolling upgrade', () => {
+    const { outages: _outages, ...legacySnapshot } = snapshot();
+
+    expect(isStatusSnapshot(legacySnapshot)).toBe(true);
+    if (!isStatusSnapshot(legacySnapshot)) {
+      return;
+    }
+
+    expect(formatStatus(legacySnapshot)).toContain('Outages none');
+  });
+
+  it('rejects malformed outage data before compact formatting', () => {
+    expect(isStatusSnapshot({ ...snapshot(), outages: { open: 'CodexAuthentication' } })).toBe(
+      false,
+    );
   });
 
   it('formats past and future operator times without losing reset direction', () => {

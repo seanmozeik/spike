@@ -22,11 +22,20 @@ import { serveDaemon } from '../src/daemon';
 import { SpikeRuntimeError } from '../src/errors';
 import { spikePaths } from '../src/paths';
 import { type MessagesFixture, withMessagesFixture } from './messages-fixture';
+import { outageDeliveryFixture } from './outage-fixture';
 
 const roots: string[] = [];
 const FAKE_CODEX_EXECUTABLE = fileURLToPath(
   new URL('fixtures/fake-codex-app-server.ts', import.meta.url),
 );
+const REPOSITORY_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const CLI_PATH = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+
+interface CliResult {
+  readonly exitCode: number;
+  readonly stderr: string;
+  readonly stdout: string;
+}
 
 const fixtureError = (message: string): SpikeRuntimeError =>
   new SpikeRuntimeError({ cause: null, message, operation: 'test/account-failover-child-death' });
@@ -80,6 +89,21 @@ const boundedDaemonJoin = (fiber: Fiber.Fiber<void, unknown>): Effect.Effect<voi
     ),
   );
 
+const runCli = async (root: string, arguments_: readonly string[]): Promise<CliResult> => {
+  const child = Bun.spawn([process.execPath, 'run', CLI_PATH, ...arguments_], {
+    cwd: REPOSITORY_ROOT,
+    env: { ...process.env, SPIKE_HOME: root },
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
+  const [exitCode, stderr, stdout] = await Promise.all([
+    child.exited,
+    new Response(child.stderr).text(),
+    new Response(child.stdout).text(),
+  ]);
+  return { exitCode, stderr, stdout };
+};
+
 afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { force: true, recursive: true });
@@ -116,11 +140,14 @@ messages_database = ${JSON.stringify(messages.databasePath)}
 
       const fakeBin = path.join(root, 'fake-bin');
       mkdirSync(fakeBin);
+      symlinkSync('/usr/bin/true', path.join(fakeBin, 'launchctl'));
       symlinkSync('/usr/bin/true', path.join(fakeBin, 'osascript'));
       const originalPath = process.env['PATH'];
       process.env['PATH'] = `${fakeBin}:${originalPath ?? ''}`;
       try {
-        const daemon = yield* Effect.forkChild(serveDaemon(paths));
+        const daemon = yield* Effect.forkChild(
+          serveDaemon(paths, { outageDelivery: outageDeliveryFixture }),
+        );
         for (let attempt = 0; attempt < 100 && !existsSync(paths.socket); attempt += 1) {
           yield* Effect.promise(() => Bun.sleep(10));
         }
@@ -151,6 +178,21 @@ messages_database = ${JSON.stringify(messages.databasePath)}
         database.close();
         expect(readFileSync(paths.daemonLog, 'utf8')).toContain(
           'codex app-server connection closed; stopping daemon',
+        );
+
+        const offlineStatus = yield* Effect.promise(() => runCli(root, ['status', '--agent']));
+        expect(offlineStatus).toMatchObject({ exitCode: 0, stderr: '' });
+        expect(offlineStatus.stdout).toContain('"outages":{"open":["CodexRuntime"]}');
+        expect(offlineStatus.stdout).toContain('"running":false');
+
+        const offlineDoctor = yield* Effect.promise(() => runCli(root, ['doctor', '--agent']));
+        expect(offlineDoctor).toMatchObject({ exitCode: 0, stderr: '' });
+        expect(offlineDoctor.stdout).toContain(
+          '{"detail":"CodexRuntime","name":"outages","state":"fail"}',
+        );
+        expect(offlineDoctor.stdout).toContain('"healthy":false');
+        expect(`${offlineDoctor.stdout}${offlineStatus.stdout}`).not.toContain(
+          'Spike’s Codex app-server stopped unexpectedly',
         );
       } finally {
         if (originalPath === undefined) {

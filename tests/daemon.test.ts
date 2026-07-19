@@ -28,6 +28,7 @@ import {
   type MessagesFixture,
   withMessagesFixture,
 } from './messages-fixture';
+import { outageDeliveryFixture } from './outage-fixture';
 
 const roots: string[] = [];
 const FAKE_CODEX_EXECUTABLE = fileURLToPath(
@@ -193,9 +194,10 @@ it.effect('stops cleanly when the Codex child exits so launchd can restart it', 
       const paths = spikePaths(root);
       yield* ensureRuntimeLayout(paths);
       prepareCodexDaemon(paths, messages.databasePath, '.exit-after-initialize');
+      const blockedDelivery = vi.fn(() => Effect.never);
 
       yield* Effect.raceFirst(
-        serveDaemon(paths),
+        serveDaemon(paths, { outageDelivery: { deliver: blockedDelivery } }),
         Effect.sleep(2000).pipe(
           Effect.flatMap(() =>
             Effect.fail(fixtureError('daemon did not stop after Codex child exit')),
@@ -204,7 +206,23 @@ it.effect('stops cleanly when the Codex child exits so launchd can restart it', 
       );
 
       expect(existsSync(paths.socket)).toBe(false);
+      expect(blockedDelivery).not.toHaveBeenCalled();
       const journal = yield* openJournal(paths.database);
+      expect(
+        journal.database
+          .query<{ kind: string; state: string }, []>(
+            "SELECT kind, state FROM outage_episodes WHERE kind = 'CodexRuntime'",
+          )
+          .get(),
+      ).toEqual({ kind: 'CodexRuntime', state: 'Open' });
+      expect(
+        journal.database
+          .query<{ message_kind: string; state: string }, []>(
+            `SELECT message_kind, state FROM outbound_messages
+             WHERE outage_episode_id IS NOT NULL`,
+          )
+          .get(),
+      ).toEqual({ message_kind: 'OutageNotice', state: 'Prepared' });
       journal.close();
       const log = readFileSync(paths.daemonLog, 'utf8');
       expect(log).toContain('codex app-server connection closed; stopping daemon');
@@ -227,7 +245,9 @@ it.effect('quiesces polling and fails an active turn before child-exit shutdown 
       const originalPath = process.env['PATH'];
       process.env['PATH'] = `${fakeBin}:${originalPath ?? ''}`;
       try {
-        const fiber = yield* Effect.forkChild(serveDaemon(paths));
+        const fiber = yield* Effect.forkChild(
+          serveDaemon(paths, { outageDelivery: outageDeliveryFixture }),
+        );
         for (let attempt = 0; attempt < 50 && !existsSync(paths.socket); attempt += 1) {
           yield* Effect.promise(() => Bun.sleep(10));
         }
@@ -277,7 +297,10 @@ it.effect(
         process.env['PATH'] = `${fakeBin}:${originalPath ?? ''}`;
         try {
           const fiber = yield* Effect.forkChild(
-            serveDaemon(paths, { conversationValidationIntervalMs: 1 }),
+            serveDaemon(paths, {
+              conversationValidationIntervalMs: 1,
+              outageDelivery: outageDeliveryFixture,
+            }),
           );
           for (let attempt = 0; attempt < 50 && !existsSync(paths.socket); attempt += 1) {
             yield* Effect.promise(() => Bun.sleep(10));

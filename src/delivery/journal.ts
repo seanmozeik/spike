@@ -50,9 +50,28 @@ const readChunks = (database: Database, outboundMessageId: string): readonly Del
       text: row.text ?? '',
     }));
 
-const makeBeginAttempt = (database: Database): DeliveryJournal['beginAttempt'] => {
+const makeClaimAttempt = (database: Database): DeliveryJournal['claimAttempt'] => {
   const transaction = database.transaction(
-    (chunkId: OutboundChunkId, frontierRowId: number, startedAt: string): DeliveryAttemptId => {
+    (
+      chunkId: OutboundChunkId,
+      frontierRowId: number,
+      startedAt: string,
+    ): DeliveryAttemptId | null => {
+      const chunk = database
+        .query<{ state: DeliveryChunk['state'] }, [string]>(
+          'SELECT state FROM outbound_chunks WHERE id = ?',
+        )
+        .get(chunkId);
+      const active = database
+        .query<{ id: string }, [string]>(
+          `SELECT id FROM delivery_attempts
+           WHERE outbound_chunk_id = ? AND state IN ('Started','Sent','Unknown')
+           LIMIT 1`,
+        )
+        .get(chunkId);
+      if (chunk?.state !== 'Prepared' || active !== null) {
+        return null;
+      }
       const attemptId = DeliveryAttemptId.make(randomUUID());
       database.run(
         `INSERT INTO delivery_attempts(
@@ -74,8 +93,8 @@ const makeBeginAttempt = (database: Database): DeliveryJournal['beginAttempt'] =
   );
   return (chunkId, frontierRowId, startedAt) =>
     Effect.try({
-      catch: (cause) => journalError('beginAttempt', cause),
-      try: () => transaction(chunkId, frontierRowId, startedAt.toISOString()),
+      catch: (cause) => journalError('claimAttempt', cause),
+      try: () => transaction.immediate(chunkId, frontierRowId, startedAt.toISOString()),
     });
 };
 
@@ -212,7 +231,7 @@ const makeDeliveryJournal = (database: Database): DeliveryJournal => {
     kind,
   }));
   return {
-    beginAttempt: makeBeginAttempt(database),
+    claimAttempt: makeClaimAttempt(database),
     listRecoverable: makeListRecoverable(database),
     markAttemptUnknown: makeMarkAttemptUnknown(database),
     markFailed: makeMarkFailed(database),
@@ -221,6 +240,7 @@ const makeDeliveryJournal = (database: Database): DeliveryJournal => {
     prepareAssistantMessage: prepare.assistant,
     prepareControlMessage: prepare.control,
     prepareFailureNotice: prepare.failure,
+    prepareOutageNotice: prepare.outage,
   };
 };
 

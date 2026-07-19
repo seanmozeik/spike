@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { it } from '@effect/vitest';
-import { Effect, Fiber } from 'effect';
+import { Deferred, Effect, Fiber } from 'effect';
 import { afterEach, expect, vi } from 'vitest';
 
 import type { SpikeConfig } from '../src/app-config';
@@ -84,6 +84,42 @@ it.effect('does not lose an account-add wake before the wait effect starts', () 
   }),
 );
 
+it.effect('does not lose a wake while provider discovery is pending', () =>
+  Effect.gen(function* providerDiscoveryRaceFixture() {
+    const { config, paths } = fixture();
+    yield* ensureRuntimeLayout(paths);
+    const handle = yield* openJournal(paths.database);
+    const journal = makeCodexJournal(handle.database);
+    const readStarted = yield* Deferred.make<boolean>();
+    const releaseRead = yield* Deferred.make<boolean>();
+    let reads = 0;
+    const coordinator = yield* makeAccountRuntimeCoordinator(paths, config, journal, {
+      openProvider: (provider) => Effect.succeed(fakeRuntime(`provider:${provider}`)),
+      readProvider: Effect.gen(function* delayedProviderRead() {
+        reads += 1;
+        if (reads === 1) {
+          yield* Deferred.succeed(readStarted, true);
+          yield* Deferred.await(releaseRead);
+          return null;
+        }
+        return 'test-provider';
+      }),
+    });
+    const acquire = yield* Effect.forkChild(coordinator.acquire);
+
+    yield* Deferred.await(readStarted).pipe(Effect.timeout('2 seconds'));
+    yield* coordinator.wake;
+    yield* Deferred.succeed(releaseRead, true);
+    const runtime = yield* Fiber.join(acquire).pipe(Effect.timeout('2 seconds'));
+
+    expect(runtime.accountId).toBe('provider:test-provider');
+    expect(reads).toBe(2);
+    yield* coordinator.release(runtime);
+    yield* coordinator.close;
+    handle.close();
+  }),
+);
+
 it.effect('serializes concurrent selection and records one durable LRU choice', () =>
   Effect.gen(function* concurrentSelectionFixture() {
     const { config, paths, root } = fixture();
@@ -146,6 +182,8 @@ it.effect('waits durably when all accounts are exhausted and wakes when an accou
     const handle = yield* openJournal(paths.database);
     const journal = makeCodexJournal(handle.database);
     const now = new Date('2026-07-14T12:00:00Z');
+    const capacityNotices: Date[] = [];
+    const capacityWaiting = yield* Deferred.make<Date>();
     yield* journal.recordAccountObservation(
       AccountId.make('alpha'),
       'Capacity',
@@ -155,18 +193,21 @@ it.effect('waits durably when all accounts are exhausted and wakes when an accou
     );
     const coordinator = yield* makeAccountRuntimeCoordinator(paths, config, journal, {
       now: () => now,
+      onWaitingForCapacity: (retryAt) =>
+        Effect.sync(() => {
+          capacityNotices.push(retryAt);
+        }).pipe(Effect.andThen(Deferred.succeed(capacityWaiting, retryAt))),
       openAccount: (account) => Effect.succeed(fakeRuntime(account.id)),
       readProvider: Effect.succeed(null),
     });
     const acquire = yield* Effect.forkChild(coordinator.acquire);
-    const waiting = yield* Effect.repeat(
-      Effect.yieldNow.pipe(Effect.andThen(coordinator.snapshot)),
-      { times: 1000, until: (state) => state.kind === 'WaitingForCapacity' },
-    );
+    yield* Deferred.await(capacityWaiting).pipe(Effect.timeout('2 seconds'));
+    const waiting = yield* coordinator.snapshot;
     expect(waiting).toEqual({
       kind: 'WaitingForCapacity',
       retryAt: new Date('2026-07-14T17:00:00Z'),
     });
+    expect(capacityNotices).toStrictEqual([new Date('2026-07-14T17:00:00Z')]);
 
     yield* coordinator.add('beta', credential(root, 'b'));
     const runtime = yield* Fiber.join(acquire);
@@ -189,7 +230,9 @@ it.effect('records a capacity failure and rotates to the next eligible account',
     yield* addStoredAccount({ accountsDirectory: paths.accounts }, 'beta', credential(root, 'b'));
     const handle = yield* openJournal(paths.database);
     const journal = makeCodexJournal(handle.database);
+    const capacityNotice = vi.fn();
     const coordinator = yield* makeAccountRuntimeCoordinator(paths, config, journal, {
+      onWaitingForCapacity: () => Effect.sync(capacityNotice),
       openAccount: (account) =>
         account.id === 'alpha'
           ? Effect.fail(
@@ -205,6 +248,7 @@ it.effect('records a capacity failure and rotates to the next eligible account',
 
     const runtime = yield* coordinator.acquire;
     expect(runtime.accountId).toBe('beta');
+    expect(capacityNotice).not.toHaveBeenCalled();
     expect(yield* journal.loadAccountObservations).toMatchObject([
       { accountId: 'alpha', mode: 'Capacity' },
       { accountId: 'beta' },
@@ -224,7 +268,9 @@ it.effect('records an authentication failure and rotates to the next eligible ac
     yield* addStoredAccount({ accountsDirectory: paths.accounts }, 'beta', credential(root, 'b'));
     const handle = yield* openJournal(paths.database);
     const journal = makeCodexJournal(handle.database);
+    const authenticationNotice = vi.fn();
     const coordinator = yield* makeAccountRuntimeCoordinator(paths, config, journal, {
+      onWaitingForAuthentication: () => Effect.sync(authenticationNotice),
       openAccount: (account) =>
         account.id === 'alpha'
           ? Effect.fail(
@@ -240,6 +286,7 @@ it.effect('records an authentication failure and rotates to the next eligible ac
 
     const runtime = yield* coordinator.acquire;
     expect(runtime.accountId).toBe('beta');
+    expect(authenticationNotice).not.toHaveBeenCalled();
     expect(yield* journal.loadAccountObservations).toMatchObject([
       { accountId: 'alpha', mode: 'Authentication' },
       { accountId: 'beta' },

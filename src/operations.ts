@@ -24,6 +24,7 @@ import {
 import { spikePaths } from './paths';
 import { inspectApprovalList, isApprovalList, type ApprovalList } from './status/approvals';
 import { isDoctorReport, makeDoctorReport, type DoctorReport } from './status/doctor';
+import { readOpenOutageKinds } from './status/outages';
 import { isStatusSnapshot, type StatusSnapshot } from './status/snapshot';
 
 const LOG_TAIL_LINES = 200;
@@ -33,6 +34,7 @@ const DOCTOR_TIMEOUT_MS = 10_000;
 interface OfflineServiceStatus {
   readonly loaded: boolean;
   readonly ok: true;
+  readonly outages: { readonly open: readonly string[] };
   readonly running: false;
   readonly service: 'spike';
   readonly socket: string;
@@ -95,6 +97,23 @@ const exists = async (target: string): Promise<boolean> => {
   }
 };
 
+const inspectOfflineOutages = async (): Promise<{ readonly open: readonly string[] }> => {
+  if (!(await exists(paths.database))) {
+    return { open: [] };
+  }
+  try {
+    const database = new Database(paths.database, { readonly: true, strict: true });
+    try {
+      return { open: readOpenOutageKinds(database) };
+    } finally {
+      database.close();
+    }
+  } catch {
+    // Older or damaged journals are reported by doctor’s journal check.
+    return { open: [] };
+  }
+};
+
 const startService = (): Promise<ServiceLifecycleResult> => Effect.runPromise(lifecycle.start);
 
 const stopService = (): Promise<ServiceLifecycleResult> => Effect.runPromise(lifecycle.stop);
@@ -118,6 +137,7 @@ const serviceStatus = async (): Promise<ServiceStatusResult> => {
   return {
     loaded: launchd.loaded,
     ok: true,
+    outages: await inspectOfflineOutages(),
     running: false,
     service: 'spike',
     socket: paths.socket,
@@ -138,7 +158,8 @@ const doctor = async (): Promise<DoctorReport> => {
     // Fall through to the offline report when the daemon is absent.
   }
   const helper = path.join(path.dirname(program()), 'spike-like');
-  return makeDoctorReport(paths, { ok: false }, helper, liveOperatorCommands);
+  const outages = await inspectOfflineOutages();
+  return makeDoctorReport(paths, { ok: false, outages }, helper, liveOperatorCommands);
 };
 
 const approvals = async (): Promise<ApprovalList> => {

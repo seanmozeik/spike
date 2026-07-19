@@ -21,6 +21,9 @@ import {
 } from './daemon-account-session';
 import { openJournal, type JournalHandle } from './database';
 import { makeCodexJournal } from './journal/codex-journal';
+import { makeOutageDelivery } from './outage/delivery';
+import { makeOutageJournal } from './outage/journal';
+import { makeOutageService, type OutageDelivery } from './outage/service';
 import type { SpikePaths } from './paths';
 import { readApprovalList } from './status/approvals';
 import { makeDoctorReport } from './status/doctor';
@@ -31,6 +34,7 @@ type DaemonStopReason = 'CodexConnectionClosed' | 'Control';
 interface ServeDaemonOptions extends AccountSessionOptions {
   readonly codex?: boolean;
   readonly logMode?: CodexLogMode;
+  readonly outageDelivery?: OutageDelivery;
 }
 
 const waitForSignal = Effect.callback<DaemonStopReason>((resume) => {
@@ -103,9 +107,16 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
       yield* ensureRuntimeLayout(paths);
       const config = yield* loadSpikeConfig(paths);
       const journal = yield* Effect.acquireRelease(openJournal(paths.database), releaseJournal);
+      const outages = makeOutageService(
+        makeOutageJournal(journal.database),
+        options.outageDelivery ?? makeOutageDelivery(journal.database, config),
+      );
       const coordinator = yield* Effect.acquireRelease(
         makeAccountRuntimeCoordinator(paths, config, makeCodexJournal(journal.database), {
           logMode: options.logMode ?? 'quiet',
+          onAvailable: () => outages.recovered(new Date()).pipe(Effect.asVoid),
+          onWaitingForAuthentication: () => outages.authenticationUnavailable(new Date()),
+          onWaitingForCapacity: (retryAt) => outages.capacityUnavailable(retryAt, new Date()),
         }),
         (resource) => resource.close,
       );
@@ -129,7 +140,16 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
       }
       yield* Effect.raceFirst(
         control,
-        superviseAccounts({ config, coordinator, journal, options, paths, runtimeSlot, startedAt }),
+        superviseAccounts({
+          config,
+          coordinator,
+          journal,
+          options,
+          outages,
+          paths,
+          runtimeSlot,
+          startedAt,
+        }),
       );
     }).pipe(Effect.scoped),
 );

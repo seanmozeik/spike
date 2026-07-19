@@ -224,11 +224,14 @@ it.effect('reconciles an unknown pre-restart attempt without resending', () =>
           new Date('2026-07-18T12:00:00.000Z'),
         );
         const chunk = onlyChunk(prepared);
-        const attemptId = yield* journal.beginAttempt(
+        const attemptId = yield* journal.claimAttempt(
           chunk.id,
           20,
           new Date('2026-07-18T12:00:01.000Z'),
         );
+        if (attemptId === null) {
+          throw new Error('unknown restart attempt was not claimed');
+        }
         yield* journal.markAttemptUnknown(
           attemptId,
           'process exited',
@@ -269,11 +272,14 @@ it.effect('does not resend an unknown attempt when only a pre-frontier match exi
           new Date('2026-07-18T12:00:00.000Z'),
         );
         const chunk = onlyChunk(prepared);
-        const attemptId = yield* journal.beginAttempt(
+        const attemptId = yield* journal.claimAttempt(
           chunk.id,
           20,
           new Date('2026-07-18T12:00:01.000Z'),
         );
+        if (attemptId === null) {
+          throw new Error('pre-frontier attempt was not claimed');
+        }
         yield* journal.markAttemptUnknown(
           attemptId,
           'process exited',

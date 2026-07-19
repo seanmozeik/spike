@@ -9,7 +9,9 @@ import { loadSpikeConfig } from '../app-config';
 import type { CodexRuntime } from '../codex/runtime';
 import type { SpikePaths } from '../paths';
 import { spikeVersion } from '../version';
+import { readOpenOutageKinds } from './outages';
 import { readRateLimits, type RateLimitWindow } from './rate-limits';
+import { isStatusSnapshotShape } from './snapshot-guard';
 
 interface StatusSnapshot {
   readonly account: {
@@ -44,6 +46,8 @@ interface StatusSnapshot {
     readonly lastSuccessAt: string | null;
   };
   readonly ok: true;
+  /** Missing when talking to a daemon that predates durable outage reporting. */
+  readonly outages?: { readonly open: readonly string[] };
   readonly service: {
     readonly healthy: true;
     readonly pid: number;
@@ -170,6 +174,7 @@ const readDatabaseStatus = (
 ): {
   readonly approvals: StatusSnapshot['approvals'];
   readonly like: LikeStatusRow | null;
+  readonly outages: NonNullable<StatusSnapshot['outages']>;
   readonly scheduler: SchedulerStatusRow | null;
 } => ({
   approvals: ((): StatusSnapshot['approvals'] => {
@@ -200,6 +205,7 @@ const readDatabaseStatus = (
          FROM like_status WHERE singleton = 1`,
       )
       .get() ?? null,
+  outages: { open: readOpenOutageKinds(database) },
   scheduler:
     database
       .query<SchedulerStatusRow, []>(
@@ -251,7 +257,7 @@ const makeStatusSnapshot = async (
     configStatus(paths),
     readLiveCodex(runtime),
   ]);
-  const { approvals, like, scheduler } = readDatabaseStatus(database);
+  const { approvals, like, outages, scheduler } = readDatabaseStatus(database);
   const limits = readRateLimits(live.rateLimits);
   const providerActive = runtime?.accountId.startsWith('provider:') === true;
   const effectiveCounts = providerActive ? { configured: 1, eligible: 1 } : counts;
@@ -273,6 +279,7 @@ const makeStatusSnapshot = async (
       lastSuccessAt: like?.last_success_at ?? null,
     },
     ok: true,
+    outages,
     service: { healthy: true, pid: process.pid, startedAt, version: spikeVersion },
     system: {
       cpuLoad: Number((loadavg()[0] ?? 0).toFixed(2)),
@@ -283,11 +290,7 @@ const makeStatusSnapshot = async (
   };
 };
 
-const isStatusSnapshot = (value: unknown): value is StatusSnapshot =>
-  isObject(value) &&
-  value['ok'] === true &&
-  isObject(value['service']) &&
-  isObject(value['appServer']);
+const isStatusSnapshot = (value: unknown): value is StatusSnapshot => isStatusSnapshotShape(value);
 
 export { isStatusSnapshot, makeStatusSnapshot, parseMemoryPressure };
 export type { StatusSnapshot };
