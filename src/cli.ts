@@ -5,6 +5,7 @@ import { CliError, Command } from 'effect/unstable/cli';
 
 import pkg from '../package.json' with { type: 'json' };
 import { makeCliApp } from './cli-commands';
+import { errorMessageChain } from './error-message';
 import { failPayload } from './output';
 
 const JSON_INDENT = 2;
@@ -57,7 +58,7 @@ const handled = program.pipe(
         return;
       }
       const error = boundaryErrorFromCause(cause);
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessageChain(error);
       if (process.argv.includes('--agent')) {
         console.log(JSON.stringify(failPayload(message)));
       } else if (process.argv.includes('--json')) {

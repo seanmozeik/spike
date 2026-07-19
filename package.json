@@ -47,6 +47,7 @@
     "prepublishOnly": "bun scripts/build.ts -- --no-formula",
     "test": "bun --bun vitest run --reporter=minimal",
     "typecheck": "bun scripts/typecheck.ts",
+    "validate:package": "bun scripts/validate-package.ts",
     "format": "oxfmt --write .",
     "lint": "oxlint --format agent --tsconfig tsconfig.oxlint.json ./src ./tests ./scripts",
     "lint:fix": "oxlint --format agent --tsconfig tsconfig.oxlint.json --fix ./src ./tests ./scripts",

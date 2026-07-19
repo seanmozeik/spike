@@ -28,6 +28,29 @@ const hasColumn = (database: Database, table: string, column: string): boolean =
     .all()
     .some(({ name }) => name === column);
 
+const migrateGenerationThreadIdentity = (database: Database): void => {
+  if (
+    !hasColumn(database, 'generations', 'codex_thread_id') ||
+    !hasColumn(database, 'scheduler_state', 'codex_thread_id')
+  ) {
+    return;
+  }
+  database.run(
+    `UPDATE generations AS generation
+     SET codex_thread_id = (
+       SELECT scheduler.codex_thread_id
+       FROM scheduler_state AS scheduler
+       WHERE scheduler.generation_id = generation.id
+     )
+     WHERE generation.codex_thread_id IS NULL
+       AND EXISTS (
+         SELECT 1 FROM scheduler_state AS scheduler
+         WHERE scheduler.generation_id = generation.id
+           AND scheduler.codex_thread_id IS NOT NULL
+       )`,
+  );
+};
+
 const migrateFailureNoticeIdentity = (database: Database): void => {
   database.run('DROP INDEX IF EXISTS outbound_one_final');
   database.run(
@@ -66,6 +89,7 @@ const migrateSchedulerSchema = (database: Database, previousVersion: number): vo
     database.run('ALTER TABLE delivery_attempts ADD COLUMN frontier_rowid INTEGER');
   }
   if (previousVersion > 0 && previousVersion < CANONICAL_GENERATION_THREAD_VERSION) {
+    migrateGenerationThreadIdentity(database);
     database.run('ALTER TABLE scheduler_state DROP COLUMN codex_thread_id');
   }
   if (previousVersion > 0 && previousVersion < BROKEN_GENERATION_STATE_VERSION) {

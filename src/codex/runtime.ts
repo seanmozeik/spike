@@ -38,6 +38,25 @@ const customProvider = async (codexHome: string): Promise<null | string> => {
 const runtimeError = (operation: string, cause: unknown): CodexRuntimeError =>
   new CodexRuntimeError({ cause, message: `Codex ${operation} failed`, operation });
 
+const spawnAppServer = Effect.fn('SpikeCodex.spawnAppServer')(
+  (paths: SpikePaths, config: SpikeConfig, logMode: CodexLogMode) =>
+    Effect.try({
+      catch: (cause) =>
+        new CodexRuntimeError({
+          cause,
+          message: 'failed to spawn Codex app-server',
+          operation: 'spawn',
+        }),
+      try: () =>
+        spawnRpcHandle({
+          codexExecutable: config.codexExecutable,
+          codexHome: config.codexHome,
+          logMode,
+          stderrLog: paths.daemonLog,
+        }),
+    }),
+);
+
 const request = (
   handle: RpcHandle,
   operation: string,
@@ -237,12 +256,7 @@ const openRuntime = Effect.fn('SpikeCodex.open')(function* openRuntime(
     swearing: config.swearing,
     wit: config.wit,
   });
-  const handle = spawnRpcHandle({
-    codexExecutable: config.codexExecutable,
-    codexHome: config.codexHome,
-    logMode,
-    stderrLog: paths.daemonLog,
-  });
+  const handle = yield* spawnAppServer(paths, config, logMode);
   yield* initializeRpc(handle).pipe(Effect.tapError(() => Effect.promise(() => handle.close())));
   return makeCodexRuntime(handle, prompt, accountId, config.workingDirectory);
 });
