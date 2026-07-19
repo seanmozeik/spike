@@ -141,11 +141,6 @@ const launchService = Effect.fn('SpikeLifecycle.launch')(function* launchService
   options: ServiceLifecycleOptions,
 ) {
   yield* requireSuccess(options.commands, ['bootstrap', options.domain, options.launchAgent]);
-  yield* requireSuccess(options.commands, [
-    'kickstart',
-    '-k',
-    `${options.domain}/${options.label}`,
-  ]);
   return {
     label: options.label,
     ok: true,

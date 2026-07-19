@@ -25,5 +25,6 @@ describe('LaunchAgent', () => {
     expect(plist).toContain('/tmp/spike&amp;fixture/codex-home');
     expect(plist).toContain('/tmp/spike&amp;fixture/logs/daemon.log');
     expect(plist).toContain('<key>KeepAlive</key><true/>');
+    expect(plist).toContain('<key>RunAtLoad</key><true/>');
   });
 });

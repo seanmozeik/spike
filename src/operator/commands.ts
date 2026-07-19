@@ -6,7 +6,6 @@ import { runLaunchctl, type ProcessResult } from '../launchd';
 type LaunchctlArguments =
   | readonly ['bootout', string]
   | readonly ['bootstrap', string, string]
-  | readonly ['kickstart', '-k', string]
   | readonly ['print', string];
 
 interface OperatorCommandPort {

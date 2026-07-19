@@ -11,6 +11,8 @@ import {
   type ServiceLifecycle,
 } from '../src/operator/lifecycle';
 
+type TestLaunchctlArguments = LaunchctlArguments | readonly ['kickstart', '-k', string];
+
 const ok = (stdout = ''): ProcessResult => ({
   exitCode: 0,
   signalCode: null,
@@ -27,12 +29,12 @@ const missing = (stderr = 'Could not find service'): ProcessResult => ({
 });
 
 const tracedCommands = (
-  respond: (args: LaunchctlArguments, call: number) => ProcessResult,
+  respond: (args: TestLaunchctlArguments, call: number) => ProcessResult,
 ): {
-  readonly calls: LaunchctlArguments[];
+  readonly calls: TestLaunchctlArguments[];
   readonly commands: Pick<OperatorCommandPort, 'launchctl'>;
 } => {
-  const calls: LaunchctlArguments[] = [];
+  const calls: TestLaunchctlArguments[] = [];
   return {
     calls,
     commands: {
@@ -92,7 +94,6 @@ it.effect('starts through the exact launchctl transition after scheduled unload 
       ['print', 'gui/501/com.mozeik.spike'],
       ['print', 'gui/501/com.mozeik.spike'],
       ['bootstrap', 'gui/501', '/tmp/spike.plist'],
-      ['kickstart', '-k', 'gui/501/com.mozeik.spike'],
     ]);
   }),
 );
@@ -234,8 +235,28 @@ it.effect('restarts through one unload and one prepared activation', () =>
     expect(trace.calls).toStrictEqual([
       ['bootout', 'gui/501/com.mozeik.spike'],
       ['bootstrap', 'gui/501', '/tmp/spike.plist'],
-      ['kickstart', '-k', 'gui/501/com.mozeik.spike'],
     ]);
+  }),
+);
+
+it.effect('uses RunAtLoad bootstrap as the only activation when kickstart would time out', () =>
+  Effect.gen(function* singleActivation() {
+    const trace = tracedCommands((args) => {
+      if (args[0] === 'bootout') {
+        return missing();
+      }
+      if (args[0] === 'kickstart') {
+        return { exitCode: 1, signalCode: 'SIGKILL', stderr: '', stdout: '', timedOut: true };
+      }
+      return ok();
+    });
+
+    expect(yield* lifecycle(trace.commands).restart).toMatchObject({ ok: true, status: 'started' });
+    expect(trace.calls).toStrictEqual([
+      ['bootout', 'gui/501/com.mozeik.spike'],
+      ['bootstrap', 'gui/501', '/tmp/spike.plist'],
+    ]);
+    expect(trace.calls.some(([command]) => command === 'kickstart')).toBe(false);
   }),
 );
 
