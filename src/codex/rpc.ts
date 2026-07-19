@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
 import { CodexRuntimeError } from '../errors';
+import { spikeVersion } from '../version';
 import { makeNotificationRegistry, type NotificationRegistry } from './notification-registry';
 import { routeServerRequest } from './rpc-server-request';
 import type { JsonRpcId, RpcHandle, SpawnRpcOptions } from './rpc-types';
@@ -280,7 +281,7 @@ const initializeRpc = Effect.fn('SpikeCodex.initialize')((handle: RpcHandle) =>
           experimentalApi: true,
           optOutNotificationMethods: ['item/agentMessage/delta'],
         },
-        clientInfo: { name: 'spike_agent', title: 'Spike iMessage Agent', version: '0.0.1' },
+        clientInfo: { name: 'spike_agent', title: 'Spike iMessage Agent', version: spikeVersion },
       });
       await handle.notify('initialized');
     },

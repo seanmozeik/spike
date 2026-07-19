@@ -9,7 +9,6 @@
         "@effect/platform-bun": "4.0.0-beta.98",
         "effect": "4.0.0-beta.98",
         "smol-toml": "^1.6.1",
-        "typescript": "^7.0.2",
       },
       "devDependencies": {
         "@effect/tsgo": "^0.18.1",
@@ -18,6 +17,7 @@
         "oxfmt": "^0.58.0",
         "oxlint": "^1.73.0",
         "oxlint-tsgolint": "^0.24.0",
+        "typescript": "^7.0.2",
         "vitest": "4.1.10",
       },
     },
