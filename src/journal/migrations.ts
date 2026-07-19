@@ -1,4 +1,6 @@
-const SCHEMA_VERSION = 15;
+import { ATTACHMENTS_INBOUND_MESSAGE_INDEX } from './recovery-query';
+
+const SCHEMA_VERSION = 16;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -54,6 +56,7 @@ const migrationStatements = [
     payload_redacted_at TEXT
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS attachments_staged_path ON attachments(staged_path)`,
+  ATTACHMENTS_INBOUND_MESSAGE_INDEX,
   `CREATE TABLE IF NOT EXISTS logical_turns (
     id TEXT PRIMARY KEY,
     generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE RESTRICT,

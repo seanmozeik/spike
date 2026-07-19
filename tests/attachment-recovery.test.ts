@@ -114,7 +114,11 @@ it.effect('restarts after durable Staged persistence without duplicate CAS or as
         });
         expect(yield* restartedJournal.stagePendingAttachments).toBe(0);
         expect(readdirSync(stagingRoot)).toHaveLength(1);
-        const [message] = yield* restartedJournal.listPendingInbound;
+        const { messages } = yield* restartedJournal.listPendingInbound(
+          MessagesRowId.make(0),
+          MessagesRowId.make(1),
+        );
+        const [message] = messages;
         expect(message?.attachments).toHaveLength(1);
         expect(message?.attachments[0]?.path).toBe(stagedPath?.staged_path);
 
@@ -135,7 +139,9 @@ it.effect('restarts after durable Staged persistence without duplicate CAS or as
           attachmentStaging: { sourceRoot, stagingRoot },
         });
         expect(yield* verifiedJournal.stagePendingAttachments).toBe(0);
-        expect(yield* verifiedJournal.listPendingInbound).toStrictEqual([]);
+        expect(
+          yield* verifiedJournal.listPendingInbound(MessagesRowId.make(0), MessagesRowId.make(1)),
+        ).toStrictEqual({ blocked: false, controls: [], messages: [] });
         expect(
           verified.database
             .query<{ count: number }, []>('SELECT COUNT(*) AS count FROM input_batch_messages')

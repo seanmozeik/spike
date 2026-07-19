@@ -6,7 +6,6 @@ import path from 'node:path';
 import { Effect } from 'effect';
 
 import type { ThreadSnapshot } from '../src/codex/reconcile';
-import type { CodexServerRequest, JsonRpcId } from '../src/codex/server-request-registry';
 import { makeConversationPolicy, type ConversationPolicy } from '../src/conversation-policy';
 import type { JournalHandle } from '../src/database';
 import { MessagesDeliveryError } from '../src/delivery/error';
@@ -20,44 +19,18 @@ import { ChatGuid, MessageGuid, MessagesRowId } from '../src/domain/ids';
 import type { ObservedMessage } from '../src/domain/inbound';
 import { makeConversationDiagnostic } from '../src/journal/conversation-diagnostic';
 import type { LikeAcknowledgement } from '../src/like/adapter';
+import type { MessagesInboxHandle } from '../src/messages-inbox';
+import type { OpenMessagesWatcher } from '../src/messages-watcher';
 import { makeSpikeEngine, type SpikeEngine } from '../src/service/engine';
 import { prepareAttachmentOptions } from './engine-attachment-fixture';
+import type {
+  EngineFixture as EngineFixtureShape,
+  EngineFixtureOptions,
+} from './engine-fixture-types';
 import { makeInbox } from './engine-inbox-fixture';
 import { openFixtureJournal } from './engine-journal-fixture';
+import { makeEngineRuntimeControls } from './engine-runtime-controls';
 import { makeRuntimeHarness, type RuntimeTrace, type TurnBehavior } from './fake-codex-runtime';
-
-interface EngineFixture {
-  readonly attachmentInputs: string[][];
-  readonly closeCodexConnection: () => void;
-  readonly conversation: ConversationPolicy;
-  readonly database: Database;
-  readonly engine: SpikeEngine;
-  readonly handle: JournalHandle;
-  readonly inputs: string[];
-  readonly likes: string[];
-  readonly push: (...messages: readonly ObservedMessage[]) => void;
-  readonly reads: string[];
-  readonly requestApproval: (request: CodexServerRequest) => void;
-  readonly resolveServerRequest: (id: JsonRpcId) => void;
-  readonly remove: () => void;
-  readonly responses: { readonly id: JsonRpcId; readonly result: unknown }[];
-  readonly resumed: string[];
-  readonly sent: string[];
-  readonly steers: string[];
-  readonly turnsStarted: string[];
-}
-
-interface EngineFixtureOptions {
-  readonly behavior?: TurnBehavior;
-  readonly conversationProbe?: () => Effect.Effect<void, unknown>;
-  readonly conversationValidationIntervalMs?: number;
-  readonly idleFrontier?: number;
-  readonly like?: LikeAcknowledgement;
-  readonly now?: () => Date;
-  readonly prepare?: (database: Database) => Effect.Effect<void, unknown>;
-  readonly preexisting?: readonly ObservedMessage[];
-  readonly snapshot?: ThreadSnapshot;
-}
 
 const CHAT_GUID = ChatGuid.make('any;-;+15555550199');
 
@@ -130,6 +103,11 @@ interface FixtureParts {
   readonly likes: string[];
   readonly queue: ObservedMessage[];
   readonly root: string;
+  readonly scanTrace: {
+    failuresRemaining: number;
+    readonly onScan: MakeFixtureOptions['onInboxScan'];
+    scans: number;
+  };
   readonly sent: string[];
   readonly trace: RuntimeTrace;
 }
@@ -140,12 +118,25 @@ interface MakeFixtureOptions {
   readonly conversationProbe: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs: number | undefined;
   readonly idleFrontier: number | undefined;
+  readonly inbox: MessagesInboxHandle | undefined;
+  readonly inboxScanFailures: number;
   readonly like: LikeAcknowledgement | undefined;
+  readonly messagesDebounceMs: number | undefined;
   readonly now: () => Date;
+  readonly onInboxScan: ((scan: number) => Effect.Effect<void>) | undefined;
+  readonly phaseRetryMs: number | undefined;
   readonly prepare: ((database: Database) => Effect.Effect<void, unknown>) | undefined;
   readonly preexisting: readonly ObservedMessage[] | undefined;
+  readonly reconcileIntervalMs: number | undefined;
   readonly snapshot: ThreadSnapshot | undefined;
+  readonly watchMessages: OpenMessagesWatcher | undefined;
 }
+
+const makeScanTrace = (options: MakeFixtureOptions): FixtureParts['scanTrace'] => ({
+  failuresRemaining: options.inboxScanFailures,
+  onScan: options.onInboxScan,
+  scans: 0,
+});
 
 const buildFixture = ({
   conversation,
@@ -154,19 +145,22 @@ const buildFixture = ({
   likes,
   queue,
   root,
+  scanTrace,
   sent,
   trace,
-}: FixtureParts): EngineFixture => ({
+}: FixtureParts): EngineFixtureShape => ({
   attachmentInputs: trace.attachmentInputs,
-  closeCodexConnection: (): void => {
-    for (const listener of trace.closeListeners) {
-      listener();
-    }
-  },
+  attachmentStagingRoot: path.join(root, 'staged-attachments'),
   conversation,
   database: handle.database,
   engine,
+  failNextInboxScans: (count = 1): void => {
+    scanTrace.failuresRemaining += count;
+  },
   handle,
+  get inboxScans(): number {
+    return scanTrace.scans;
+  },
   inputs: trace.inputs,
   likes,
   push: (...messages): void => {
@@ -177,72 +171,63 @@ const buildFixture = ({
     handle.close();
     rmSync(root, { force: true, recursive: true });
   },
-  requestApproval: (request): void => {
-    for (const listener of trace.requestListeners) {
-      listener(request);
-    }
-  },
-  resolveServerRequest: (id): void => {
-    for (const listener of trace.notificationListeners) {
-      listener({ method: 'serverRequest/resolved', params: { requestId: id } });
-    }
-  },
   responses: trace.responses,
   resumed: trace.resumed,
+  ...makeEngineRuntimeControls(trace),
   sent,
   steers: trace.steers,
   turnsStarted: trace.turnsStarted,
 });
 
-const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
-  beforeOpen,
-  behavior,
-  conversationProbe,
-  conversationValidationIntervalMs,
-  idleFrontier,
-  like,
-  now,
-  prepare,
-  preexisting,
-  snapshot,
-}: MakeFixtureOptions) {
+const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture(
+  options: MakeFixtureOptions,
+) {
   const root = mkdtempSync(path.join(tmpdir(), 'spike-engine-'));
   const attachmentOptions = prepareAttachmentOptions(root);
   const databasePath = path.join(root, 'spike.db');
-  const handle = yield* openFixtureJournal(databasePath, beforeOpen);
+  const handle = yield* openFixtureJournal(databasePath, options.beforeOpen);
   const likes: string[] = [],
     sent: string[] = [];
-  const queue: ObservedMessage[] = [...(preexisting ?? [])];
-  if (prepare !== undefined) {
-    yield* prepare(handle.database);
+  const queue: ObservedMessage[] = [...(options.preexisting ?? [])];
+  const scanTrace = makeScanTrace(options);
+  if (options.prepare !== undefined) {
+    yield* options.prepare(handle.database);
   }
-  const threadSnapshot = snapshot ?? { id: 'thread-1', turns: [] };
-  const { runtime, trace } = makeRuntimeHarness(behavior, threadSnapshot);
+  const threadSnapshot = options.snapshot ?? { id: 'thread-1', turns: [] };
+  const { runtime, trace } = makeRuntimeHarness(options.behavior, threadSnapshot);
   const conversation = yield* makeConversationPolicy({
     diagnostic: makeConversationDiagnostic(handle.database),
-    initialValidationAt: now(),
-    probe: conversationProbe,
-    ...(conversationValidationIntervalMs === undefined
+    initialValidationAt: options.now(),
+    probe: options.conversationProbe,
+    ...(options.conversationValidationIntervalMs === undefined
       ? {}
-      : { validationIntervalMs: conversationValidationIntervalMs }),
+      : { validationIntervalMs: options.conversationValidationIntervalMs }),
   });
   const engine = yield* makeSpikeEngine({
-    ...(behavior.approvalExpiryMs === undefined
+    ...(options.behavior.approvalExpiryMs === undefined
       ? {}
-      : { approvalExpiryMs: behavior.approvalExpiryMs }),
+      : { approvalExpiryMs: options.behavior.approvalExpiryMs }),
     ...attachmentOptions,
     chatGuid: CHAT_GUID,
     conversation,
     database: handle.database,
-    delivery: makeTestDelivery(handle, sent, behavior, conversation),
+    delivery: makeTestDelivery(handle, sent, options.behavior, conversation),
     handle: '+15555550199',
-    inbox: makeInbox(queue, idleFrontier),
-    like: like ?? makeLike(likes),
-    now,
-    renderStatus: () => renderStatus(behavior),
+    inbox: options.inbox ?? makeInbox(queue, options.idleFrontier, scanTrace),
+    like: options.like ?? makeLike(likes),
+    ...(options.messagesDebounceMs === undefined
+      ? {}
+      : { messagesDebounceMs: options.messagesDebounceMs }),
+    now: options.now,
+    ...(options.phaseRetryMs === undefined ? {} : { phaseRetryMs: options.phaseRetryMs }),
+    ...(options.reconcileIntervalMs === undefined
+      ? {}
+      : { reconcileIntervalMs: options.reconcileIntervalMs }),
+    renderStatus: () => renderStatus(options.behavior),
     runtime,
+    ...(options.watchMessages === undefined ? {} : { watchMessages: options.watchMessages }),
   });
-  return buildFixture({ conversation, engine, handle, likes, queue, root, sent, trace });
+  return buildFixture({ conversation, engine, handle, likes, queue, root, scanTrace, sent, trace });
 });
 
 const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeof makeFixture> =>
@@ -252,11 +237,18 @@ const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeo
     conversationProbe: options.conversationProbe ?? ((): Effect.Effect<void> => Effect.void),
     conversationValidationIntervalMs: options.conversationValidationIntervalMs,
     idleFrontier: options.idleFrontier,
+    inbox: options.inbox,
+    inboxScanFailures: options.inboxScanFailures ?? 0,
     like: options.like,
+    messagesDebounceMs: options.messagesDebounceMs,
     now: options.now ?? ((): Date => new Date('2026-07-14T12:00:00.000Z')),
+    onInboxScan: options.onInboxScan,
+    phaseRetryMs: options.phaseRetryMs,
     preexisting: options.preexisting,
     prepare: options.prepare,
+    reconcileIntervalMs: options.reconcileIntervalMs,
     snapshot: options.snapshot,
+    watchMessages: options.watchMessages,
   });
 
 const makeMigratedEngineFixture = (
@@ -270,11 +262,18 @@ const makeMigratedEngineFixture = (
     conversationProbe: (): Effect.Effect<void> => Effect.void,
     conversationValidationIntervalMs: undefined,
     idleFrontier: undefined,
+    inbox: undefined,
+    inboxScanFailures: 0,
     like: undefined,
+    messagesDebounceMs: undefined,
     now: (): Date => new Date('2026-07-14T12:00:00.000Z'),
+    onInboxScan: undefined,
+    phaseRetryMs: undefined,
     preexisting: undefined,
     prepare: undefined,
+    reconcileIntervalMs: undefined,
     snapshot,
+    watchMessages: undefined,
   });
 
 const settle = (engine: SpikeEngine): Effect.Effect<void, unknown> =>
@@ -285,5 +284,5 @@ const settle = (engine: SpikeEngine): Effect.Effect<void, unknown> =>
   });
 
 export { CHAT_GUID, inbound, makeEngineFixture, makeMigratedEngineFixture, settle };
-export type { EngineFixture };
+export type { EngineFixture } from './engine-fixture-types';
 export type { TurnBehavior } from './fake-codex-runtime';

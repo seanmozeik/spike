@@ -3,7 +3,7 @@ import type { Database } from 'bun:sqlite';
 import type { Effect } from 'effect';
 
 import type { JsonRpcId } from '../codex/server-request-registry';
-import { InboundMessageId } from '../domain/ids';
+import { InboundMessageId, type MessagesRowId } from '../domain/ids';
 import type { JournalTransactionError } from '../errors';
 import { parseApprovalCommand } from './command';
 import { parseRow, type ApprovalRow } from './journal-row';
@@ -15,6 +15,7 @@ type CommandsEffect = Effect.Effect<readonly ApprovalCommand[], JournalTransacti
 type RecordEffect = Effect.Effect<ApprovalRecord | null, JournalTransactionError>;
 type RecordsEffect = Effect.Effect<readonly ApprovalRecord[], JournalTransactionError>;
 type BooleanEffect = Effect.Effect<boolean, JournalTransactionError>;
+type DateEffect = Effect.Effect<Date | null, JournalTransactionError>;
 
 const HOURS_PER_DAY = 24;
 const MINUTES_PER_HOUR = 60;
@@ -45,18 +46,23 @@ const counts = (database: Database, now: Date): CountsEffect =>
     } satisfies ApprovalCounts;
   });
 
-const listCommands = (database: Database): CommandsEffect =>
+const listCommands = (
+  database: Database,
+  after: MessagesRowId,
+  through: MessagesRowId,
+): CommandsEffect =>
   wrap('listApprovalCommands', () =>
     database
-      .query<{ id: string; sent_at: string; text: string }, []>(
+      .query<{ id: string; sent_at: string; text: string }, [number, number]>(
         `SELECT im.id, im.sent_at, im.text FROM inbound_messages im
          WHERE im.text IS NOT NULL
+           AND im.messages_rowid > ? AND im.messages_rowid <= ?
            AND NOT EXISTS (SELECT 1 FROM handled_approval_messages h WHERE h.inbound_message_id = im.id)
            AND NOT EXISTS (SELECT 1 FROM input_batch_messages b WHERE b.inbound_message_id = im.id)
            AND NOT EXISTS (SELECT 1 FROM scheduler_pool_messages p WHERE p.inbound_message_id = im.id)
          ORDER BY im.messages_rowid`,
       )
-      .all()
+      .all(after, through)
       .filter((row) => parseApprovalCommand(row.text) !== null)
       .map((row) => ({
         id: InboundMessageId.make(row.id),
@@ -64,6 +70,18 @@ const listCommands = (database: Database): CommandsEffect =>
         text: row.text,
       })),
   );
+
+const nextExpiryAt = (database: Database): DateEffect =>
+  wrap('nextApprovalExpiry', () => {
+    const row = database
+      .query<{ expires_at: string | null }, []>(
+        "SELECT MIN(expires_at) AS expires_at FROM approval_requests WHERE state = 'Pending'",
+      )
+      .get();
+    return row?.expires_at === null || row?.expires_at === undefined
+      ? null
+      : new Date(row.expires_at);
+  });
 
 const hasRequest = (
   database: Database,
@@ -110,4 +128,4 @@ const nextUndelivered = (database: Database): RecordEffect =>
     return row === null ? null : parseRow(row);
   });
 
-export { counts, hasRequest, listCommands, listRecent, nextUndelivered };
+export { counts, hasRequest, listCommands, listRecent, nextExpiryAt, nextUndelivered };

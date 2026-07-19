@@ -1,3 +1,4 @@
+import type { EngineEventLoopDiagnostics } from '../service/event-loop-diagnostics';
 import type { RateLimitWindow } from './rate-limits';
 
 interface StatusSnapshot {
@@ -31,6 +32,8 @@ interface StatusSnapshot {
     readonly reasoning: string;
     readonly verbosity: string;
   };
+  /** Missing when talking to a daemon that predates event-driven Messages diagnostics. */
+  readonly eventLoop?: EngineEventLoopDiagnostics;
   readonly like: {
     readonly available: boolean;
     readonly degraded: boolean;

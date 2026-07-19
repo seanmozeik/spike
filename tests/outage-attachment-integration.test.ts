@@ -16,6 +16,7 @@ import type { OperatorCommandPort } from '../src/operator/commands';
 import { makeOutageJournal } from '../src/outage/journal';
 import { makeOutageService } from '../src/outage/service';
 import { spikePaths } from '../src/paths';
+import type { EngineEventLoopDiagnostics } from '../src/service/event-loop-diagnostics';
 import { makeDoctorReport } from '../src/status/doctor';
 import { formatStatus } from '../src/status/format';
 import { makeStatusSnapshot } from '../src/status/snapshot';
@@ -38,6 +39,22 @@ const commands: OperatorCommandPort = {
 
 const occurrences = (text: string, value: string): number => text.split(value).length - 1;
 
+const eventLoop: EngineEventLoopDiagnostics = {
+  filesystem: { events: 3, lastEventAt: null, lastWakeAt: null, wakes: 1 },
+  messages: { lastPassAt: null, lastQueryAt: null, passes: 2, queries: 2 },
+  reconciliation: { failures: 0, lastAt: null, lastFailureAt: null, passes: 1 },
+  startedAt: '2026-07-19T12:00:00.000Z',
+  watcher: {
+    active: true,
+    activeFileWatchers: 3,
+    closed: false,
+    failures: 0,
+    lastFailureAt: null,
+    restartScheduled: false,
+    restarts: 0,
+  },
+};
+
 afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { force: true, recursive: true });
@@ -59,7 +76,7 @@ it.effect('keeps attachment diagnostics separate from Codex outage recovery and 
     yield* outages.authenticationUnavailable(openedAt);
 
     const status = yield* Effect.promise(() =>
-      makeStatusSnapshot(handle.database, paths, openedAt.toISOString(), null),
+      makeStatusSnapshot(handle.database, paths, openedAt.toISOString(), null, eventLoop),
     );
     expect(status.outages?.open).toStrictEqual(['CodexAuthentication']);
     expect(status.attachments).toStrictEqual({
@@ -88,6 +105,12 @@ it.effect('keeps attachment diagnostics separate from Codex outage recovery and 
     expect(serializedSignals).not.toContain(ATTACHMENT_STAGING_EPISODE_KIND);
     expect(serializedSignals).not.toContain(root);
     expect(serializedSignals).not.toContain('could not use any configured Codex account');
+    expect(doctor.checks.find(({ name }) => name === 'Messages event loop')).toStrictEqual({
+      detail:
+        'watching, 1 wakes, 2 queries, 2 passes, 0 reconciliation failures, 0 watcher failures',
+      name: 'Messages event loop',
+      state: 'pass',
+    });
 
     const recoveryAt = new Date(openedAt.getTime() + 1);
     const resolved = yield* outages.recovered(recoveryAt);

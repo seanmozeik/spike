@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
-import type { JsonRpcNotification } from '../codex/rpc';
 import type { CodexServerRequest, JsonRpcId } from '../codex/server-request-registry';
 import { compactError } from '../delivery/service';
 import { approvalOutcome, approvalPrompt } from './format';
 import { makeApprovalJournal, type ApprovalRecord, type CommandResolution } from './journal';
+import { subscribeRuntime } from './manager-subscriptions';
 import type {
   ApprovalContext,
   ApprovalManager as ApprovalManagerShape,
@@ -18,18 +18,6 @@ const MINUTES_PER_EXPIRY = 10;
 const SECONDS_PER_MINUTE = 60;
 const MILLISECONDS_PER_SECOND = 1000;
 const DEFAULT_EXPIRY_MS = MINUTES_PER_EXPIRY * SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND;
-
-const resolvedRequestId = (notification: JsonRpcNotification): JsonRpcId | null => {
-  if (notification.method !== 'serverRequest/resolved') {
-    return null;
-  }
-  const { params } = notification;
-  if (typeof params !== 'object' || params === null || !('requestId' in params)) {
-    return null;
-  }
-  const { requestId } = params;
-  return typeof requestId === 'number' || typeof requestId === 'string' ? requestId : null;
-};
 
 const deliverControl = (
   context: ApprovalContext,
@@ -188,7 +176,7 @@ const pollUnlocked = Effect.fn('SpikeApproval.poll')(function* pollApprovals(
   context: ApprovalContext,
 ) {
   if (context.isClosed()) {
-    return;
+    return { nextExpiryAt: null };
   }
   while (context.pendingEvents.length > 0) {
     const [event] = context.pendingEvents;
@@ -207,29 +195,28 @@ const pollUnlocked = Effect.fn('SpikeApproval.poll')(function* pollApprovals(
   for (const record of yield* context.journal.expireDue(context.options.now())) {
     yield* respondAndDeliver(context, record);
   }
-  for (const command of yield* context.journal.listCommands) {
+  yield* deliverNext(context);
+  return { nextExpiryAt: yield* context.journal.nextExpiryAt };
+});
+
+const pollCommandsUnlocked = Effect.fn('SpikeApproval.pollCommands')(function* pollApprovalCommands(
+  context: ApprovalContext,
+  after: Parameters<ApprovalManagerShape['pollCommands']>[0],
+  through: Parameters<ApprovalManagerShape['pollCommands']>[1],
+) {
+  if (context.isClosed()) {
+    return 0;
+  }
+  const commands = yield* context.journal.listCommands(after, through);
+  for (const command of commands) {
     yield* resolveControl(
       context,
       yield* context.journal.resolveCommand(command, context.options.now()),
     );
   }
   yield* deliverNext(context);
+  return commands.length;
 });
-
-const subscribeRuntime = (context: ApprovalContext): readonly (() => void)[] => [
-  context.options.runtime.addServerRequestListener((request) => {
-    context.pendingEvents.push({ kind: 'Request', request });
-  }),
-  context.options.runtime.addNotificationListener((notification) => {
-    const id = resolvedRequestId(notification);
-    if (id !== null) {
-      context.pendingEvents.push({ id, kind: 'Resolved' });
-    }
-  }),
-  context.options.runtime.addConnectionCloseListener(() => {
-    context.pendingEvents.push({ kind: 'ConnectionClosed' });
-  }),
-];
 
 const closeApprovalManager = (
   context: ApprovalContext,
@@ -292,6 +279,8 @@ const makeApprovalManager = Effect.fn('SpikeApproval.make')(function* makeApprov
     connectionId: context.connectionId,
     journal: context.journal,
     poll: pollUnlocked(context),
+    pollCommands: (after, through): ReturnType<ApprovalManagerShape['pollCommands']> =>
+      pollCommandsUnlocked(context, after, through),
   } satisfies ApprovalManagerShape;
 });
 

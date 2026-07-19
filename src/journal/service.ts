@@ -262,7 +262,7 @@ const makeJournal = (
     initializeInboxCursor: makeInitializeInboxCursor(database),
     listInbound: Effect.sync(() => readInbound(database)),
     listPendingControls: makeListPendingControls(database)(),
-    listPendingInbound: makeListPendingInbound(database)(),
+    listPendingInbound: makeListPendingInbound(database),
     redactTerminalPayloads: (cutoff, redactedAt) =>
       Effect.try({
         catch: (cause) => journalTransactionError('redactTerminalPayloads', REDACTION_ERROR, cause),

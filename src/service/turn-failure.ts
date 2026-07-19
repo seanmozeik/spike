@@ -76,6 +76,7 @@ const registerSuccessorFailure = (
       kind: 'Failure',
       sourceId: sourceId(state, identity),
     });
+    context.wakes.signal('Recovery');
   }
 };
 
@@ -210,6 +211,7 @@ const failTurn = Effect.fn('SpikeEngine.failTurn')(function* failTurn(
           kind: 'Failure',
           sourceId: sourceId(state, identity),
         });
+        context.wakes.signal('Recovery');
       }
       yield* drainTurnTerminals(context);
     }),
@@ -255,6 +257,7 @@ const completeTurn = Effect.fn('SpikeEngine.completeTurn')(function* completeTur
           kind: 'Completion',
           sourceId: sourceId(state, identity),
         });
+        context.wakes.signal('Recovery');
       }
       yield* drainTurnTerminals(context);
     }),

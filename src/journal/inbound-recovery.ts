@@ -4,13 +4,10 @@ import { Effect } from 'effect';
 
 import type { StagedImageAttachment } from '../attachments/model';
 import { parseControlCommand } from '../domain/control-command';
-import { InboundMessageId } from '../domain/ids';
+import { InboundMessageId, type MessagesRowId } from '../domain/ids';
 import { JournalTransactionError } from '../errors';
-import {
-  attachmentInputTextSql,
-  readStagedImages,
-  renderPersistedInputText,
-} from './attachment-input';
+import { readStagedImages, renderPersistedInputText } from './attachment-input';
+import { PENDING_INBOUND_QUERY } from './recovery-query';
 
 interface PendingInboundMessage {
   readonly acknowledgementText: null | string;
@@ -18,6 +15,12 @@ interface PendingInboundMessage {
   readonly id: InboundMessageId;
   readonly receivedAt: Date;
   readonly text: string;
+}
+
+interface PendingInboundScan {
+  readonly blocked: boolean;
+  readonly controls: readonly PendingInboundMessage[];
+  readonly messages: readonly PendingInboundMessage[];
 }
 
 interface PendingInboundRow {
@@ -36,30 +39,12 @@ const toTrustedControlMessage = (row: PendingInboundRow): PendingInboundMessage 
   text: row.text ?? '',
 });
 
-const PENDING_INBOUND_PREDICATE = `NOT EXISTS (
-  SELECT 1 FROM input_batch_messages ibm WHERE ibm.inbound_message_id = im.id
-) AND NOT EXISTS (
-  SELECT 1 FROM scheduler_pool_messages spm WHERE spm.inbound_message_id = im.id
-) AND NOT EXISTS (
-  SELECT 1 FROM handled_control_messages hcm WHERE hcm.inbound_message_id = im.id
-) AND NOT EXISTS (
-  SELECT 1 FROM handled_approval_messages ham WHERE ham.inbound_message_id = im.id
-)`;
-
-const readPendingInboundRows = (database: Database): readonly PendingInboundRow[] =>
-  database
-    .query<PendingInboundRow, []>(
-      `SELECT im.id, im.text, im.observed_at,
-              MAX(CASE WHEN a.state = 'Observed' THEN 1 ELSE 0 END)
-                AS has_observed_attachment,
-              ${attachmentInputTextSql} AS attachment_text
-       FROM inbound_messages im
-       LEFT JOIN attachments a ON a.inbound_message_id = im.id
-       WHERE ${PENDING_INBOUND_PREDICATE}
-       GROUP BY im.id, im.text, im.observed_at, im.messages_rowid
-       ORDER BY im.messages_rowid`,
-    )
-    .all();
+const readPendingInboundRows = (
+  database: Database,
+  after: MessagesRowId,
+  through: MessagesRowId,
+): readonly PendingInboundRow[] =>
+  database.query<PendingInboundRow, [number, number]>(PENDING_INBOUND_QUERY).all(after, through);
 
 const toOrdinaryMessage = (database: Database, row: PendingInboundRow): PendingInboundMessage => ({
   acknowledgementText: row.text,
@@ -72,12 +57,15 @@ const toOrdinaryMessage = (database: Database, row: PendingInboundRow): PendingI
 const dispatchableMessages = (
   database: Database,
   rows: readonly PendingInboundRow[],
-): readonly PendingInboundMessage[] => {
+): PendingInboundScan => {
+  const controls: PendingInboundMessage[] = [];
   const messages: PendingInboundMessage[] = [];
   let ordinaryBlocked = false;
   for (const row of rows) {
     if (parseControlCommand(row.text) !== null) {
-      messages.push(toTrustedControlMessage(row));
+      const control = toTrustedControlMessage(row);
+      controls.push(control);
+      messages.push(control);
     } else if (!ordinaryBlocked && row.has_observed_attachment > 0) {
       ordinaryBlocked = true;
     } else if (!ordinaryBlocked) {
@@ -87,12 +75,15 @@ const dispatchableMessages = (
       }
     }
   }
-  return messages;
+  return { blocked: ordinaryBlocked, controls, messages };
 };
 
 const makeListPendingInbound =
   (database: Database) =>
-  (): Effect.Effect<readonly PendingInboundMessage[], JournalTransactionError> =>
+  (
+    after: MessagesRowId,
+    through: MessagesRowId,
+  ): Effect.Effect<PendingInboundScan, JournalTransactionError> =>
     Effect.try({
       catch: (cause) =>
         new JournalTransactionError({
@@ -100,8 +91,8 @@ const makeListPendingInbound =
           message: 'failed to load unassigned inbound messages',
           transaction: 'listPendingInbound',
         }),
-      try: () => dispatchableMessages(database, readPendingInboundRows(database)),
+      try: () => dispatchableMessages(database, readPendingInboundRows(database, after, through)),
     });
 
 export { makeListPendingInbound };
-export type { PendingInboundMessage };
+export type { PendingInboundMessage, PendingInboundScan };

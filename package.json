@@ -40,6 +40,7 @@
     "access": "public"
   },
   "scripts": {
+    "benchmark:recovery": "bun scripts/benchmark-recovery-query.ts",
     "build": "bun scripts/build.ts",
     "check": "bun run format && bun run lint:fix && bun run typecheck",
     "dev": "bun run src/cli.ts",

@@ -98,6 +98,12 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
         .all()
         .map(({ name }) => name),
     ).toEqual(expect.arrayContaining(['mode', 'selected_at']));
+    expect(
+      journal.database
+        .query<{ name: string }, []>("PRAGMA index_list('attachments')")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(['attachments_staged_path', 'attachments_inbound_message']));
     for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
       expect(existsSync(file)).toBe(true);
       expect(mode(file)).toBe('600');

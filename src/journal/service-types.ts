@@ -6,7 +6,7 @@ import type { ObservedMessage } from '../domain/inbound';
 import type { JournalTransactionError } from '../errors';
 import type { AttachmentStagingOptions } from './attachment-staging';
 import type { PendingControl } from './control-recovery';
-import type { PendingInboundMessage } from './inbound-recovery';
+import type { PendingInboundScan } from './inbound-recovery';
 
 interface InboxCursor {
   readonly chatGuid: string;
@@ -42,10 +42,10 @@ interface Journal {
   ) => Effect.Effect<void, JournalTransactionError>;
   readonly listInbound: Effect.Effect<readonly PersistedInboundMessage[]>;
   readonly listPendingControls: Effect.Effect<readonly PendingControl[], JournalTransactionError>;
-  readonly listPendingInbound: Effect.Effect<
-    readonly PendingInboundMessage[],
-    JournalTransactionError
-  >;
+  readonly listPendingInbound: (
+    after: MessagesRowId,
+    through: MessagesRowId,
+  ) => Effect.Effect<PendingInboundScan, JournalTransactionError>;
   readonly redactTerminalPayloads: (
     cutoff: Date,
     redactedAt: Date,

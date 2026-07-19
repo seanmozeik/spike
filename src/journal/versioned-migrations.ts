@@ -5,6 +5,7 @@ import {
   ensureInputBatchIdentityIndexes,
   migrateInputBatchIdentity,
 } from './input-batch-migration';
+import { ATTACHMENTS_INBOUND_MESSAGE_INDEX } from './recovery-query';
 
 const DELIVERY_FRONTIER_VERSION = 5;
 const CANONICAL_GENERATION_THREAD_VERSION = 7;
@@ -15,6 +16,7 @@ const INPUT_BATCH_IDENTITY_VERSION = 12;
 const FAILURE_NOTICE_IDENTITY_VERSION = 13;
 const ACCOUNT_SELECTION_VERSION = 14;
 const ATTACHMENT_STAGING_VERSION = 15;
+const RECOVERY_QUERY_INDEX_VERSION = 16;
 
 const hasColumn = (database: Database, table: string, column: string): boolean =>
   database
@@ -145,6 +147,13 @@ const migrateAttachmentStaging = (database: Database, previousVersion: number): 
   reconcileClaimedObservedAttachments(database);
 };
 
+const migrateRecoveryQueryIndexes = (database: Database, previousVersion: number): void => {
+  if (previousVersion <= 0 || previousVersion >= RECOVERY_QUERY_INDEX_VERSION) {
+    return;
+  }
+  database.run(ATTACHMENTS_INBOUND_MESSAGE_INDEX);
+};
+
 const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
   migrateInitialSchema(database, previousVersion);
   migrateSchedulerSchema(database, previousVersion);
@@ -153,6 +162,7 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   migrateIdentitySchema(database, previousVersion);
   migrateAccountSelection(database, previousVersion);
   migrateAttachmentStaging(database, previousVersion);
+  migrateRecoveryQueryIndexes(database, previousVersion);
 };
 
 export { applyVersionedMigrations };

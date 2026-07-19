@@ -26,7 +26,7 @@ afterEach(() => {
   }
 });
 
-it.effect('migrates v13 through account v14 and attachment v15 explicitly', () =>
+it.effect('migrates a real v13 journal through account v14, attachment v15, and recovery v16', () =>
   Effect.gen(function* migrateAttachmentState() {
     const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-v13-'));
     roots.push(root);
@@ -44,7 +44,13 @@ it.effect('migrates v13 through account v14 and attachment v15 explicitly', () =
       migrated.database
         .query<{ version: number }, []>('SELECT MAX(version) AS version FROM schema_meta')
         .get()?.version,
-    ).toBe(15);
+    ).toBe(16);
+    expect(
+      migrated.database
+        .query<{ name: string }, []>("PRAGMA index_list('attachments')")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(['attachments_staged_path', 'attachments_inbound_message']));
     expect(
       migrated.database
         .query<{ mode: string; selected_at: null | string }, []>(
@@ -141,7 +147,7 @@ it.effect('migrates v13 through account v14 and attachment v15 explicitly', () =
   }),
 );
 
-it.effect('migrates v14 attachment state to v15 without replaying account selection', () =>
+it.effect('migrates a real v14 attachment journal through v15 and v16', () =>
   Effect.gen(function* migrateVersionFourteen() {
     const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-v14-'));
     roots.push(root);
@@ -157,7 +163,7 @@ it.effect('migrates v14 attachment state to v15 without replaying account select
       migrated.database
         .query<{ version: number }, []>('SELECT MAX(version) AS version FROM schema_meta')
         .get()?.version,
-    ).toBe(15);
+    ).toBe(16);
     expect(
       migrated.database
         .query<{ name: string }, []>('PRAGMA table_info(account_observations)')
@@ -184,6 +190,12 @@ it.effect('migrates v14 attachment state to v15 without replaying account select
         )
         .all(),
     ).toStrictEqual([{ ordinal: 0 }, { ordinal: 1 }]);
+    expect(
+      migrated.database
+        .query<{ name: string }, []>("PRAGMA index_list('attachments')")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(['attachments_staged_path', 'attachments_inbound_message']));
     migrated.close();
   }),
 );

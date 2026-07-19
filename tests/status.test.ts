@@ -12,6 +12,7 @@ import {
   makeAttachmentDiagnostic,
 } from '../src/journal/attachment-diagnostic';
 import { spikePaths } from '../src/paths';
+import type { EngineEventLoopDiagnostics } from '../src/service/event-loop-diagnostics';
 import { duration, formatStatus, relativeTime } from '../src/status/format';
 import { readRateLimits } from '../src/status/rate-limits';
 import {
@@ -65,6 +66,37 @@ const staleSnapshot = (): unknown => {
   delete stale['attachments'];
   return stale;
 };
+
+const eventLoopDiagnostics = (): EngineEventLoopDiagnostics => ({
+  filesystem: {
+    events: 12,
+    lastEventAt: '2026-07-19T12:00:00.000Z',
+    lastWakeAt: '2026-07-19T12:00:00.005Z',
+    wakes: 4,
+  },
+  messages: {
+    lastPassAt: '2026-07-19T12:00:00.006Z',
+    lastQueryAt: '2026-07-19T12:00:00.006Z',
+    passes: 5,
+    queries: 5,
+  },
+  reconciliation: {
+    failures: 0,
+    lastAt: '2026-07-19T11:59:00.000Z',
+    lastFailureAt: null,
+    passes: 2,
+  },
+  startedAt: '2026-07-19T10:00:00.000Z',
+  watcher: {
+    active: true,
+    activeFileWatchers: 3,
+    closed: false,
+    failures: 0,
+    lastFailureAt: null,
+    restartScheduled: false,
+    restarts: 0,
+  },
+});
 
 describe('compact status', () => {
   it('normalizes the current five-hour and weekly rate-limit response', () => {
@@ -154,6 +186,22 @@ describe('compact status', () => {
 
   it('rejects malformed attachment data before compact formatting', () => {
     expect(isStatusSnapshot({ ...snapshot(), attachments: null })).toBe(false);
+  });
+
+  it('formats and validates redacted event-loop soak diagnostics', () => {
+    const current = { ...snapshot(), eventLoop: eventLoopDiagnostics() };
+    expect(isStatusSnapshot(current)).toBe(true);
+    const output = formatStatus(current);
+    expect(output).toContain('Messages event loop · 4 wakes · 5 queries · 0 reconcile failures');
+    const serialized = JSON.stringify(current.eventLoop);
+    expect(serialized).not.toContain('chat.db');
+    expect(serialized).not.toContain('/Users/');
+    expect(
+      isStatusSnapshot({
+        ...current,
+        eventLoop: { ...current.eventLoop, messages: { passes: 1, queries: 'twice' } },
+      }),
+    ).toBe(false);
   });
 
   it('formats past and future operator times without losing reset direction', () => {

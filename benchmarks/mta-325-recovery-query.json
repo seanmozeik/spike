@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-19T17:05:00+01:00",
+  "environment": { "architecture": "arm64", "bun": "1.3.14", "macOS": "26.5.2" },
+  "fixture": { "attachments": 150000, "messages": 50000, "queryPasses": 100 },
+  "results": { "boundedMs": 0.96, "improvement": 1502.09, "legacyMs": 1446.89 }
+}

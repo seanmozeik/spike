@@ -38,6 +38,8 @@ const insertAttachment = (
 
 const downgradeAttachmentSchema = (database: Database): void => {
   database.run('PRAGMA foreign_keys = ON');
+  database.run('DROP INDEX IF EXISTS attachments_inbound_message');
+  database.run('DROP INDEX IF EXISTS attachments_staged_path');
   database.run('ALTER TABLE attachments DROP COLUMN ordinal');
   database.run('ALTER TABLE attachments DROP COLUMN failure_code');
 };

@@ -59,6 +59,12 @@ const formatStatus = (status: StatusSnapshot): string => {
   if (attachments !== undefined && !attachments.available && attachments.diagnostic !== null) {
     lines.push(attachments.diagnostic);
   }
+  const loop = status.eventLoop;
+  if (loop !== undefined) {
+    lines.push(
+      `Messages event loop · ${String(loop.filesystem.wakes)} wakes · ${String(loop.messages.queries)} queries · ${String(loop.reconciliation.failures)} reconcile failures`,
+    );
+  }
   return lines.join('\n');
 };
 

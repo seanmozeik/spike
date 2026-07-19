@@ -1,8 +1,9 @@
 import type { Database } from 'bun:sqlite';
 
 import { it } from '@effect/vitest';
-import { Effect } from 'effect';
-import { expect } from 'vitest';
+import { Effect, Fiber } from 'effect';
+import { TestClock } from 'effect/testing';
+import { expect, vi } from 'vitest';
 
 import { makeDeliveryJournal } from '../src/delivery/journal';
 import { MessageGuid, MessagesRowId } from '../src/domain/ids';
@@ -27,6 +28,9 @@ const inbound = (rowId: number, text: string): ObservedMessage => ({
 
 const countRows = (database: Database, table: string): number =>
   database.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count ?? 0;
+
+const waitFor = (assertion: () => void): Effect.Effect<void> =>
+  Effect.promise(() => vi.waitFor(assertion));
 
 const seedActiveTurnWithPool = (database: Database): void => {
   const now = STARTED_AT.toISOString();
@@ -104,6 +108,53 @@ it.effect(
       yield* fixture.engine.shutdown;
       fixture.remove();
     }),
+);
+
+it.effect('retries startup recovery from the authoritative reconciliation loop', () =>
+  Effect.gen(function* reconcileStartupRecovery() {
+    let now = STARTED_AT;
+    let probes = 0;
+    let valid = false;
+    const fixture = yield* makeEngineFixture({
+      conversationProbe: () => {
+        probes += 1;
+        return valid
+          ? Effect.void
+          : Effect.fail(
+              new ConversationMismatchError({
+                chatGuid: CHAT_GUID,
+                handle: '+15555550199',
+                message: 'startup conversation mismatch',
+              }),
+            );
+      },
+      conversationValidationIntervalMs: 0,
+      now: () => now,
+      prepare: (database) =>
+        makeDeliveryJournal(database).prepareControlMessage(
+          'startup-run-recovery',
+          'recovered by reconciliation',
+          STARTED_AT,
+        ),
+      reconcileIntervalMs: 10,
+    });
+    const run = yield* Effect.forkChild(fixture.engine.run);
+    yield* waitFor(() => {
+      expect(probes).toBeGreaterThanOrEqual(2);
+    });
+    expect(fixture.sent).toStrictEqual([]);
+
+    valid = true;
+    now = new Date(STARTED_AT.getTime() + 10);
+    yield* TestClock.adjust('10 millis');
+    yield* waitFor(() => {
+      expect(fixture.sent).toContain('recovered by reconciliation');
+    });
+
+    yield* fixture.engine.shutdown;
+    yield* Fiber.interrupt(run);
+    fixture.remove();
+  }),
 );
 
 it.effect('keeps a persisted active-turn pool inert until exact startup recovery', () =>

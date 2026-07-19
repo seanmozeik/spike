@@ -1,7 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { Deferred, Effect, Fiber } from 'effect';
+import { Deferred, Effect, Fiber, type Scope } from 'effect';
 
 import type { SpikeConfig } from './app-config';
 import { attachmentRoots } from './attachments/roots';
@@ -19,13 +19,19 @@ import { makeDeliveryService } from './delivery/service';
 import { SpikeRuntimeError } from './errors';
 import { makeConversationDiagnostic } from './journal/conversation-diagnostic';
 import { makeJournal } from './journal/service';
-import { makeDisabledLikeAcknowledgement, makeLikeAcknowledgement } from './like/adapter';
+import {
+  makeDisabledLikeAcknowledgement,
+  makeLikeAcknowledgement,
+  type LikeAcknowledgement,
+} from './like/adapter';
 import { makeLikeJournal } from './like/journal';
 import { makeLikeNativeRunner } from './like/native-runner';
 import { openMessagesInbox, type MessagesInboxHandle } from './messages-inbox';
+import { makeMessagesWatcher } from './messages-watcher';
 import type { OutageService } from './outage/service';
 import type { SpikePaths } from './paths';
 import { makeSpikeEngine, type SpikeEngine } from './service/engine';
+import type { EngineEventLoopDiagnostics } from './service/event-loop-diagnostics';
 import { formatStatus } from './status/format';
 import { makeStatusSnapshot } from './status/snapshot';
 
@@ -38,6 +44,7 @@ interface AccountSessionOptions {
 interface AccountSessionDependencies {
   readonly config: SpikeConfig;
   readonly coordinator: AccountRuntimeCoordinator;
+  readonly diagnosticsSlot: EngineDiagnosticsSlot;
   readonly journal: JournalHandle;
   readonly options: AccountSessionOptions;
   readonly outages: OutageService;
@@ -48,6 +55,20 @@ interface AccountSessionDependencies {
 
 interface RuntimeSlot {
   value: CodexRuntime | null;
+}
+
+interface EngineDiagnosticsSlot {
+  read: (() => EngineEventLoopDiagnostics) | null;
+}
+
+interface AcquireEngineContext {
+  readonly config: SpikeConfig;
+  readonly diagnosticsSlot: EngineDiagnosticsSlot;
+  readonly journal: JournalHandle;
+  readonly options: AccountSessionOptions;
+  readonly paths: SpikePaths;
+  readonly runtime: CodexRuntime;
+  readonly startedAt: string;
 }
 
 const releaseInbox = (inbox: MessagesInboxHandle): Effect.Effect<void> => Effect.sync(inbox.close);
@@ -94,14 +115,24 @@ const initializeInboxFrontier = (
     }
   }).pipe(Effect.scoped);
 
-const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEngine(
-  paths: SpikePaths,
+const makeConfiguredLikeAcknowledgement = (
   config: SpikeConfig,
   journal: JournalHandle,
-  runtime: CodexRuntime,
-  startedAt: string,
-  options: AccountSessionOptions,
+): LikeAcknowledgement => {
+  const likeJournal = makeLikeJournal(journal.database);
+  return config.likeAcknowledgements
+    ? makeLikeAcknowledgement(likeJournal, makeLikeNativeRunner(config.handle, likeHelperPath()), {
+        report: (error): void => {
+          process.stderr.write(`Like ${String(error)}\n`);
+        },
+      })
+    : makeDisabledLikeAcknowledgement(likeJournal);
+};
+
+const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEngine(
+  context: AcquireEngineContext,
 ) {
+  const { config, diagnosticsSlot, journal, options, paths, runtime, startedAt } = context;
   const inbox = yield* Effect.acquireRelease(acquireInbox(config), releaseInbox);
   const transport = yield* Effect.acquireRelease(acquireTransport(config), releaseTransport);
   const conversation = yield* makeConversationPolicy({
@@ -116,14 +147,6 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
     makeDeliveryJournal(journal.database),
     withConversationAvailability(transport, conversation),
   );
-  const likeJournal = makeLikeJournal(journal.database);
-  const like = config.likeAcknowledgements
-    ? makeLikeAcknowledgement(likeJournal, makeLikeNativeRunner(config.handle, likeHelperPath()), {
-        report: (error): void => {
-          process.stderr.write(`Like ${String(error)}\n`);
-        },
-      })
-    : makeDisabledLikeAcknowledgement(likeJournal);
   return yield* makeSpikeEngine({
     ...attachmentRoots(config.messagesDatabase, paths.attachments),
     chatGuid: config.chatGuid,
@@ -132,15 +155,24 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
     delivery,
     handle: config.handle,
     inbox,
-    like,
+    like: makeConfiguredLikeAcknowledgement(config, journal),
     renderStatus: async () =>
-      formatStatus(await makeStatusSnapshot(journal.database, paths, startedAt, runtime)),
+      formatStatus(
+        await makeStatusSnapshot(
+          journal.database,
+          paths,
+          startedAt,
+          runtime,
+          diagnosticsSlot.read?.() ?? null,
+        ),
+      ),
     runtime,
+    watchMessages: makeMessagesWatcher(config.messagesDatabase),
   });
 });
 
 const runEngine = (engine: SpikeEngine): Effect.Effect<Fiber.Fiber<never>, unknown> =>
-  Effect.gen(function* startPolling() {
+  Effect.gen(function* startEventLoop() {
     yield* engine.redactNow(new Date());
     return yield* Effect.forkChild(engine.run);
   });
@@ -167,28 +199,58 @@ const drainAfterCodexClose = (engine: SpikeEngine, paths: SpikePaths): Effect.Ef
     yield* engine.drain;
   });
 
+const bindRuntimeSlot = (
+  slot: RuntimeSlot,
+  runtime: CodexRuntime,
+): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      slot.value = runtime;
+    }),
+    () =>
+      Effect.sync(() => {
+        slot.value = null;
+      }),
+  );
+
+const bindDiagnosticsSlot = (
+  slot: EngineDiagnosticsSlot,
+  engine: SpikeEngine,
+): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      slot.read = engine.readEventLoopDiagnostics;
+    }),
+    () =>
+      Effect.sync(() => {
+        slot.read = null;
+      }),
+  );
+
 const runAccountSession = (
   dependencies: AccountSessionDependencies,
 ): Effect.Effect<SessionEnd, unknown> =>
   Effect.gen(function* accountSession() {
-    const { config, coordinator, journal, options, outages, paths, runtimeSlot, startedAt } =
-      dependencies;
+    const {
+      config,
+      coordinator,
+      diagnosticsSlot,
+      journal,
+      options,
+      outages,
+      paths,
+      runtimeSlot,
+      startedAt,
+    } = dependencies;
     const runtime = yield* Effect.acquireRelease(coordinator.acquire, (activeRuntime) =>
       coordinator.release(activeRuntime),
     );
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        runtimeSlot.value = runtime;
-      }),
-      () =>
-        Effect.sync(() => {
-          runtimeSlot.value = null;
-        }),
-    );
+    yield* bindRuntimeSlot(runtimeSlot, runtime);
     const engine = yield* Effect.acquireRelease(
-      acquireEngine(paths, config, journal, runtime, startedAt, options),
+      acquireEngine({ config, diagnosticsSlot, journal, options, paths, runtime, startedAt }),
       releaseEngine,
     );
+    yield* bindDiagnosticsSlot(diagnosticsSlot, engine);
     const childStopped = yield* Deferred.make<SessionEnd>();
     yield* Effect.acquireRelease(subscribeRuntimeStop(runtime, childStopped), (unsubscribe) =>
       Effect.sync(unsubscribe),
@@ -222,4 +284,4 @@ const superviseAccounts = Effect.fn('SpikeDaemon.superviseAccounts')(function* s
 });
 
 export { initializeInboxFrontier, likeHelperPath, superviseAccounts };
-export type { AccountSessionOptions, RuntimeSlot };
+export type { AccountSessionOptions, EngineDiagnosticsSlot, RuntimeSlot };

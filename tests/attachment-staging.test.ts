@@ -282,7 +282,9 @@ it.effect('leaves a changing source Observed until a stable read reaches EOF', (
         .get('growing'),
     ).toStrictEqual({ state: 'Observed' });
     expect(readdirSync(fixture.stagingRoot)).toStrictEqual([]);
-    expect(yield* makeListPendingInbound(fixture.database)()).toStrictEqual([]);
+    expect(
+      yield* makeListPendingInbound(fixture.database)(MessagesRowId.make(0), MessagesRowId.make(2)),
+    ).toStrictEqual({ blocked: true, controls: [], messages: [] });
 
     expect(yield* stagePending(fixture)).toBe(1);
     expect(
@@ -293,7 +295,10 @@ it.effect('leaves a changing source Observed until a stable read reaches EOF', (
         .get('growing'),
     ).toStrictEqual({ state: 'Staged', total_bytes: PNG.byteLength + suffix.byteLength });
     expect(
-      (yield* makeListPendingInbound(fixture.database)()).map(({ text }) => text),
+      (yield* makeListPendingInbound(fixture.database)(
+        MessagesRowId.make(0),
+        MessagesRowId.make(2),
+      )).messages.map(({ text }) => text),
     ).toStrictEqual(['growing image\n[Image attachment (image/png)]', 'later ordinary message']);
     fixture.close();
   }),
@@ -582,7 +587,11 @@ it.effect('reconciles the copy-before-journal crash window and assigns before re
     expect(yield* stagePending(fixture)).toBe(1);
     expect(readdirSync(fixture.stagingRoot)).toStrictEqual([orphanName]);
     expect(lstatSync(orphanPath).ino).toBe(orphanInode);
-    const [pending] = yield* makeListPendingInbound(fixture.database)();
+    const { messages } = yield* makeListPendingInbound(fixture.database)(
+      MessagesRowId.make(0),
+      MessagesRowId.make(1),
+    );
+    const [pending] = messages;
     expect(pending?.attachments).toHaveLength(1);
     if (pending === undefined) {
       throw new Error('expected staged inbound message');

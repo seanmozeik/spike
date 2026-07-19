@@ -230,6 +230,7 @@ it.effect(
 it.effect('audits a staged symlink before startup recovery can submit it to Codex', () =>
   Effect.gen(function* startupAudit() {
     const fixture = yield* makeEngineFixture({
+      idleFrontier: 1,
       prepare: (database) =>
         Effect.sync(() => {
           const root = path.dirname(databaseFile(database));

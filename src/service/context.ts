@@ -8,7 +8,7 @@ import type { AttachmentStagingPolicy } from '../attachments/staging-policy';
 import type { CodexRuntime } from '../codex/runtime';
 import type { ConversationPolicy } from '../conversation-policy';
 import { compactError, type DeliveryService } from '../delivery/service';
-import type { ChatGuid } from '../domain/ids';
+import type { ChatGuid, MessagesRowId } from '../domain/ids';
 import {
   SpikeRuntimeError,
   type WaitingForAuthentication,
@@ -19,11 +19,15 @@ import type { SchedulerJournal } from '../journal/scheduler-journal';
 import type { Journal } from '../journal/service';
 import type { LikeAcknowledgement } from '../like/adapter';
 import type { MessagesInboxHandle } from '../messages-inbox';
+import type { OpenMessagesWatcher } from '../messages-watcher';
 import type { SchedulerController } from '../scheduler/controller';
 import type { SchedulerEvent } from '../scheduler/model';
+import type { EventLoopCounters } from './event-loop-diagnostics';
 import type { TurnTerminalQueue } from './turn-terminal-model';
+import type { EngineWakeHub } from './wake';
 
 interface SpikeEngineOptions {
+  readonly accountObservationIntervalMs?: number;
   readonly approvalExpiryMs?: number;
   readonly attachmentSourceRoot: string;
   readonly attachmentStagingRoot: string;
@@ -34,10 +38,14 @@ interface SpikeEngineOptions {
   readonly handle: string;
   readonly inbox: MessagesInboxHandle;
   readonly like: LikeAcknowledgement;
+  readonly messagesDebounceMs?: number;
   readonly now?: () => Date;
-  readonly pollIntervalMs?: number;
+  readonly phaseRetryMs?: number;
+  readonly reconcileIntervalMs?: number;
+  readonly redactionIntervalMs?: number;
   readonly renderStatus: () => Promise<string>;
   readonly runtime: CodexRuntime;
+  readonly watchMessages?: OpenMessagesWatcher;
 }
 
 type AccountFailure = WaitingForAuthentication | WaitingForCapacity;
@@ -55,16 +63,20 @@ interface EngineContext {
   readonly conversationReady: { value: boolean };
   readonly controllerReady: PromiseWithResolvers<SchedulerController>;
   readonly journal: Journal;
+  readonly loopDiagnostics: EventLoopCounters;
   readonly lastAccountObservationAt: { value: Date };
   readonly lastRedactionAt: { value: Date };
   readonly monitors: Map<string, Promise<void>>;
   readonly now: () => Date;
   readonly options: SpikeEngineOptions;
+  readonly pendingScanFloor: { value: MessagesRowId };
   readonly recoveryPending: { value: boolean };
   readonly scheduledFibers: Set<Fiber.Fiber<void, unknown>>;
   readonly schedulingClosed: { value: boolean };
   readonly schedulerJournal: SchedulerJournal;
   readonly turnTerminals: TurnTerminalQueue;
+  readonly watcherDebounceTimers: Set<ReturnType<typeof setTimeout>>;
+  readonly wakes: EngineWakeHub;
 }
 
 const statusError = (cause: unknown): SpikeRuntimeError =>

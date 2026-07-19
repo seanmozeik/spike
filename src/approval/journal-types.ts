@@ -1,7 +1,7 @@
 import type { Effect } from 'effect';
 
 import type { JsonRpcId } from '../codex/server-request-registry';
-import type { ApprovalId, InboundMessageId } from '../domain/ids';
+import type { ApprovalId, InboundMessageId, MessagesRowId } from '../domain/ids';
 import type { JournalTransactionError } from '../errors';
 import type { ApprovalRequest, ApprovalState } from './model';
 
@@ -52,7 +52,10 @@ interface ApprovalJournal {
     connectionId: string,
     rpcRequestId: JsonRpcId,
   ) => Effect.Effect<boolean, JournalTransactionError>;
-  readonly listCommands: Effect.Effect<readonly ApprovalCommand[], JournalTransactionError>;
+  readonly listCommands: (
+    after: MessagesRowId,
+    through: MessagesRowId,
+  ) => Effect.Effect<readonly ApprovalCommand[], JournalTransactionError>;
   readonly listRecent: (
     limit: number,
   ) => Effect.Effect<readonly ApprovalRecord[], JournalTransactionError>;
@@ -83,6 +86,7 @@ interface ApprovalJournal {
     at: Date,
   ) => Effect.Effect<void, JournalTransactionError>;
   readonly nextUndelivered: Effect.Effect<ApprovalRecord | null, JournalTransactionError>;
+  readonly nextExpiryAt: Effect.Effect<Date | null, JournalTransactionError>;
   readonly resolveCommand: (
     command: ApprovalCommand,
     at: Date,

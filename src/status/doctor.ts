@@ -12,6 +12,7 @@ import { classifyServiceInspection } from '../operator/lifecycle';
 import type { SpikePaths } from '../paths';
 import { checkAccessibility } from './accessibility-check';
 import { attachmentStagingCheck } from './attachment-check';
+import { eventLoopCheck } from './event-loop-check';
 import { checkHooks } from './hooks-check';
 
 type CheckState = 'fail' | 'pass' | 'warn';
@@ -274,6 +275,7 @@ const makeDoctorReport = async (
     ),
     approvalCheck(approvals),
     outageCheck(status['outages']),
+    eventLoopCheck(status['eventLoop']),
     accounts,
     ...messages,
     ...accessibility,

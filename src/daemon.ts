@@ -4,7 +4,7 @@ import type { Server } from 'node:net';
 
 import { Deferred, Effect } from 'effect';
 
-import { loadSpikeConfig } from './app-config';
+import { loadSpikeConfig, type SpikeConfig } from './app-config';
 import {
   makeAccountRuntimeCoordinator,
   type AccountRuntimeCoordinator,
@@ -17,13 +17,14 @@ import {
   likeHelperPath,
   superviseAccounts,
   type AccountSessionOptions,
+  type EngineDiagnosticsSlot,
   type RuntimeSlot,
 } from './daemon-account-session';
 import { openJournal, type JournalHandle } from './database';
 import { makeCodexJournal } from './journal/codex-journal';
 import { makeOutageDelivery } from './outage/delivery';
 import { makeOutageJournal } from './outage/journal';
-import { makeOutageService, type OutageDelivery } from './outage/service';
+import { makeOutageService, type OutageDelivery, type OutageService } from './outage/service';
 import type { SpikePaths } from './paths';
 import { readApprovalList } from './status/approvals';
 import { makeDoctorReport } from './status/doctor';
@@ -72,6 +73,7 @@ const releaseServer = (server: Server, paths: SpikePaths): Effect.Effect<void> =
 
 interface ControlServerContext {
   readonly coordinator: AccountRuntimeCoordinator;
+  readonly diagnosticsSlot: EngineDiagnosticsSlot;
   readonly journal: JournalHandle;
   readonly paths: SpikePaths;
   readonly runtimeSlot: RuntimeSlot;
@@ -80,9 +82,15 @@ interface ControlServerContext {
 }
 
 const acquireControlServer = (context: ControlServerContext): Effect.Effect<Server> => {
-  const { coordinator, journal, paths, runtimeSlot, startedAt, stop } = context;
+  const { coordinator, diagnosticsSlot, journal, paths, runtimeSlot, startedAt, stop } = context;
   const status = (): ReturnType<typeof makeStatusSnapshot> =>
-    makeStatusSnapshot(journal.database, paths, startedAt, runtimeSlot.value);
+    makeStatusSnapshot(
+      journal.database,
+      paths,
+      startedAt,
+      runtimeSlot.value,
+      diagnosticsSlot.read?.() ?? null,
+    );
   return Effect.promise(() =>
     startControlSocket(
       paths,
@@ -101,33 +109,59 @@ const acquireControlServer = (context: ControlServerContext): Effect.Effect<Serv
   );
 };
 
+interface DaemonResources {
+  readonly config: SpikeConfig;
+  readonly coordinator: AccountRuntimeCoordinator;
+  readonly journal: JournalHandle;
+  readonly outages: OutageService;
+}
+
+const acquireDaemonResources = Effect.fn('SpikeDaemon.acquireResources')(
+  function* acquireDaemonResources(paths: SpikePaths, options: ServeDaemonOptions) {
+    const config = yield* loadSpikeConfig(paths);
+    const journal = yield* Effect.acquireRelease(openJournal(paths.database), releaseJournal);
+    const outages = makeOutageService(
+      makeOutageJournal(journal.database),
+      options.outageDelivery ?? makeOutageDelivery(journal.database, config),
+    );
+    const coordinator = yield* Effect.acquireRelease(
+      makeAccountRuntimeCoordinator(paths, config, makeCodexJournal(journal.database), {
+        logMode: options.logMode ?? 'quiet',
+        onAvailable: () => outages.recovered(new Date()).pipe(Effect.asVoid),
+        onWaitingForAuthentication: () => outages.authenticationUnavailable(new Date()),
+        onWaitingForCapacity: (retryAt) => outages.capacityUnavailable(retryAt, new Date()),
+      }),
+      (resource) => resource.close,
+    );
+    if (options.codex !== false) {
+      yield* initializeInboxFrontier(config, journal);
+    }
+    return { config, coordinator, journal, outages } satisfies DaemonResources;
+  },
+);
+
 const serveDaemon = Effect.fn('SpikeDaemon.serve')(
   (paths: SpikePaths, options: ServeDaemonOptions = {}) =>
     Effect.gen(function* serveDaemonScoped() {
       yield* ensureRuntimeLayout(paths);
-      const config = yield* loadSpikeConfig(paths);
-      const journal = yield* Effect.acquireRelease(openJournal(paths.database), releaseJournal);
-      const outages = makeOutageService(
-        makeOutageJournal(journal.database),
-        options.outageDelivery ?? makeOutageDelivery(journal.database, config),
+      const { config, coordinator, journal, outages } = yield* acquireDaemonResources(
+        paths,
+        options,
       );
-      const coordinator = yield* Effect.acquireRelease(
-        makeAccountRuntimeCoordinator(paths, config, makeCodexJournal(journal.database), {
-          logMode: options.logMode ?? 'quiet',
-          onAvailable: () => outages.recovered(new Date()).pipe(Effect.asVoid),
-          onWaitingForAuthentication: () => outages.authenticationUnavailable(new Date()),
-          onWaitingForCapacity: (retryAt) => outages.capacityUnavailable(retryAt, new Date()),
-        }),
-        (resource) => resource.close,
-      );
-      if (options.codex !== false) {
-        yield* initializeInboxFrontier(config, journal);
-      }
       const startedAt = new Date().toISOString();
+      const diagnosticsSlot: EngineDiagnosticsSlot = { read: null };
       const runtimeSlot: RuntimeSlot = { value: null };
       const stop = yield* Deferred.make<DaemonStopReason>();
       yield* Effect.acquireRelease(
-        acquireControlServer({ coordinator, journal, paths, runtimeSlot, startedAt, stop }),
+        acquireControlServer({
+          coordinator,
+          diagnosticsSlot,
+          journal,
+          paths,
+          runtimeSlot,
+          startedAt,
+          stop,
+        }),
         (server) => releaseServer(server, paths),
       );
       yield* Effect.promise(() =>
@@ -143,6 +177,7 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
         superviseAccounts({
           config,
           coordinator,
+          diagnosticsSlot,
           journal,
           options,
           outages,

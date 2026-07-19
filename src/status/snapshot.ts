@@ -9,6 +9,7 @@ import { loadSpikeConfig } from '../app-config';
 import type { CodexRuntime } from '../codex/runtime';
 import { readAttachmentStagingDiagnostic } from '../journal/attachment-diagnostic';
 import type { SpikePaths } from '../paths';
+import type { EngineEventLoopDiagnostics } from '../service/event-loop-diagnostics';
 import { spikeVersion } from '../version';
 import type { StatusSnapshot } from './model';
 import { readOpenOutageKinds } from './outages';
@@ -195,11 +196,16 @@ const turnStatus = (
   };
 };
 
+const eventLoopStatus = (
+  eventLoop: EngineEventLoopDiagnostics | null,
+): Pick<StatusSnapshot, 'eventLoop'> => (eventLoop === null ? {} : { eventLoop });
+
 const makeStatusSnapshot = async (
   database: Database,
   paths: SpikePaths,
   startedAt: string,
   runtime: CodexRuntime | null,
+  eventLoop: EngineEventLoopDiagnostics | null = null,
 ): Promise<StatusSnapshot> => {
   const [counts, config, live] = await Promise.all([
     accountCounts(paths),
@@ -225,6 +231,7 @@ const makeStatusSnapshot = async (
     },
     codex: { ...limits, rawUsage: live.usage },
     config,
+    ...eventLoopStatus(eventLoop),
     like: {
       available: like?.available === 1,
       degraded: like?.degraded === 1,
