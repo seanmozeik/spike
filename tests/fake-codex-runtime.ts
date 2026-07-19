@@ -31,6 +31,7 @@ interface TurnBehavior {
 }
 
 interface RuntimeTrace {
+  readonly attachmentInputs: string[][];
   readonly closeListeners: (() => void)[];
   readonly inputs: string[];
   readonly notificationListeners: ((notification: JsonRpcNotification) => void)[];
@@ -100,8 +101,9 @@ const makeResumeThread =
 
 const makeStartTurn =
   (behavior: TurnBehavior, trace: RuntimeTrace): CodexRuntime['startTurn'] =>
-  ({ input }) =>
+  ({ attachments, input }) =>
     Effect.gen(function* startTurn() {
+      trace.attachmentInputs.push(attachments.map(({ path }) => path));
       trace.inputs.push(input);
       if (
         behavior.startFailure !== undefined &&
@@ -129,6 +131,7 @@ const subscribe = <A>(listeners: A[], listener: A): (() => void) => {
 };
 
 const makeTrace = (): RuntimeTrace => ({
+  attachmentInputs: [],
   closeListeners: [],
   inputs: [],
   notificationListeners: [],
@@ -154,8 +157,9 @@ const makeStartThread = (loaded: Set<string>): CodexRuntime['startThread'] => {
 
 const makeSteerTurn =
   (behavior: TurnBehavior, trace: RuntimeTrace): CodexRuntime['steerTurn'] =>
-  ({ input }) => {
+  ({ attachments, input }) => {
     const recorded = Effect.sync(() => {
+      trace.attachmentInputs.push(attachments.map(({ path }) => path));
       trace.steers.push(input);
     });
     const gated =

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { Effect, type Fiber, Result } from 'effect';
 
 import type { ApprovalManager } from '../approval/manager';
+import type { AttachmentStagingPolicy } from '../attachments/staging-policy';
 import type { CodexRuntime } from '../codex/runtime';
 import type { ConversationPolicy } from '../conversation-policy';
 import { compactError, type DeliveryService } from '../delivery/service';
@@ -19,12 +20,13 @@ import type { Journal } from '../journal/service';
 import type { LikeAcknowledgement } from '../like/adapter';
 import type { MessagesInboxHandle } from '../messages-inbox';
 import type { SchedulerController } from '../scheduler/controller';
-import { inputBatchText } from '../scheduler/input-batch';
-import type { PooledMessage, SchedulerEvent } from '../scheduler/model';
+import type { SchedulerEvent } from '../scheduler/model';
 import type { TurnTerminalQueue } from './turn-terminal-model';
 
 interface SpikeEngineOptions {
   readonly approvalExpiryMs?: number;
+  readonly attachmentSourceRoot: string;
+  readonly attachmentStagingRoot: string;
   readonly chatGuid: ChatGuid;
   readonly conversation: ConversationPolicy;
   readonly database: Database;
@@ -47,6 +49,7 @@ interface EngineContext {
     readonly signal: PromiseWithResolvers<AccountFailure>;
   };
   approval: ApprovalManager | null;
+  readonly attachmentStaging: AttachmentStagingPolicy;
   readonly closing: { value: boolean };
   readonly codexJournal: CodexJournal;
   readonly conversationReady: { value: boolean };
@@ -63,8 +66,6 @@ interface EngineContext {
   readonly schedulerJournal: SchedulerJournal;
   readonly turnTerminals: TurnTerminalQueue;
 }
-
-const inputText = (messages: readonly PooledMessage[]): string => inputBatchText(messages);
 
 const statusError = (cause: unknown): SpikeRuntimeError =>
   new SpikeRuntimeError({ cause, message: compactError(cause), operation: 'status/render' });
@@ -110,5 +111,5 @@ const dispatch = async (context: EngineContext, event: SchedulerEvent): Promise<
   await Effect.runPromise(controller.dispatch(event));
 };
 
-export { controlReplyText, dispatch, inputText, report };
+export { controlReplyText, dispatch, report };
 export type { AccountFailure, EngineContext, SpikeEngineOptions };

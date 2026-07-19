@@ -7,66 +7,13 @@ import { Effect } from 'effect';
 
 import { loadSpikeConfig } from '../app-config';
 import type { CodexRuntime } from '../codex/runtime';
+import { readAttachmentStagingDiagnostic } from '../journal/attachment-diagnostic';
 import type { SpikePaths } from '../paths';
 import { spikeVersion } from '../version';
+import type { StatusSnapshot } from './model';
 import { readOpenOutageKinds } from './outages';
-import { readRateLimits, type RateLimitWindow } from './rate-limits';
+import { readRateLimits } from './rate-limits';
 import { isStatusSnapshotShape } from './snapshot-guard';
-
-interface StatusSnapshot {
-  readonly account: {
-    readonly active: string | null;
-    readonly availability: 'available' | 'unavailable';
-    readonly configured: number;
-    readonly eligible: number;
-  };
-  readonly appServer: { readonly healthy: boolean };
-  readonly approvals: {
-    readonly displayed: number;
-    readonly orphaned: number;
-    readonly pending: number;
-    readonly recentlyResolved: number;
-  };
-  readonly codex: {
-    readonly fiveHour: RateLimitWindow | null;
-    readonly rawUsage: unknown;
-    readonly weekly: RateLimitWindow | null;
-  };
-  readonly config: {
-    readonly fast: boolean;
-    readonly model: string;
-    readonly reasoning: string;
-    readonly verbosity: string;
-  };
-  readonly like: {
-    readonly available: boolean;
-    readonly degraded: boolean;
-    readonly lastFailureAt: string | null;
-    readonly lastFailureReason: string | null;
-    readonly lastSuccessAt: string | null;
-  };
-  readonly ok: true;
-  /** Missing when talking to a daemon that predates durable outage reporting. */
-  readonly outages?: { readonly open: readonly string[] };
-  readonly service: {
-    readonly healthy: true;
-    readonly pid: number;
-    readonly startedAt: string;
-    readonly version: string;
-  };
-  readonly system: {
-    readonly cpuLoad: number;
-    readonly memoryPressurePercent: number;
-    readonly uptimeSeconds: number;
-  };
-  readonly turn: {
-    readonly lastFinalAt: string | null;
-    readonly lastWorkAcknowledgementAt: string | null;
-    readonly pooledMessages: number;
-    readonly state: 'idle' | 'running';
-    readonly threadAgeSeconds: number | null;
-  };
-}
 
 interface SchedulerStatusRow {
   readonly active_logical_turn_id: string | null;
@@ -173,6 +120,7 @@ const readDatabaseStatus = (
   database: Database,
 ): {
   readonly approvals: StatusSnapshot['approvals'];
+  readonly attachment: ReturnType<typeof readAttachmentStagingDiagnostic>;
   readonly like: LikeStatusRow | null;
   readonly outages: NonNullable<StatusSnapshot['outages']>;
   readonly scheduler: SchedulerStatusRow | null;
@@ -198,6 +146,7 @@ const readDatabaseStatus = (
       recentlyResolved: row?.recently_resolved ?? 0,
     };
   })(),
+  attachment: readAttachmentStagingDiagnostic(database),
   like:
     database
       .query<LikeStatusRow, []>(
@@ -257,7 +206,7 @@ const makeStatusSnapshot = async (
     configStatus(paths),
     readLiveCodex(runtime),
   ]);
-  const { approvals, like, outages, scheduler } = readDatabaseStatus(database);
+  const { approvals, attachment, like, outages, scheduler } = readDatabaseStatus(database);
   const limits = readRateLimits(live.rateLimits);
   const providerActive = runtime?.accountId.startsWith('provider:') === true;
   const effectiveCounts = providerActive ? { configured: 1, eligible: 1 } : counts;
@@ -269,6 +218,11 @@ const makeStatusSnapshot = async (
     },
     appServer: { healthy: live.healthy },
     approvals,
+    attachments: {
+      available: attachment === null,
+      blockedSince: attachment?.blockedSince ?? null,
+      diagnostic: attachment?.diagnostic ?? null,
+    },
     codex: { ...limits, rawUsage: live.usage },
     config,
     like: {
@@ -293,4 +247,4 @@ const makeStatusSnapshot = async (
 const isStatusSnapshot = (value: unknown): value is StatusSnapshot => isStatusSnapshotShape(value);
 
 export { isStatusSnapshot, makeStatusSnapshot, parseMemoryPressure };
-export type { StatusSnapshot };
+export type { StatusSnapshot } from './model';

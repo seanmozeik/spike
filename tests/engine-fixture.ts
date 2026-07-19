@@ -21,11 +21,13 @@ import type { ObservedMessage } from '../src/domain/inbound';
 import { makeConversationDiagnostic } from '../src/journal/conversation-diagnostic';
 import type { LikeAcknowledgement } from '../src/like/adapter';
 import { makeSpikeEngine, type SpikeEngine } from '../src/service/engine';
+import { prepareAttachmentOptions } from './engine-attachment-fixture';
 import { makeInbox } from './engine-inbox-fixture';
 import { openFixtureJournal } from './engine-journal-fixture';
 import { makeRuntimeHarness, type RuntimeTrace, type TurnBehavior } from './fake-codex-runtime';
 
 interface EngineFixture {
+  readonly attachmentInputs: string[][];
   readonly closeCodexConnection: () => void;
   readonly conversation: ConversationPolicy;
   readonly database: Database;
@@ -155,6 +157,7 @@ const buildFixture = ({
   sent,
   trace,
 }: FixtureParts): EngineFixture => ({
+  attachmentInputs: trace.attachmentInputs,
   closeCodexConnection: (): void => {
     for (const listener of trace.closeListeners) {
       listener();
@@ -204,6 +207,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
   snapshot,
 }: MakeFixtureOptions) {
   const root = mkdtempSync(path.join(tmpdir(), 'spike-engine-'));
+  const attachmentOptions = prepareAttachmentOptions(root);
   const databasePath = path.join(root, 'spike.db');
   const handle = yield* openFixtureJournal(databasePath, beforeOpen);
   const likes: string[] = [],
@@ -226,6 +230,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
     ...(behavior.approvalExpiryMs === undefined
       ? {}
       : { approvalExpiryMs: behavior.approvalExpiryMs }),
+    ...attachmentOptions,
     chatGuid: CHAT_GUID,
     conversation,
     database: handle.database,

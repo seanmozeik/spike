@@ -53,7 +53,7 @@ const seedMessage = (
      ) VALUES (?, ?, ?, 'chat', 'handle', 'iMessage', ?, ?, ?)`,
     [id, `guid-${id}`, rowId, text, observedAt.toISOString(), observedAt.toISOString()],
   );
-  return { id: InboundMessageId.make(id), receivedAt: observedAt, text };
+  return { attachments: [], id: InboundMessageId.make(id), receivedAt: observedAt, text };
 };
 
 const count = (database: Database, table: string): number =>

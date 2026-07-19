@@ -32,8 +32,17 @@ type Reconciliation =
   | { readonly kind: 'Retry' }
   | { readonly error: GenerationBroken; readonly kind: 'BreakGeneration' };
 
-const canonicalInputFingerprint = (input: string): string =>
-  createHash('sha256').update(input.normalize('NFC')).digest('hex');
+const canonicalInputFingerprint = (
+  input: string,
+  attachmentHashes: readonly string[] = [],
+): string => {
+  const normalized = input.normalize('NFC');
+  const payload =
+    attachmentHashes.length === 0
+      ? normalized
+      : JSON.stringify({ attachmentHashes, input: normalized });
+  return createHash('sha256').update(payload).digest('hex');
+};
 
 const captureFrontier = (thread: ThreadSnapshot): Frontier => ({
   itemIds: thread.turns.flatMap((turn) => turn.items.map((item) => item.id)),

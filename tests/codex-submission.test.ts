@@ -104,6 +104,7 @@ it('recovers an accepted steer without resubmitting after the scheduler-save cra
         };
         yield* submitCodexInput(runtime, journal, input);
         const steerInput = {
+          attachments: input.attachments,
           batchId: BatchId.steerOne,
           expectedTurnId: activeTurnId,
           input: 'follow-up',

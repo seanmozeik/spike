@@ -29,11 +29,13 @@ it.effect('reconstructs pooled timing and acknowledgement state after restart', 
     const now = new Date('2026-07-14T18:00:00Z');
     const initial = yield* journal.loadOrCreate(now);
     const turnMessage: PooledMessage = {
+      attachments: [],
       id: InboundMessageId.make('message-1'),
       receivedAt: now,
       text: 'first',
     };
     const pooledMessage: PooledMessage = {
+      attachments: [],
       id: InboundMessageId.make('message-2'),
       receivedAt: new Date(now.getTime() + 1000),
       text: 'second',

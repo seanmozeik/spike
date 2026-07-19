@@ -2,16 +2,17 @@ import type { Database } from 'bun:sqlite';
 
 import { Effect } from 'effect';
 
+import type { ControlCommand } from '../domain/control-command';
 import { InboundMessageId } from '../domain/ids';
 import { JournalTransactionError } from '../errors';
 
 interface PendingControl {
-  readonly command: '/new' | '/status';
+  readonly command: ControlCommand;
   readonly inboundMessageId: InboundMessageId;
 }
 
 interface PendingControlRow {
-  readonly command: '/new' | '/status';
+  readonly command: ControlCommand;
   readonly inbound_message_id: string;
 }
 

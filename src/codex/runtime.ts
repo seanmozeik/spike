@@ -121,8 +121,12 @@ const threadStartParams = (prompt: string, workingDirectory: string): Record<str
   historyMode: 'legacy',
 });
 
-const textInput = (text: string): readonly Record<string, unknown>[] => [
+const userInput = (
+  text: string,
+  attachments: Parameters<CodexRuntime['startTurn']>[0]['attachments'],
+): readonly Record<string, unknown>[] => [
   { text, text_elements: [], type: 'text' },
+  ...attachments.map((attachment) => ({ path: attachment.path, type: 'localImage' })),
 ];
 
 const readThread = Effect.fn('SpikeCodex.readThread')(function* readThread(
@@ -185,7 +189,7 @@ const makeCodexRuntime = (
   startTurn: (options): Effect.Effect<CodexTurnId, CodexRuntimeError> =>
     request(handle, 'turn/start', {
       clientUserMessageId: options.clientUserMessageId,
-      input: textInput(options.input),
+      input: userInput(options.input, options.attachments),
       threadId: options.threadId,
     }).pipe(
       Effect.flatMap((response) => responseId('turn/start', response, 'turn')),
@@ -195,7 +199,7 @@ const makeCodexRuntime = (
     request(handle, 'turn/steer', {
       clientUserMessageId: options.clientUserMessageId,
       expectedTurnId: options.expectedTurnId,
-      input: textInput(options.input),
+      input: userInput(options.input, options.attachments),
       threadId: options.threadId,
     }).pipe(Effect.asVoid),
   usage: request(handle, 'account/usage/read'),

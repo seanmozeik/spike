@@ -44,7 +44,7 @@ const formatStatus = (status: StatusSnapshot): string => {
     ? 'Like ready'
     : `Like degraded${status.like.lastFailureReason === null ? '' : ` (${status.like.lastFailureReason})`}`;
   const openOutages = status.outages?.open ?? [];
-  return [
+  const lines = [
     `Spike up · app-server ${status.appServer.healthy ? 'up' : 'down'} · ${status.service.version}`,
     `${status.config.model} · ${status.config.reasoning} · ${status.config.verbosity} · Fast ${status.config.fast ? 'on' : 'off'}`,
     `Account ${status.account.active ?? '—'} · ${String(status.account.eligible)}/${String(status.account.configured)} eligible · ${status.account.availability}`,
@@ -54,7 +54,12 @@ const formatStatus = (status: StatusSnapshot): string => {
     `Outages ${openOutages.length === 0 ? 'none' : openOutages.join(', ')}`,
     `Ack ${relativeTime(status.turn.lastWorkAcknowledgementAt)} · final ${relativeTime(status.turn.lastFinalAt)}`,
     `Mac ${duration(status.system.uptimeSeconds)} up · load ${String(status.system.cpuLoad)} · pressure ${String(status.system.memoryPressurePercent)}% · ${like}`,
-  ].join('\n');
+  ];
+  const { attachments } = status;
+  if (attachments !== undefined && !attachments.available && attachments.diagnostic !== null) {
+    lines.push(attachments.diagnostic);
+  }
+  return lines.join('\n');
 };
 
 const checkMarker = (state: 'fail' | 'pass' | 'warn'): string => {

@@ -2,12 +2,29 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
+import { parseControlCommand } from '../domain/control-command';
 import { GenerationId, LogicalTurnId } from '../domain/ids';
 import type { PendingInboundMessage } from '../journal/inbound-recovery';
 import type { SchedulerController } from '../scheduler/controller';
+import type { SchedulerEvent } from '../scheduler/model';
 import { captureAccountFailure } from './account-failover';
 import { report, type EngineContext } from './context';
 import { failTurn } from './turn-failure';
+
+const inboundEvent = (
+  message: PendingInboundMessage,
+  nextLogicalTurnId: ReturnType<typeof LogicalTurnId.make>,
+): Extract<SchedulerEvent, { readonly kind: 'Inbound' }> => ({
+  kind: 'Inbound',
+  message: {
+    attachments: message.attachments,
+    id: message.id,
+    receivedAt: message.receivedAt,
+    text: message.text,
+  },
+  newGenerationId: GenerationId.make(randomUUID()),
+  nextLogicalTurnId,
+});
 
 const dispatchPending = (
   context: EngineContext,
@@ -25,24 +42,15 @@ const dispatchPending = (
       }
       const state = yield* controller.snapshot;
       const nextLogicalTurnId = LogicalTurnId.make(randomUUID());
-      const event = {
-        kind: 'Inbound',
-        message: { id: message.id, receivedAt: message.receivedAt, text: message.text },
-        newGenerationId: GenerationId.make(randomUUID()),
-        nextLogicalTurnId,
-      } as const;
-      const dispatched = yield* Effect.result(controller.dispatch(event));
+      const dispatched = yield* Effect.result(
+        controller.dispatch(inboundEvent(message, nextLogicalTurnId)),
+      );
       if (Result.isFailure(dispatched)) {
         if (yield* captureAccountFailure(context, controller, dispatched.failure)) {
           return;
         }
-        const command = message.text.trim().toLowerCase();
-        if (
-          state.active === null &&
-          !state.generationBroken &&
-          command !== '/new' &&
-          command !== '/status'
-        ) {
+        const command = parseControlCommand(message.text);
+        if (state.active === null && !state.generationBroken && command === null) {
           yield* failTurn(
             context,
             { generationId: state.generationId, logicalTurnId: nextLogicalTurnId },

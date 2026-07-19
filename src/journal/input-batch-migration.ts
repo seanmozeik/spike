@@ -2,7 +2,12 @@ import type { Database } from 'bun:sqlite';
 
 import { canonicalInputFingerprint } from '../codex/reconcile';
 import { inputBatchText } from '../scheduler/input-batch';
-import { attachmentInputTextSql, renderPersistedInputText } from './input-message-text';
+import { renderPersistedInputText } from './attachment-input';
+
+const LEGACY_ATTACHMENT_INPUT_TEXT_SQL = `GROUP_CONCAT(
+  '[Attachment: ' || COALESCE(a.filename, a.transfer_name, a.attachment_guid) ||
+  CASE WHEN a.mime_type IS NULL THEN '' ELSE ' (' || a.mime_type || ')' END || ']'
+, char(10))`;
 
 interface LegacyAttemptRow {
   readonly id: string;
@@ -65,7 +70,7 @@ const backfillBatchSequences = (database: Database): void => {
 const canonicalBatchFingerprint = (database: Database, batchId: string): string => {
   const messages = database
     .query<BatchMessageRow, [string]>(
-      `SELECT im.text, ${attachmentInputTextSql} AS attachment_text
+      `SELECT im.text, ${LEGACY_ATTACHMENT_INPUT_TEXT_SQL} AS attachment_text
        FROM input_batch_messages ibm
        JOIN inbound_messages im ON im.id = ibm.inbound_message_id
        LEFT JOIN attachments a ON a.inbound_message_id = im.id

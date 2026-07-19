@@ -99,6 +99,7 @@ const ingest = Effect.fn('Test.ingestRetentionMessage')(function* ingestMessage(
     throw new Error(`retention message ${String(rowId)} was not persisted`);
   }
   return {
+    attachments: [],
     id: InboundMessageId.make(persisted.id),
     inserted,
     receivedAt: OLD,

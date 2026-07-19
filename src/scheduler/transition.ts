@@ -1,3 +1,4 @@
+import { parseControlCommand } from '../domain/control-command';
 import type {
   PooledMessage,
   SchedulerAction,
@@ -45,7 +46,7 @@ const handleInbound = (
   state: SchedulerState,
   event: Extract<SchedulerEvent, { kind: 'Inbound' }>,
 ): SchedulerTransition => {
-  const command = event.message.text.trim().toLowerCase();
+  const command = parseControlCommand(event.message.text);
   if (command === '/status') {
     return { actions: [{ commandMessageId: event.message.id, kind: 'ReplyStatus' }], state };
   }

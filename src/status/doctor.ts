@@ -11,6 +11,7 @@ import { liveOperatorCommands, type OperatorCommandPort } from '../operator/comm
 import { classifyServiceInspection } from '../operator/lifecycle';
 import type { SpikePaths } from '../paths';
 import { checkAccessibility } from './accessibility-check';
+import { attachmentStagingCheck } from './attachment-check';
 import { checkHooks } from './hooks-check';
 
 type CheckState = 'fail' | 'pass' | 'warn';
@@ -265,6 +266,7 @@ const makeDoctorReport = async (
     ...configuration,
     check('control socket', status['ok'] === true ? 'pass' : 'fail', paths.socket),
     journal,
+    attachmentStagingCheck(paths, status),
     check(
       'app-server',
       appServer['healthy'] === true ? 'pass' : 'fail',

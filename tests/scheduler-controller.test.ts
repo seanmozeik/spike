@@ -30,7 +30,7 @@ const journal = (): SchedulerJournal => ({
 
 const inbound = (id: string, at: number, logicalTurnId: string): SchedulerEvent => ({
   kind: 'Inbound',
-  message: { id: InboundMessageId.make(id), receivedAt: new Date(at), text: id },
+  message: { attachments: [], id: InboundMessageId.make(id), receivedAt: new Date(at), text: id },
   newGenerationId: GenerationId.make(`generation-${id}`),
   nextLogicalTurnId: LogicalTurnId.make(logicalTurnId),
 });
@@ -99,7 +99,12 @@ it.effect('re-arms a persisted pool once only after explicit activation', () =>
           logicalTurnId: LogicalTurnId.make('turn-1'),
         },
         pool: [
-          { id: InboundMessageId.make('pooled'), receivedAt: pooledAt, text: 'still waiting' },
+          {
+            attachments: [],
+            id: InboundMessageId.make('pooled'),
+            receivedAt: pooledAt,
+            text: 'still waiting',
+          },
         ],
       },
       journal(),
@@ -145,7 +150,12 @@ it.effect('/new binds a ready thread and replies even when old-thread cleanup fa
     const controller = yield* makeSchedulerController(initial, journal(), ports);
     yield* controller.dispatch({
       kind: 'Inbound',
-      message: { id: InboundMessageId.make('new-command'), receivedAt: new Date(), text: '/new' },
+      message: {
+        attachments: [],
+        id: InboundMessageId.make('new-command'),
+        receivedAt: new Date(),
+        text: '/new',
+      },
       newGenerationId: GenerationId.make('generation-2'),
       nextLogicalTurnId: LogicalTurnId.make('unused'),
     });

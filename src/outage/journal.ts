@@ -120,5 +120,5 @@ const makeOutageJournal = (database: Database): OutageJournal => ({
   resolve: makeResolve(database),
 });
 
-export { makeOutageJournal };
+export { CODEX_OUTAGE_KINDS, makeOutageJournal };
 export type { CodexOutageKind, OpenOutage, OpenOutageResult, OutageJournal };

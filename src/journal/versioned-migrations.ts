@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite';
 
+import { reconcileClaimedObservedAttachments } from './attachment-reconciliation';
 import {
   ensureInputBatchIdentityIndexes,
   migrateInputBatchIdentity,
@@ -13,6 +14,7 @@ const APPROVAL_PAYLOAD_RETENTION_VERSION = 11;
 const INPUT_BATCH_IDENTITY_VERSION = 12;
 const FAILURE_NOTICE_IDENTITY_VERSION = 13;
 const ACCOUNT_SELECTION_VERSION = 14;
+const ATTACHMENT_STAGING_VERSION = 15;
 
 const hasColumn = (database: Database, table: string, column: string): boolean =>
   database
@@ -117,6 +119,32 @@ const migrateAccountSelection = (database: Database, previousVersion: number): v
   }
 };
 
+const migrateAttachmentStaging = (database: Database, previousVersion: number): void => {
+  if (previousVersion <= 0 || previousVersion >= ATTACHMENT_STAGING_VERSION) {
+    return;
+  }
+  if (!hasColumn(database, 'attachments', 'failure_code')) {
+    database.run('ALTER TABLE attachments ADD COLUMN failure_code TEXT');
+  }
+  if (!hasColumn(database, 'attachments', 'ordinal')) {
+    database.run(
+      'ALTER TABLE attachments ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0 CHECK(ordinal >= 0)',
+    );
+  }
+  database.run(
+    `WITH ranked AS (
+       SELECT id, ROW_NUMBER() OVER (
+         PARTITION BY inbound_message_id ORDER BY rowid
+       ) - 1 AS ordinal
+       FROM attachments
+     )
+     UPDATE attachments SET ordinal = (
+       SELECT ranked.ordinal FROM ranked WHERE ranked.id = attachments.id
+     )`,
+  );
+  reconcileClaimedObservedAttachments(database);
+};
+
 const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
   migrateInitialSchema(database, previousVersion);
   migrateSchedulerSchema(database, previousVersion);
@@ -124,6 +152,7 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   migrateApprovalPayloadRetention(database, previousVersion);
   migrateIdentitySchema(database, previousVersion);
   migrateAccountSelection(database, previousVersion);
+  migrateAttachmentStaging(database, previousVersion);
 };
 
 export { applyVersionedMigrations };

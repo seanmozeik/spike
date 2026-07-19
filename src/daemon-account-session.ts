@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Deferred, Effect, Fiber } from 'effect';
 
 import type { SpikeConfig } from './app-config';
+import { attachmentRoots } from './attachments/roots';
 import type { AccountRuntimeCoordinator } from './codex/account-runtime-coordinator';
 import type { CodexRuntime } from './codex/runtime';
 import { makeConversationPolicy } from './conversation-policy';
@@ -124,6 +125,7 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
       })
     : makeDisabledLikeAcknowledgement(likeJournal);
   return yield* makeSpikeEngine({
+    ...attachmentRoots(config.messagesDatabase, paths.attachments),
     chatGuid: config.chatGuid,
     conversation,
     database: journal.database,

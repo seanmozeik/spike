@@ -34,6 +34,7 @@ interface CodexAttemptRecord {
   readonly batchId: InputBatchId | null;
   readonly frontier: Frontier;
   readonly id: CodexAttemptId;
+  readonly inputFingerprint: string | null;
   readonly logicalTurnId: string;
   readonly state: string;
   readonly submissionKind: 'Start' | 'Steer';
@@ -47,7 +48,7 @@ interface AttemptRow {
   readonly frontier_json: string;
   readonly id: string;
   readonly input_batch_id: string | null;
-  readonly input_fingerprint: string;
+  readonly input_fingerprint: string | null;
   readonly logical_turn_id: string;
   readonly state: string;
   readonly submission_kind: 'Start' | 'Steer';
@@ -113,6 +114,7 @@ const parseAttempt = (row: AttemptRow): CodexAttemptRecord => ({
   batchId: row.input_batch_id === null ? null : InputBatchId.make(row.input_batch_id),
   frontier: parseFrontier(row.frontier_json),
   id: CodexAttemptId.make(row.id),
+  inputFingerprint: row.input_fingerprint,
   logicalTurnId: row.logical_turn_id,
   state: row.state,
   submissionKind: row.submission_kind,

@@ -1,14 +1,16 @@
 import { Duration, Effect, Fiber, Result } from 'effect';
 
+import { makeAttachmentStagingPolicy } from '../attachments/staging-policy';
 import { observeAccount } from '../codex/account-observation';
 import { WaitingForCapacity } from '../errors';
+import { makeAttachmentDiagnostic } from '../journal/attachment-diagnostic';
 import { makeCodexJournal } from '../journal/codex-journal';
 import type { PendingControl } from '../journal/control-recovery';
 import { makeSchedulerJournal } from '../journal/scheduler-journal';
 import { makeJournal } from '../journal/service';
 import { makeSchedulerController, type SchedulerController } from '../scheduler/controller';
 import type { SchedulerState } from '../scheduler/model';
-import { captureAccountFailure, requestPendingAccountFailover } from './account-failover';
+import { requestPendingAccountFailover } from './account-failover';
 import {
   controlReplyText,
   report,
@@ -19,8 +21,8 @@ import {
 import { initializeConversation } from './conversation-lifecycle';
 import { dispatchPending } from './inbound-dispatch';
 import { pollInbox } from './inbox-poll';
-import { failTurn, retryTurnTerminals } from './turn-failure';
-import { recoverActive } from './turn-recovery';
+import { recoverStartup } from './startup-recovery';
+import { retryTurnTerminals } from './turn-failure';
 import { makeTurnTerminalQueue } from './turn-terminal-model';
 import { makePorts } from './turns';
 
@@ -121,34 +123,6 @@ const recoverControlReplies = (context: EngineContext): Effect.Effect<void, unkn
     }
   });
 
-const recoverPendingTurn = Effect.fn('SpikeEngine.recoverPendingTurn')(function* recoverPendingTurn(
-  context: EngineContext,
-  controller: SchedulerController,
-) {
-  if (!context.recoveryPending.value) {
-    return false;
-  }
-  context.recoveryPending.value = false;
-  const state = yield* controller.snapshot;
-  const recovery = yield* Effect.result(recoverActive(context, controller));
-  if (Result.isSuccess(recovery)) {
-    return false;
-  }
-  if (state.active === null) {
-    report(context, recovery.failure);
-    return false;
-  }
-  if (yield* captureAccountFailure(context, controller, recovery.failure)) {
-    return true;
-  }
-  yield* failTurn(
-    context,
-    { generationId: state.generationId, logicalTurnId: state.active.logicalTurnId },
-    recovery.failure,
-  );
-  return false;
-});
-
 const pollOnce = (
   context: EngineContext,
   controller: SchedulerController,
@@ -157,9 +131,10 @@ const pollOnce = (
     if (!(yield* context.options.conversation.revalidateIfDue(context.now()))) {
       return;
     }
+    yield* context.journal.auditStagedAttachments;
     yield* initializeConversation(context);
     yield* retryTurnTerminals(context);
-    if (yield* recoverPendingTurn(context, controller)) {
+    if (!(yield* recoverStartup(context, controller))) {
       return;
     }
     yield* controller.activate;
@@ -169,6 +144,11 @@ const pollOnce = (
       yield* context.approval.poll;
     }
     if (yield* requestPendingAccountFailover(context, controller)) {
+      return;
+    }
+    const staging = yield* Effect.result(context.attachmentStaging.stageIfDue(context.now()));
+    if (Result.isFailure(staging)) {
+      report(context, staging.failure);
       return;
     }
     const at = context.now();
@@ -193,25 +173,41 @@ const closeEngine = (context: EngineContext): void => {
   quiesceEngine(context);
 };
 
-const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContext => ({
-  accountFailover: { pending: null, requested: false, signal: Promise.withResolvers() },
-  approval: null,
-  closing: { value: false },
-  codexJournal: makeCodexJournal(options.database),
-  controllerReady: Promise.withResolvers<SchedulerController>(),
-  conversationReady: { value: false },
-  journal: makeJournal(options.database, { chatGuid: options.chatGuid, handle: options.handle }),
-  lastAccountObservationAt: { value: new Date(0) },
-  lastRedactionAt: { value: now() },
-  monitors: new Map(),
-  now,
-  options,
-  recoveryPending: { value: true },
-  scheduledFibers: new Set(),
-  schedulerJournal: makeSchedulerJournal(options.database),
-  schedulingClosed: { value: false },
-  turnTerminals: makeTurnTerminalQueue(),
-});
+const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContext => {
+  const journal = makeJournal(
+    options.database,
+    { chatGuid: options.chatGuid, handle: options.handle },
+    {
+      attachmentStaging: {
+        sourceRoot: options.attachmentSourceRoot,
+        stagingRoot: options.attachmentStagingRoot,
+      },
+    },
+  );
+  return {
+    accountFailover: { pending: null, requested: false, signal: Promise.withResolvers() },
+    approval: null,
+    attachmentStaging: makeAttachmentStagingPolicy({
+      diagnostic: makeAttachmentDiagnostic(options.database),
+      stage: journal.stagePendingAttachments,
+    }),
+    closing: { value: false },
+    codexJournal: makeCodexJournal(options.database),
+    controllerReady: Promise.withResolvers<SchedulerController>(),
+    conversationReady: { value: false },
+    journal,
+    lastAccountObservationAt: { value: new Date(0) },
+    lastRedactionAt: { value: now() },
+    monitors: new Map(),
+    now,
+    options,
+    recoveryPending: { value: true },
+    scheduledFibers: new Set(),
+    schedulerJournal: makeSchedulerJournal(options.database),
+    schedulingClosed: { value: false },
+    turnTerminals: makeTurnTerminalQueue(),
+  };
+};
 
 const makeCycle = (
   context: EngineContext,
@@ -239,13 +235,20 @@ const withPeriodicRedaction = (
     return yield* Effect.void;
   });
 
+const loadAuditedSchedulerState = Effect.fn('SpikeEngine.loadAuditedSchedulerState')(
+  function* loadAuditedSchedulerState(context: EngineContext, at: Date) {
+    yield* context.journal.auditStagedAttachments;
+    return yield* context.schedulerJournal.loadOrCreate(at);
+  },
+);
+
 const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
   options: SpikeEngineOptions,
 ) {
   const now = options.now ?? ((): Date => new Date());
   const context = makeContext(options, now);
   const startupAvailable = yield* options.conversation.revalidate(now(), 'Startup');
-  const initial = yield* context.schedulerJournal.loadOrCreate(now());
+  const initial = yield* loadAuditedSchedulerState(context, now());
   if (startupAvailable) {
     yield* initializeConversation(context);
   }

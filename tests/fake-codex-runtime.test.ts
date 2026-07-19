@@ -9,6 +9,7 @@ it.effect('records fake steer input only when the Effect executes', () =>
   Effect.gen(function* coldSteerTrace() {
     const { runtime, trace } = makeRuntimeHarness({}, { id: 'thread', turns: [] });
     const steer = runtime.steerTurn({
+      attachments: [],
       clientUserMessageId: 'steer-attempt',
       expectedTurnId: CodexTurnId.make('turn'),
       input: 'queued',

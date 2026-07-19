@@ -74,6 +74,31 @@ it.effect('/new keeps its pre-bound thread unread until the first turn materiali
   }),
 );
 
+it.effect('preserves inbound order when ordinary work precedes /new', () =>
+  Effect.gen(function* ordinaryBeforeNew() {
+    const turn = Promise.withResolvers<null>();
+    const fixture = yield* makeEngineFixture({
+      behavior: { finalAnswer: 'superseded answer', gate: turn.promise },
+    });
+    fixture.push(inbound(1, 'work before reset'), inbound(2, '/new'));
+
+    yield* fixture.engine.pollOnce;
+
+    expect(
+      fixture.database
+        .query<{ state: string }, []>('SELECT state FROM logical_turns ORDER BY rowid')
+        .all(),
+    ).toStrictEqual([{ state: 'Superseded' }]);
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+
+    turn.resolve(null);
+    yield* Effect.promise(() => Bun.sleep(0));
+    yield* fixture.engine.drain;
+    yield* fixture.engine.shutdown;
+    fixture.remove();
+  }),
+);
+
 it.effect('turns a status render failure into one terminal control reply', () =>
   Effect.gen(function* failedStatus() {
     const fixture = yield* makeEngineFixture({
@@ -478,7 +503,9 @@ it.effect('submits attachment-only inbound content without attempting a text Lik
       text: null,
     });
     yield* settle(fixture.engine);
-    expect(fixture.inputs).toStrictEqual(['[Attachment: photo.jpg (image/jpeg)]']);
+    expect(fixture.inputs).toStrictEqual(['[Image attachment (image/jpeg)]']);
+    expect(fixture.attachmentInputs).toHaveLength(1);
+    expect(fixture.attachmentInputs[0]?.[0]).toMatch(/[a-f0-9]{64}\.jpg$/u);
     expect(fixture.likes).toStrictEqual([]);
     expect(fixture.sent).toStrictEqual(['Image received']);
     fixture.remove();

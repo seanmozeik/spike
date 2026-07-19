@@ -33,6 +33,10 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
         uti: 'public.jpeg',
       },
     ]);
+    fixture.database.run(
+      `UPDATE attachments SET state = 'Failed', failure_code = 'missing-source',
+       filename = NULL, source_path = NULL WHERE attachment_guid = 'terminal-attachment'`,
+    );
     const terminal = yield* startCodexTurn(fixture, 'terminal', terminalMessage);
     const delivered = yield* fixture.delivery.prepareAssistantMessage(
       terminal.logicalTurnId,

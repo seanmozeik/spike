@@ -3,29 +3,24 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect } from 'effect';
 
+import { makeAttachmentStore } from '../attachments/store';
 import { belongsToConversation, type ConfiguredConversation } from '../conversation-guard';
 import { MessagesRowId, type ChatGuid } from '../domain/ids';
 import type { ObservedMessage } from '../domain/inbound';
-import { journalTransactionError, type JournalTransactionError } from '../errors';
-import { makeListPendingControls, type PendingControl } from './control-recovery';
+import { journalTransactionError } from '../errors';
+import { makeAuditStagedAttachments } from './attachment-audit';
+import { makeStagePendingAttachments } from './attachment-staging';
+import { makeListPendingControls } from './control-recovery';
 import { makeAdvanceInboxCursor, makeInitializeInboxCursor } from './cursor';
-import { makeListPendingInbound, type PendingInboundMessage } from './inbound-recovery';
+import { makeListPendingInbound } from './inbound-recovery';
 import { newestMessage } from './observed-messages';
 import { makeRedact } from './retention';
-
-interface InboxCursor {
-  readonly chatGuid: string;
-  readonly lastMessageGuid: null | string;
-  readonly lastRowId: number;
-  readonly updatedAt: string;
-}
-
-interface PersistedInboundMessage {
-  readonly id: string;
-  readonly messageGuid: string;
-  readonly rowId: number;
-  readonly text: null | string;
-}
+import type {
+  InboxCursor,
+  Journal,
+  JournalOptions,
+  PersistedInboundMessage,
+} from './service-types';
 
 interface CursorRow {
   readonly chat_guid: string;
@@ -45,35 +40,6 @@ interface AttachmentOwnerRow {
   readonly inbound_message_id: string;
 }
 
-interface Journal {
-  readonly advanceInboxCursor: (
-    chatGuid: ChatGuid,
-    frontier: MessagesRowId,
-    advancedAt: Date,
-  ) => Effect.Effect<void, JournalTransactionError>;
-  readonly ingestObservedMessages: (
-    chatGuid: ChatGuid,
-    observedAt: Date,
-    messages: readonly ObservedMessage[],
-  ) => Effect.Effect<number, JournalTransactionError>;
-  readonly inboxCursor: (chatGuid: ChatGuid) => Effect.Effect<InboxCursor | null>;
-  readonly initializeInboxCursor: (
-    chatGuid: ChatGuid,
-    frontier: MessagesRowId,
-    initializedAt: Date,
-  ) => Effect.Effect<void, JournalTransactionError>;
-  readonly listInbound: Effect.Effect<readonly PersistedInboundMessage[]>;
-  readonly listPendingControls: Effect.Effect<readonly PendingControl[], JournalTransactionError>;
-  readonly listPendingInbound: Effect.Effect<
-    readonly PendingInboundMessage[],
-    JournalTransactionError
-  >;
-  readonly redactTerminalPayloads: (
-    cutoff: Date,
-    redactedAt: Date,
-  ) => Effect.Effect<number, JournalTransactionError>;
-}
-
 type PersistAttachments = (inboundId: string, message: ObservedMessage, observedAt: string) => void;
 type PersistMessage = (message: ObservedMessage, observedAt: string) => number;
 type IngestTransaction = (observedAt: string, messages: readonly ObservedMessage[]) => number;
@@ -83,8 +49,8 @@ const INSERT_MESSAGE = `INSERT OR IGNORE INTO inbound_messages(
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 const INSERT_ATTACHMENT = `INSERT OR IGNORE INTO attachments(
   id, inbound_message_id, attachment_guid, state, filename, transfer_name,
-  mime_type, uti, total_bytes, source_path, created_at
-) VALUES (?, ?, ?, 'Observed', ?, ?, ?, ?, ?, ?, ?)`;
+  mime_type, uti, total_bytes, source_path, ordinal, created_at
+) VALUES (?, ?, ?, 'Observed', ?, ?, ?, ?, ?, ?, ?, ?)`;
 const UPSERT_CURSOR = `INSERT INTO inbox_cursor(chat_guid, last_rowid, last_message_guid, updated_at)
   VALUES (?, ?, ?, ?)
   ON CONFLICT(chat_guid) DO UPDATE SET
@@ -109,6 +75,7 @@ const makePersistAttachments = (database: Database): PersistAttachments => {
       null | string,
       null | number,
       null | string,
+      number,
       string,
     ]
   >(INSERT_ATTACHMENT);
@@ -116,7 +83,7 @@ const makePersistAttachments = (database: Database): PersistAttachments => {
     'SELECT inbound_message_id FROM attachments WHERE attachment_guid = ?',
   );
   return (inboundId, message, observedAt) => {
-    for (const attachment of message.attachments) {
+    for (const [ordinal, attachment] of message.attachments.entries()) {
       const result = insertAttachment.run(
         randomUUID(),
         inboundId,
@@ -127,6 +94,7 @@ const makePersistAttachments = (database: Database): PersistAttachments => {
         attachment.uti,
         attachment.totalBytes,
         attachment.filename,
+        ordinal,
         observedAt,
       );
       const owner =
@@ -236,10 +204,33 @@ const readInbound = (database: Database): readonly PersistedInboundMessage[] =>
       text: row.text,
     }));
 
-const makeJournal = (database: Database, conversation: ConfiguredConversation): Journal => {
+const makeAttachmentOperations = (
+  database: Database,
+  { attachmentStaging }: JournalOptions,
+): {
+  readonly audit: Journal['auditStagedAttachments'];
+  readonly redact: ReturnType<typeof makeRedact>;
+  readonly stage: Journal['stagePendingAttachments'];
+} => {
+  if (attachmentStaging === undefined) {
+    return { audit: Effect.succeed(0), redact: makeRedact(database), stage: Effect.succeed(0) };
+  }
+  const store = makeAttachmentStore(attachmentStaging.stagingRoot);
+  return {
+    audit: makeAuditStagedAttachments(database, store),
+    redact: makeRedact(database, store),
+    stage: makeStagePendingAttachments(database, attachmentStaging, store),
+  };
+};
+
+const makeJournal = (
+  database: Database,
+  conversation: ConfiguredConversation,
+  options: JournalOptions = {},
+): Journal => {
   const advanceInboxCursor = makeAdvanceInboxCursor(database);
   const ingest = makeIngest(database, conversation);
-  const redact = makeRedact(database);
+  const attachments = makeAttachmentOperations(database, options);
   return {
     advanceInboxCursor: (chatGuid, frontier, advancedAt) =>
       chatGuid === conversation.chatGuid
@@ -251,6 +242,7 @@ const makeJournal = (database: Database, conversation: ConfiguredConversation): 
               new Error('configured conversation mismatch'),
             ),
           ),
+    auditStagedAttachments: attachments.audit,
     inboxCursor: (chatGuid) => Effect.sync(() => readCursor(database, chatGuid)),
     ingestObservedMessages: (chatGuid, observedAt, messages) =>
       Effect.try({
@@ -274,8 +266,9 @@ const makeJournal = (database: Database, conversation: ConfiguredConversation): 
     redactTerminalPayloads: (cutoff, redactedAt) =>
       Effect.try({
         catch: (cause) => journalTransactionError('redactTerminalPayloads', REDACTION_ERROR, cause),
-        try: () => redact(cutoff.toISOString(), redactedAt.toISOString()),
+        try: () => attachments.redact(cutoff.toISOString(), redactedAt.toISOString()),
       }),
+    stagePendingAttachments: attachments.stage,
   };
 };
 
@@ -283,4 +276,9 @@ const cursorRowId = (cursor: InboxCursor | null): MessagesRowId =>
   MessagesRowId.make(cursor?.lastRowId ?? 0);
 
 export { cursorRowId, makeJournal };
-export type { InboxCursor, Journal, PersistedInboundMessage };
+export type {
+  InboxCursor,
+  Journal,
+  JournalOptions,
+  PersistedInboundMessage,
+} from './service-types';

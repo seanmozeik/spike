@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +7,10 @@ import { Effect } from 'effect';
 import { afterEach, describe, expect } from 'vitest';
 
 import { openJournal } from '../src/database';
+import {
+  ATTACHMENT_STAGING_DIAGNOSTIC,
+  makeAttachmentDiagnostic,
+} from '../src/journal/attachment-diagnostic';
 import { spikePaths } from '../src/paths';
 import { duration, formatStatus, relativeTime } from '../src/status/format';
 import { readRateLimits } from '../src/status/rate-limits';
@@ -29,6 +33,7 @@ const snapshot = (): StatusSnapshot => ({
   account: { active: 'default', availability: 'available', configured: 1, eligible: 1 },
   appServer: { healthy: true },
   approvals: { displayed: 1, orphaned: 0, pending: 2, recentlyResolved: 3 },
+  attachments: { available: true, blockedSince: null, diagnostic: null },
   codex: {
     fiveHour: { remainingPercent: 80, resetsAt: '2026-07-14T22:00:00.000Z' },
     rawUsage: null,
@@ -54,6 +59,12 @@ const snapshot = (): StatusSnapshot => ({
     threadAgeSeconds: 3600,
   },
 });
+
+const staleSnapshot = (): unknown => {
+  const stale: Record<string, unknown> = { ...snapshot() };
+  delete stale['attachments'];
+  return stale;
+};
 
 describe('compact status', () => {
   it('normalizes the current five-hour and weekly rate-limit response', () => {
@@ -119,6 +130,32 @@ describe('compact status', () => {
     );
   });
 
+  it('adds one bounded actionable line only while attachment staging is blocked', () => {
+    const output = formatStatus({
+      ...snapshot(),
+      attachments: {
+        available: false,
+        blockedSince: '2026-07-19T10:00:00.000Z',
+        diagnostic: ATTACHMENT_STAGING_DIAGNOSTIC,
+      },
+    });
+    expect(output.split('\n')).toHaveLength(10);
+    expect(output).toContain(ATTACHMENT_STAGING_DIAGNOSTIC);
+  });
+
+  it('formats a pre-v15 daemon snapshot without the attachment field', () => {
+    const stale = staleSnapshot();
+    expect(isStatusSnapshot(stale)).toBe(true);
+    if (!isStatusSnapshot(stale)) {
+      throw new Error('expected the stale daemon response to remain compatible');
+    }
+    expect(formatStatus(stale).split('\n')).toHaveLength(9);
+  });
+
+  it('rejects malformed attachment data before compact formatting', () => {
+    expect(isStatusSnapshot({ ...snapshot(), attachments: null })).toBe(false);
+  });
+
   it('formats past and future operator times without losing reset direction', () => {
     const now = Date.parse('2026-07-14T20:00:00.000Z');
     expect(relativeTime('2026-07-14T19:59:00.000Z', now)).toBe('1m ago');
@@ -166,6 +203,39 @@ describe('compact status', () => {
       );
 
       expect(status.turn.lastFinalAt).toBe('2026-07-14T19:01:00.000Z');
+      handle.close();
+    }),
+  );
+
+  it.effect('reads and clears the durable attachment staging episode', () =>
+    Effect.gen(function* attachmentStatus() {
+      const root = mkdtempSync(path.join(tmpdir(), 'spike-status-attachment-'));
+      roots.push(root);
+      const paths = spikePaths(root);
+      mkdirSync(path.dirname(paths.database), { recursive: true });
+      const handle = yield* openJournal(paths.database);
+      const openedAt = new Date('2026-07-19T10:00:00.000Z');
+      const diagnostic = makeAttachmentDiagnostic(handle.database);
+      yield* diagnostic.open(openedAt);
+
+      const blocked = yield* Effect.promise(() =>
+        makeStatusSnapshot(handle.database, paths, openedAt.toISOString(), null),
+      );
+      expect(blocked.attachments).toStrictEqual({
+        available: false,
+        blockedSince: openedAt.toISOString(),
+        diagnostic: ATTACHMENT_STAGING_DIAGNOSTIC,
+      });
+
+      yield* diagnostic.resolve(new Date(openedAt.getTime() + 1));
+      const recovered = yield* Effect.promise(() =>
+        makeStatusSnapshot(handle.database, paths, openedAt.toISOString(), null),
+      );
+      expect(recovered.attachments).toStrictEqual({
+        available: true,
+        blockedSince: null,
+        diagnostic: null,
+      });
       handle.close();
     }),
   );

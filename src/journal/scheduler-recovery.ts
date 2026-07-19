@@ -11,7 +11,11 @@ import {
 } from '../domain/ids';
 import { JournalTransactionError } from '../errors';
 import type { PooledMessage } from '../scheduler/model';
-import { attachmentInputTextSql, renderPersistedInputText } from './input-message-text';
+import {
+  attachmentInputTextSql,
+  readStagedImages,
+  renderPersistedInputText,
+} from './attachment-input';
 
 interface PersistedInputBatch {
   readonly fingerprint: string;
@@ -78,6 +82,7 @@ const readInputBatches = (
       batches.set(row.batch_id, batch);
     }
     batch.messages.push({
+      attachments: readStagedImages(database, row.id),
       id: InboundMessageId.make(row.id),
       receivedAt: new Date(row.observed_at),
       text: renderPersistedInputText({ attachmentText: row.attachment_text, text: row.text }),

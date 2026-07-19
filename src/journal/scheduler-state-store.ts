@@ -10,6 +10,7 @@ import {
 } from '../domain/ids';
 import type { PooledMessage, SchedulerState } from '../scheduler/model';
 import { poolDeadline } from '../scheduler/transition';
+import { readStagedImages } from './attachment-input';
 
 interface SchedulerRow {
   readonly active_acknowledged: number;
@@ -89,6 +90,7 @@ const readPool = (database: Database): readonly PooledMessage[] =>
     )
     .all()
     .map((row) => ({
+      attachments: readStagedImages(database, row.id),
       id: InboundMessageId.make(row.id),
       receivedAt: new Date(row.observed_at),
       text: row.text ?? '',

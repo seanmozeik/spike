@@ -1,5 +1,7 @@
 import type { Database } from 'bun:sqlite';
 
+import type { AttachmentStore } from '../attachments/store';
+
 type RedactTransaction = (cutoff: string, redactedAt: string) => number;
 
 const REDACT_INBOUND = `UPDATE inbound_messages
@@ -23,7 +25,7 @@ const REDACT_INBOUND = `UPDATE inbound_messages
   )`;
 const REDACT_ATTACHMENTS = `UPDATE attachments
   SET filename = NULL, transfer_name = NULL, source_path = NULL, staged_path = NULL,
-      state = 'Redacted', payload_redacted_at = ?
+      content_hash = NULL, state = 'Redacted', payload_redacted_at = ?
   WHERE payload_redacted_at IS NULL AND inbound_message_id IN (
     SELECT id FROM inbound_messages WHERE payload_redacted_at IS NOT NULL
   )`;
@@ -62,9 +64,32 @@ const REDACT_APPROVAL_REQUESTS = `UPDATE approval_requests
 const PRUNE_FAILURES = 'DELETE FROM failures WHERE created_at < ?';
 const PRUNE_ACCOUNT_OBSERVATIONS = 'DELETE FROM account_observations WHERE observed_at < ?';
 
-const makeRedact = (database: Database): RedactTransaction =>
+const removableStagedPaths = (database: Database): readonly string[] =>
+  database
+    .query<{ staged_path: string }, []>(
+      `SELECT DISTINCT attachment.staged_path FROM attachments attachment
+       JOIN inbound_messages inbound ON inbound.id = attachment.inbound_message_id
+       WHERE inbound.payload_redacted_at IS NOT NULL AND attachment.staged_path IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM attachments retained
+           JOIN inbound_messages retained_inbound
+             ON retained_inbound.id = retained.inbound_message_id
+           WHERE retained.staged_path = attachment.staged_path
+             AND retained_inbound.payload_redacted_at IS NULL
+         )`,
+    )
+    .all()
+    .map(({ staged_path }) => staged_path);
+
+const makeRedact = (database: Database, attachmentStore?: AttachmentStore): RedactTransaction =>
   database.transaction((cutoff: string, redactedAt: string): number => {
     const result = database.run(REDACT_INBOUND, [redactedAt, cutoff]);
+    for (const stagedPath of removableStagedPaths(database)) {
+      if (attachmentStore === undefined) {
+        throw new Error('attachment staging store is unavailable during redaction');
+      }
+      attachmentStore.remove(stagedPath);
+    }
     database.run(REDACT_ATTACHMENTS, [redactedAt]);
     database.run(REDACT_OUTBOUND_MESSAGES, [redactedAt, cutoff]);
     database.run(REDACT_OUTBOUND_CHUNKS, [redactedAt, cutoff]);

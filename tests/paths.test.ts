@@ -7,6 +7,7 @@ describe('spike paths', () => {
     const paths = spikePaths('/tmp/spike-fixture');
     expect(paths.config).toBe('/tmp/spike-fixture/config.toml');
     expect(paths.database).toBe('/tmp/spike-fixture/state/spike.db');
+    expect(paths.attachments).toBe('/tmp/spike-fixture/state/attachments');
     expect(paths.socket).toBe('/tmp/spike-fixture/run/spike.sock');
     expect(paths.daemonLog).toBe('/tmp/spike-fixture/logs/daemon.log');
     expect(paths.codexConfig).toBe('/tmp/spike-fixture/codex-home/config.toml');

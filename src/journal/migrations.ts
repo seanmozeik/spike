@@ -1,4 +1,4 @@
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -48,9 +48,12 @@ const migrationStatements = [
     source_path TEXT,
     staged_path TEXT,
     content_hash TEXT,
+    failure_code TEXT,
+    ordinal INTEGER NOT NULL DEFAULT 0 CHECK(ordinal >= 0),
     created_at TEXT NOT NULL,
     payload_redacted_at TEXT
   ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS attachments_staged_path ON attachments(staged_path)`,
   `CREATE TABLE IF NOT EXISTS logical_turns (
     id TEXT PRIMARY KEY,
     generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE RESTRICT,

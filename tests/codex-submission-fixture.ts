@@ -105,6 +105,7 @@ const withJournal = <A>(
   );
 
 const input = {
+  attachments: [],
   batchId: BatchId.initial,
   frontier: 'Read' as const,
   input: 'hello',

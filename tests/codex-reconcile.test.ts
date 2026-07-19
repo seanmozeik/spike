@@ -39,3 +39,12 @@ it('reconciles zero, one, or conflicting post-frontier submission matches', () =
 it('fingerprints canonically equivalent Unicode input identically', () => {
   expect(canonicalInputFingerprint('café')).toBe(canonicalInputFingerprint('cafe\u0301'));
 });
+
+it('preserves legacy text-only fingerprints while binding image content hashes', () => {
+  expect(canonicalInputFingerprint('hello')).toBe(
+    '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+  );
+  expect(canonicalInputFingerprint('hello', ['image-hash'])).not.toBe(
+    canonicalInputFingerprint('hello'),
+  );
+});

@@ -1,5 +1,6 @@
 import { Effect, Result } from 'effect';
 
+import type { StagedImageAttachment } from '../attachments/model';
 import {
   AccountId,
   CodexTurnId,
@@ -9,7 +10,7 @@ import {
 } from '../domain/ids';
 import {
   CodexRuntimeError,
-  type GenerationBroken,
+  GenerationBroken,
   type JournalTransactionError,
   type WaitingForAuthentication,
   type WaitingForCapacity,
@@ -20,6 +21,7 @@ import { canonicalInputFingerprint, captureFrontier, reconcileSubmission } from 
 import type { CodexRuntime } from './runtime';
 
 interface CodexInput {
+  readonly attachments: readonly StagedImageAttachment[];
   readonly batchId: InputBatchId;
   readonly expectedTurnId?: CodexTurnId;
   readonly input: string;
@@ -39,19 +41,44 @@ type SubmissionError =
   | WaitingForAuthentication
   | WaitingForCapacity;
 
+const inputFingerprint = (input: CodexInput): string =>
+  canonicalInputFingerprint(
+    input.input,
+    input.attachments.map(({ contentHash }) => contentHash),
+  );
+
+const verifyRetryInput = (
+  attempt: CodexAttemptRecord,
+  input: CodexInput,
+): Effect.Effect<void, GenerationBroken> =>
+  attempt.batchId === input.batchId &&
+  attempt.logicalTurnId === input.logicalTurnId &&
+  attempt.submissionKind === input.kind &&
+  attempt.inputFingerprint === inputFingerprint(input)
+    ? Effect.void
+    : Effect.fail(
+        new GenerationBroken({ message: 'persisted Codex input changed before retry; send /new' }),
+      );
+
 const sendInput = (
   runtime: CodexRuntime,
   input: CodexInput,
   clientUserMessageId: string,
 ): Effect.Effect<CodexTurnId, CodexRuntimeError> => {
   if (input.kind === 'Start') {
-    return runtime.startTurn({ clientUserMessageId, input: input.input, threadId: input.threadId });
+    return runtime.startTurn({
+      attachments: input.attachments,
+      clientUserMessageId,
+      input: input.input,
+      threadId: input.threadId,
+    });
   }
   if (input.expectedTurnId === undefined) {
     return Effect.die(new Error('steer submission requires expectedTurnId'));
   }
   return runtime
     .steerTurn({
+      attachments: input.attachments,
       clientUserMessageId,
       expectedTurnId: input.expectedTurnId,
       input: input.input,
@@ -81,7 +108,7 @@ const submitCodexInput = Effect.fn('SpikeCodex.submit')(function* submitCodexInp
   const attemptId = yield* journal.beginCodexAttempt({
     accountId: AccountId.make(runtime.accountId),
     batchId: input.batchId,
-    fingerprint: canonicalInputFingerprint(input.input),
+    fingerprint: inputFingerprint(input),
     frontier,
     logicalTurnId: input.logicalTurnId,
     startedAt: new Date(),
@@ -144,6 +171,7 @@ const recoverCodexInput = Effect.fn('SpikeCodex.recover')(function* recoverCodex
       CodexTurnId.make(reconciliation.turnId),
     );
   }
+  yield* verifyRetryInput(attempt, input);
   yield* journal.reassignCodexAttempt(attempt.id, AccountId.make(runtime.accountId));
   const retried = yield* sendInput(runtime, input, attempt.id);
   return yield* acceptTurn(journal, attempt.id, input.threadId, retried);

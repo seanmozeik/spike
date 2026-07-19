@@ -1,3 +1,4 @@
+import type { StagedImageAttachment } from '../attachments/model';
 import type {
   CodexThreadId,
   CodexTurnId,
@@ -7,6 +8,7 @@ import type {
 } from '../domain/ids';
 
 interface PooledMessage {
+  readonly attachments: readonly StagedImageAttachment[];
   readonly id: InboundMessageId;
   readonly receivedAt: Date;
   readonly text: string;

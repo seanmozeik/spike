@@ -215,12 +215,16 @@ it.effect('starts the isolated configured thread and sends xhigh Fast turns and 
     const threadId = yield* runtime.startThread;
     expect(threadId).toBe('thread');
     const turnId = yield* runtime.startTurn({
+      attachments: [
+        { contentHash: 'image-hash', mimeType: 'image/png', path: '/staged/image.png' },
+      ],
       clientUserMessageId: 'attempt',
       input: 'hello',
       threadId,
     });
 
     yield* runtime.steerTurn({
+      attachments: [],
       clientUserMessageId: 'steer-attempt',
       expectedTurnId: turnId,
       input: 'also this',
@@ -241,6 +245,15 @@ it.effect('starts the isolated configured thread and sends xhigh Fast turns and 
       { method: 'turn/interrupt', params: { threadId: 'thread', turnId: 'turn' } },
       { method: 'thread/archive', params: { threadId: 'thread' } },
     ]);
+    expect(fake.requests[1]).toMatchObject({
+      method: 'turn/start',
+      params: {
+        input: [
+          { text: 'hello', text_elements: [], type: 'text' },
+          { path: '/staged/image.png', type: 'localImage' },
+        ],
+      },
+    });
   }),
 );
 

@@ -6,6 +6,7 @@ import { poolDeadline, transitionScheduler } from '../src/scheduler/transition';
 
 const at = (milliseconds: number): Date => new Date(1_700_000_000_000 + milliseconds);
 const message = (id: string, milliseconds: number, text = id): PooledMessage => ({
+  attachments: [],
   id: InboundMessageId.make(id),
   receivedAt: at(milliseconds),
   text,

@@ -6,7 +6,8 @@ import { GenerationBroken } from '../errors';
 import type { PersistedInputBatch } from '../journal/scheduler-recovery';
 import type { SchedulerController, SchedulerControllerError } from '../scheduler/controller';
 import type { SchedulerState } from '../scheduler/model';
-import { inputText, type EngineContext } from './context';
+import { renderCodexInput } from './codex-input';
+import type { EngineContext } from './context';
 import { startMonitor } from './monitor';
 import { findAttempt, submit } from './turn-submission';
 
@@ -52,9 +53,9 @@ const recoverPendingSteers = (
         attempt === undefined
           ? submit(context, state, batch, turnId).pipe(Effect.asVoid)
           : recoverCodexInput(context.options.runtime, context.codexJournal, attempt, {
+              ...renderCodexInput(batch.messages),
               batchId: batch.id,
               expectedTurnId: turnId,
-              input: inputText(batch.messages),
               kind: 'Steer',
               logicalTurnId: batch.logicalTurnId,
               threadId,

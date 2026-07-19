@@ -1,16 +1,22 @@
 import { Effect, Result } from 'effect';
 import { afterEach, expect, it } from 'vitest';
 
-import type { ThreadSnapshot } from '../src/codex/reconcile';
+import { canonicalInputFingerprint, type ThreadSnapshot } from '../src/codex/reconcile';
 import type { CodexRuntime } from '../src/codex/runtime';
 import {
   recoverCodexInput,
   submitCodexInput,
+  type CodexInput,
   type SubmitCodexInput,
 } from '../src/codex/submission';
-import { openJournal } from '../src/database';
-import { CodexTurnId } from '../src/domain/ids';
-import { makeCodexJournal } from '../src/journal/codex-journal';
+import { openJournal, type JournalHandle } from '../src/database';
+import { AccountId, CodexTurnId } from '../src/domain/ids';
+import { GenerationBroken } from '../src/errors';
+import {
+  makeCodexJournal,
+  type CodexAttemptRecord,
+  type CodexJournal,
+} from '../src/journal/codex-journal';
 import {
   BatchId,
   cleanupSubmissionFixtures,
@@ -32,6 +38,41 @@ const remoteSnapshot = (turnId: string, clientUserMessageId: string): ThreadSnap
     },
   ],
 });
+
+interface RestartedAttempt {
+  readonly attempt: CodexAttemptRecord;
+  readonly fingerprint: string;
+  readonly handle: JournalHandle;
+  readonly journal: CodexJournal;
+}
+
+const restartPreparedAttempt = async (request: CodexInput): Promise<RestartedAttempt> => {
+  const fixture = await Effect.runPromise(makeSubmissionFixture());
+  const fingerprint = canonicalInputFingerprint(
+    request.input,
+    request.attachments.map(({ contentHash }) => contentHash),
+  );
+  await Effect.runPromise(
+    fixture.journal.beginCodexAttempt({
+      accountId: AccountId.make('account'),
+      batchId: request.batchId,
+      fingerprint,
+      frontier: { itemIds: [], turnIds: [] },
+      logicalTurnId: request.logicalTurnId,
+      startedAt: new Date('2026-07-19T12:00:00.000Z'),
+      submissionKind: request.kind,
+    }),
+  );
+  fixture.handle.close();
+  const handle = await Effect.runPromise(openJournal(fixture.databasePath));
+  const journal = makeCodexJournal(handle.database);
+  const [attempt] = await Effect.runPromise(journal.loadNonterminalAttempts);
+  if (attempt === undefined) {
+    handle.close();
+    throw new Error('expected a prepared attempt after restart');
+  }
+  return { attempt, fingerprint, handle, journal };
+};
 
 const crashAfterSubmission = async (kind: 'Start' | 'Steer'): Promise<void> => {
   const fixture = await Effect.runPromise(makeSubmissionFixture());
@@ -161,4 +202,71 @@ it('reconciles a start after crashing beyond the remote submission boundary', as
 
 it('reconciles a steer after crashing beyond the remote submission boundary', async () => {
   await crashAfterSubmission('Steer');
+});
+
+it('retries the exact structured input after restart', async () => {
+  const attachment = {
+    contentHash: 'a'.repeat(64),
+    mimeType: 'image/png' as const,
+    path: '/staged/a.png',
+  };
+  const request: CodexInput = { ...input, attachments: [attachment], input: 'retry this image' };
+  const restarted = await restartPreparedAttempt(request);
+  let submitted: Parameters<CodexRuntime['startTurn']>[0] | undefined;
+  const turnId = CodexTurnId.make('turn-after-restart');
+  const runtime = makeRuntime(
+    () => Effect.succeed(emptyThread()),
+    (submission) =>
+      Effect.sync(() => {
+        submitted = submission;
+        return turnId;
+      }),
+  );
+  try {
+    expect(restarted.attempt.inputFingerprint).toBe(restarted.fingerprint);
+    expect(
+      await Effect.runPromise(
+        recoverCodexInput(runtime, restarted.journal, restarted.attempt, request),
+      ),
+    ).toBe(turnId);
+    expect(submitted).toMatchObject({ attachments: [attachment], input: request.input });
+  } finally {
+    restarted.handle.close();
+  }
+});
+
+it('breaks recovery instead of retrying drifted structured input', async () => {
+  const original: CodexInput = {
+    ...input,
+    attachments: [{ contentHash: 'a'.repeat(64), mimeType: 'image/png', path: '/staged/a.png' }],
+    input: 'stable request',
+  };
+  const restarted = await restartPreparedAttempt(original);
+  let submissions = 0;
+  const runtime = makeRuntime(
+    () => Effect.succeed(emptyThread()),
+    () =>
+      Effect.sync(() => {
+        submissions += 1;
+        return CodexTurnId.make('must-not-submit');
+      }),
+  );
+  try {
+    const result = await Effect.runPromise(
+      recoverCodexInput(runtime, restarted.journal, restarted.attempt, {
+        ...original,
+        attachments: [
+          { contentHash: 'b'.repeat(64), mimeType: 'image/png', path: '/staged/b.png' },
+        ],
+      }).pipe(Effect.result),
+    );
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(GenerationBroken);
+      expect(result.failure.message).toContain('changed before retry');
+    }
+    expect(submissions).toBe(0);
+  } finally {
+    restarted.handle.close();
+  }
 });

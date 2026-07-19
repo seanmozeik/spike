@@ -61,6 +61,20 @@ const insertInputBatch = (
        VALUES (?, ?, ?)`,
       [batchId, message.id, ordinal],
     );
+    const observed = database
+      .query<{ count: number }, [string]>(
+        `SELECT COUNT(*) AS count FROM attachments
+         WHERE inbound_message_id = ? AND state = 'Observed'`,
+      )
+      .get(message.id)?.count;
+    if ((observed ?? 0) > 0) {
+      throw new Error('cannot assign an attachment before staging completes');
+    }
+    database.run(
+      `UPDATE attachments SET state = 'Assigned'
+       WHERE inbound_message_id = ? AND state = 'Staged'`,
+      [message.id],
+    );
   }
 };
 

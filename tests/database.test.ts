@@ -10,6 +10,7 @@ import { afterEach, expect } from 'vitest';
 import { canonicalInputFingerprint } from '../src/codex/reconcile';
 import { ensureRuntimeLayout } from '../src/config-files';
 import { inspectJournal, journalInfo, openJournal } from '../src/database';
+import { SCHEMA_VERSION } from '../src/journal/migrations';
 import { spikePaths } from '../src/paths';
 
 const roots: string[] = [];
@@ -104,7 +105,7 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
     journal.close();
     expect(inspectJournal(databasePath)).toStrictEqual({
       journalMode: 'wal',
-      migrationVersion: 14,
+      migrationVersion: SCHEMA_VERSION,
     });
   }),
 );
@@ -224,7 +225,7 @@ it.effect('migrates a version 6 scheduler journal to the canonical generation th
 
     expect(columns).not.toContain('codex_thread_id');
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -252,7 +253,7 @@ it.effect('migrates a version 7 journal to durable broken-generation state', () 
     migrated.close();
 
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -286,7 +287,7 @@ it.effect('migrates failed logical turns to terminal Codex attempts', () =>
     migrated.close();
 
     expect(attempt).toStrictEqual({ finished_at: '2026-07-15T00:01:00.000Z', state: 'Failed' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -314,7 +315,7 @@ it.effect('migrates version 10 approval rows to the payload retention marker', (
     migrated.close();
 
     expect(columns).toContain('payload_redacted_at');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -345,16 +346,16 @@ it.effect('migrates v11 attempts to causal batch identities and remains idempote
         )
         .get(),
     ).toStrictEqual({ input_batch_id: 'batch-one' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
     migrated.close();
 
     const reopened = yield* openJournal(databasePath);
     expect(
       reopened.database
-        .query<{ count: number }, []>(
-          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = 14',
+        .query<{ count: number }, [number]>(
+          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = ?',
         )
-        .get()?.count,
+        .get(SCHEMA_VERSION)?.count,
     ).toBe(1);
     expect(
       reopened.database
@@ -413,7 +414,7 @@ it.effect('migrates the v12 final index to admit a distinct failure-notice role'
         )
         .get()?.count,
     ).toBe(2);
-    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
     migrated.close();
   }),
 );

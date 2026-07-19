@@ -1,5 +1,6 @@
 import type { Effect } from 'effect';
 
+import type { StagedImageAttachment } from '../attachments/model';
 import type { CodexThreadId, CodexTurnId } from '../domain/ids';
 import type { CodexRuntimeError, GenerationBroken } from '../errors';
 import type { ClassifiedOutput } from './output-classifier';
@@ -8,6 +9,7 @@ import type { JsonRpcNotification } from './rpc';
 import type { CodexServerRequest, JsonRpcId } from './server-request-registry';
 
 interface StartTurnOptions {
+  readonly attachments: readonly StagedImageAttachment[];
   readonly clientUserMessageId: string;
   readonly input: string;
   readonly threadId: CodexThreadId;

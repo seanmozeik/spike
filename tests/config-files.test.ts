@@ -29,6 +29,7 @@ it.effect('creates runtime directories without inventing user configuration', ()
       paths.codexHome,
       paths.accounts,
       paths.state,
+      paths.attachments,
       paths.run,
       paths.logs,
     ]) {
