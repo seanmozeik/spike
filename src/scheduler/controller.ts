@@ -18,6 +18,7 @@ import type {
   SchedulerState,
   TurnIdentity,
 } from './model';
+import { ownsActiveTurn } from './ownership';
 import { poolDeadline, transitionScheduler } from './transition';
 
 type SchedulerControllerError =
@@ -62,6 +63,10 @@ interface SchedulerController {
   readonly activate: Effect.Effect<void, SchedulerControllerError>;
   readonly dispatch: (event: SchedulerEvent) => Effect.Effect<void, SchedulerControllerError>;
   readonly reloadBeforeActivation: (now: Date) => Effect.Effect<void, JournalTransactionError>;
+  readonly runIfTurnOwned: <E, R>(
+    identity: TurnIdentity,
+    effect: Effect.Effect<void, E, R>,
+  ) => Effect.Effect<void, E, R>;
   readonly snapshot: Effect.Effect<SchedulerState>;
 }
 
@@ -86,6 +91,18 @@ const turnIdentity = (state: SchedulerState): TurnIdentity | null =>
   state.active === null
     ? null
     : { generationId: state.generationId, logicalTurnId: state.active.logicalTurnId };
+
+const makeTurnOwnerGuard =
+  (
+    state: Ref.Ref<SchedulerState>,
+    semaphore: Semaphore.Semaphore,
+  ): SchedulerController['runIfTurnOwned'] =>
+  (identity, effect) =>
+    semaphore.withPermits(1)(
+      Effect.flatMap(Ref.get(state), (current) =>
+        ownsActiveTurn(current, identity) ? effect : Effect.void,
+      ),
+    );
 
 const runSideEffects = Effect.fn('SpikeScheduler.runSideEffects')(function* runSideEffects(
   ports: SchedulerPorts,
@@ -190,11 +207,13 @@ const makeSchedulerController = Effect.fn('SpikeScheduler.make')(function* makeS
   const dispatch = (event: SchedulerEvent): Effect.Effect<void, SchedulerControllerError> =>
     semaphore.withPermits(1)(applyUnlocked(event));
   const reloadBeforeActivation = makeReloadBeforeActivation(state, semaphore, journal, activation);
+  const runIfTurnOwned = makeTurnOwnerGuard(state, semaphore);
   const activate = makeActivate(state, semaphore, ports, activation);
   return {
     activate,
     dispatch,
     reloadBeforeActivation,
+    runIfTurnOwned,
     snapshot: Ref.get(state),
   } satisfies SchedulerController;
 });

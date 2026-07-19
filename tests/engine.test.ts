@@ -149,6 +149,15 @@ it.effect('delivers one compacting notice before the final answer', () =>
     fixture.push(inbound(1, 'investigate this deeply'));
     yield* settle(fixture.engine);
     expect(fixture.sent).toStrictEqual(['Looking into it now', 'compacting...', 'Finished']);
+    const compaction = fixture.database
+      .query<{ logical_turn_id: null | string; source_kind: string; state: string }, []>(
+        `SELECT logical_turn_id, source_kind, state FROM outbound_messages
+         WHERE source_kind = 'CodexCompactionItem'`,
+      )
+      .get();
+    expect(compaction?.logical_turn_id).not.toBeNull();
+    expect(compaction?.source_kind).toBe('CodexCompactionItem');
+    expect(compaction?.state).toBe('Delivered');
     fixture.remove();
   }),
 );
@@ -370,6 +379,81 @@ it.effect('/new suppresses a late failure from the superseded monitor', () =>
       fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
     ).toBe('Superseded');
     expect((yield* fixture.engine.snapshot).active).toBeNull();
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('/new suppresses a late success from the superseded monitor', () =>
+  Effect.gen(function* supersededMonitorSuccess() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({
+      behavior: { finalAnswer: 'Stale answer.', gate: gate.promise },
+    });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    fixture.push(inbound(2, '/new'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Superseded');
+
+    gate.resolve();
+    yield* fixture.engine.drain;
+
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+    expect(
+      fixture.database
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM outbound_messages
+           WHERE source_kind = 'CodexAgentItem' AND message_kind = 'Final'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect((yield* fixture.engine.snapshot).active).toBeNull();
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('/new suppresses late acknowledgements and compaction notices', () =>
+  Effect.gen(function* supersededTurnNotices() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({
+      behavior: {
+        acknowledgement: 'Late acknowledgement.',
+        compactions: ['late-compaction'],
+        finalAnswer: 'Late final.',
+        noticeGate: gate.promise,
+      },
+    });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    fixture.push(inbound(2, '/new'));
+    yield* fixture.engine.pollOnce;
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+
+    gate.resolve();
+    yield* fixture.engine.drain;
+
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+    expect(
+      fixture.database
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM outbound_messages
+           WHERE source_kind IN ('CodexAgentItem','CodexCompactionItem')`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Superseded');
     fixture.engine.close();
     fixture.remove();
   }),

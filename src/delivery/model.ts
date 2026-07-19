@@ -8,9 +8,11 @@ import type {
   OutboundMessageId,
 } from '../domain/ids';
 import type { JournalTransactionError } from '../errors';
+import type { TurnIdentity } from '../scheduler/model';
 
 type AssistantMessageKind = 'Final' | 'WorkAck';
 type DeliveryMessageKind = AssistantMessageKind | 'OutageNotice';
+type TurnNoticeKind = AssistantMessageKind | 'Compaction';
 
 interface DeliveryChunk {
   readonly attemptId: DeliveryAttemptId | null;
@@ -29,8 +31,19 @@ interface PreparedDelivery {
   readonly kind: DeliveryMessageKind;
 }
 
+interface PreparedTurnNotice extends PreparedDelivery {
+  readonly identity: TurnIdentity;
+  readonly noticeKind: TurnNoticeKind;
+}
+
 interface DeliveryJournal {
   readonly claimAttempt: (
+    chunkId: OutboundChunkId,
+    frontierRowId: number,
+    startedAt: Date,
+  ) => Effect.Effect<DeliveryAttemptId | null, JournalTransactionError>;
+  readonly claimTurnAttempt: (
+    identity: TurnIdentity,
     chunkId: OutboundChunkId,
     frontierRowId: number,
     startedAt: Date,
@@ -58,13 +71,13 @@ interface DeliveryJournal {
     chunkId: OutboundChunkId,
     finishedAt: Date,
   ) => Effect.Effect<void, JournalTransactionError>;
-  readonly prepareAssistantMessage: (
-    logicalTurnId: LogicalTurnId,
+  readonly prepareTurnNotice: (
+    identity: TurnIdentity,
     sourceId: string,
-    kind: AssistantMessageKind,
+    kind: TurnNoticeKind,
     text: string,
     createdAt: Date,
-  ) => Effect.Effect<PreparedDelivery, JournalTransactionError>;
+  ) => Effect.Effect<PreparedTurnNotice | null, JournalTransactionError>;
   readonly prepareFailureNotice: (
     logicalTurnId: LogicalTurnId,
     text: string,
@@ -88,4 +101,6 @@ export type {
   DeliveryJournal,
   DeliveryMessageKind,
   PreparedDelivery,
+  PreparedTurnNotice,
+  TurnNoticeKind,
 };

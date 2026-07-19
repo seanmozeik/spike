@@ -1,5 +1,5 @@
 import { it } from '@effect/vitest';
-import { Effect } from 'effect';
+import { Effect, Fiber } from 'effect';
 import { expect } from 'vitest';
 
 import {
@@ -162,5 +162,76 @@ it.effect('/new binds a ready thread and replies even when old-thread cleanup fa
     expect(replies).toEqual(['NewChat']);
     expect(failures).toHaveLength(1);
     expect((yield* controller.snapshot).codexThreadId).toBe('fresh-thread');
+  }),
+);
+
+it.effect('/new waits for an owned turn-notice critical section', () =>
+  Effect.gen(function* serializedTurnNotice() {
+    const started = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    let resetCommitted = false;
+    const active = {
+      ...initial,
+      active: {
+        acknowledged: false,
+        codexTurnId: CodexTurnId.make('codex-turn'),
+        logicalTurnId: LogicalTurnId.make('turn-1'),
+      },
+    } satisfies SchedulerState;
+    const ports: SchedulerPorts = {
+      bindThread: (): Effect.Effect<null> => Effect.succeed(null),
+      cleanupGeneration: (): Effect.Effect<void> => Effect.void,
+      replyLocal: (): Effect.Effect<void> => Effect.void,
+      reportFailure: (): Effect.Effect<void> => Effect.void,
+      schedulePool: (): Effect.Effect<void> => Effect.void,
+      startTurn: () =>
+        Effect.succeed({
+          threadId: CodexThreadId.make('thread'),
+          turnId: CodexTurnId.make('codex-turn'),
+        }),
+      steerTurn: (): Effect.Effect<void> => Effect.void,
+    };
+    const guardedJournal: SchedulerJournal = {
+      ...journal(),
+      commitTransition: (transition): Effect.Effect<void> =>
+        Effect.sync(() => {
+          if (transition.actions.some(({ kind }) => kind === 'ResetGeneration')) {
+            resetCommitted = true;
+          }
+        }),
+    };
+    const controller = yield* makeSchedulerController(active, guardedJournal, ports);
+    const notice = yield* controller
+      .runIfTurnOwned(
+        { generationId: active.generationId, logicalTurnId: active.active.logicalTurnId },
+        Effect.gen(function* heldNotice() {
+          started.resolve();
+          yield* Effect.promise(() => release.promise);
+        }),
+      )
+      .pipe(Effect.forkChild);
+    yield* Effect.promise(() => started.promise);
+    const reset = yield* controller
+      .dispatch({
+        kind: 'Inbound',
+        message: {
+          attachments: [],
+          id: InboundMessageId.make('new-command'),
+          receivedAt: new Date(),
+          text: '/new',
+        },
+        newGenerationId: GenerationId.make('generation-2'),
+        nextLogicalTurnId: LogicalTurnId.make('unused'),
+      })
+      .pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    expect(resetCommitted).toBe(false);
+
+    release.resolve();
+    yield* Fiber.join(notice);
+    yield* Fiber.join(reset);
+
+    expect(resetCommitted).toBe(true);
+    expect((yield* controller.snapshot).generationId).toBe('generation-2');
   }),
 );

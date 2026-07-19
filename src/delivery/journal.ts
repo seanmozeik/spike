@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
-import { randomUUID } from 'node:crypto';
 
 import { Effect } from 'effect';
 
 import { DeliveryAttemptId, OutboundChunkId, OutboundMessageId } from '../domain/ids';
 import { JournalTransactionError } from '../errors';
+import { makeClaimAttempt, makeClaimTurnAttempt } from './claim';
 import type { DeliveryChunk, DeliveryJournal } from './model';
 import { makePrepare } from './prepare';
 
@@ -49,54 +49,6 @@ const readChunks = (database: Database, outboundMessageId: string): readonly Del
       state: row.state,
       text: row.text ?? '',
     }));
-
-const makeClaimAttempt = (database: Database): DeliveryJournal['claimAttempt'] => {
-  const transaction = database.transaction(
-    (
-      chunkId: OutboundChunkId,
-      frontierRowId: number,
-      startedAt: string,
-    ): DeliveryAttemptId | null => {
-      const chunk = database
-        .query<{ state: DeliveryChunk['state'] }, [string]>(
-          'SELECT state FROM outbound_chunks WHERE id = ?',
-        )
-        .get(chunkId);
-      const active = database
-        .query<{ id: string }, [string]>(
-          `SELECT id FROM delivery_attempts
-           WHERE outbound_chunk_id = ? AND state IN ('Started','Sent','Unknown')
-           LIMIT 1`,
-        )
-        .get(chunkId);
-      if (chunk?.state !== 'Prepared' || active !== null) {
-        return null;
-      }
-      const attemptId = DeliveryAttemptId.make(randomUUID());
-      database.run(
-        `INSERT INTO delivery_attempts(
-           id, outbound_chunk_id, attempt_number, state, started_at, frontier_rowid
-         ) VALUES (
-           ?, ?, COALESCE((SELECT MAX(attempt_number) + 1 FROM delivery_attempts WHERE outbound_chunk_id = ?), 1),
-           'Started', ?, ?
-         )`,
-        [attemptId, chunkId, chunkId, startedAt, frontierRowId],
-      );
-      database.run(
-        `UPDATE outbound_messages SET state = 'Delivering'
-         WHERE id = (SELECT outbound_message_id FROM outbound_chunks WHERE id = ?)
-           AND state = 'Prepared'`,
-        [chunkId],
-      );
-      return attemptId;
-    },
-  );
-  return (chunkId, frontierRowId, startedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('claimAttempt', cause),
-      try: () => transaction.immediate(chunkId, frontierRowId, startedAt.toISOString()),
-    });
-};
 
 const makeListRecoverable = (database: Database): DeliveryJournal['listRecoverable'] =>
   Effect.try({
@@ -143,7 +95,8 @@ const makeMarkFailed =
           database.run("UPDATE outbound_chunks SET state = 'Failed' WHERE id = ?", [chunkId]);
           database.run(
             `UPDATE outbound_messages SET state = 'Failed'
-             WHERE id = (SELECT outbound_message_id FROM outbound_chunks WHERE id = ?)`,
+             WHERE id = (SELECT outbound_message_id FROM outbound_chunks WHERE id = ?)
+               AND state IN ('Prepared','Delivering','Delivered','Failed')`,
             [chunkId],
           );
         });
@@ -174,6 +127,7 @@ const makeMarkReconciled = (database: Database): DeliveryJournal['markReconciled
       database.run(
         `UPDATE outbound_messages SET state = 'Delivered', delivered_at = ?
          WHERE id = (SELECT outbound_message_id FROM outbound_chunks WHERE id = ?)
+           AND state IN ('Prepared','Delivering','Delivered')
            AND NOT EXISTS (
              SELECT 1 FROM outbound_chunks pending
              WHERE pending.outbound_message_id = outbound_messages.id
@@ -206,6 +160,7 @@ const makeMarkSent = (database: Database): DeliveryJournal['markSent'] => {
       database.run(
         `UPDATE outbound_messages SET state = 'Delivered', delivered_at = ?
          WHERE id = (SELECT outbound_message_id FROM outbound_chunks WHERE id = ?)
+           AND state IN ('Prepared','Delivering','Delivered')
            AND NOT EXISTS (
              SELECT 1 FROM outbound_chunks pending
              WHERE pending.outbound_message_id = outbound_messages.id
@@ -232,15 +187,16 @@ const makeDeliveryJournal = (database: Database): DeliveryJournal => {
   }));
   return {
     claimAttempt: makeClaimAttempt(database),
+    claimTurnAttempt: makeClaimTurnAttempt(database),
     listRecoverable: makeListRecoverable(database),
     markAttemptUnknown: makeMarkAttemptUnknown(database),
     markFailed: makeMarkFailed(database),
     markReconciled: makeMarkReconciled(database),
     markSent: makeMarkSent(database),
-    prepareAssistantMessage: prepare.assistant,
     prepareControlMessage: prepare.control,
     prepareFailureNotice: prepare.failure,
     prepareOutageNotice: prepare.outage,
+    prepareTurnNotice: prepare.turnNotice,
   };
 };
 
@@ -250,4 +206,6 @@ export type {
   DeliveryChunk,
   DeliveryJournal,
   PreparedDelivery,
+  PreparedTurnNotice,
+  TurnNoticeKind,
 } from './model';

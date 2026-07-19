@@ -17,6 +17,7 @@ interface TurnBehavior {
   readonly failure?: string;
   readonly finalAnswer?: string;
   readonly gate?: Promise<unknown>;
+  readonly noticeGate?: Promise<unknown>;
   readonly rateLimits?: Readonly<Record<string, unknown>> | (() => unknown);
   readonly rateLimitsFailure?: string;
   readonly resumeFailure?: string;
@@ -53,6 +54,9 @@ const makeWaitForTurn =
   (behavior: TurnBehavior): CodexRuntime['waitForTurn'] =>
   (_threadId, _turnId, handlers) =>
     Effect.gen(function* wait() {
+      if (behavior.noticeGate !== undefined) {
+        yield* Effect.promise(() => behavior.noticeGate ?? Promise.resolve());
+      }
       if (behavior.acknowledgement !== undefined) {
         handlers.onAcknowledgement(behavior.acknowledgement);
       }

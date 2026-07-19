@@ -89,3 +89,71 @@ it.effect('rejects multiple explicit final answers recovered after restart', () 
     fixture.remove();
   }),
 );
+
+it.effect('does not recover a completed Codex answer for a superseded turn', () =>
+  Effect.gen(function* supersededRestartRecovery() {
+    const resetAt = '2026-07-14T12:01:00.000Z';
+    const fixture = yield* makeEngineFixture({
+      prepare: (database) =>
+        Effect.sync(() => {
+          seedActiveTurn(database);
+          database.run(
+            "UPDATE generations SET state = 'Superseded', superseded_at = ? WHERE id = 'generation'",
+            [resetAt],
+          );
+          database.run(
+            "UPDATE logical_turns SET state = 'Superseded', completed_at = ? WHERE id = 'logical-turn'",
+            [resetAt],
+          );
+          database.run(
+            `INSERT INTO generations(id, sequence, state, created_at)
+             VALUES ('new-generation', 2, 'Current', ?)`,
+            [resetAt],
+          );
+          database.run(
+            `UPDATE scheduler_state
+             SET generation_id = 'new-generation', active_logical_turn_id = NULL,
+                 active_codex_turn_id = NULL, active_acknowledged = 0, updated_at = ?
+             WHERE singleton = 1`,
+            [resetAt],
+          );
+        }),
+      snapshot: {
+        id: 'thread-1',
+        turns: [
+          {
+            id: 'turn-1',
+            items: [
+              {
+                id: 'superseded-final',
+                phase: 'final_answer',
+                text: 'Stale recovered answer.',
+                type: 'agentMessage',
+              },
+            ],
+            status: 'completed',
+          },
+        ],
+      },
+    });
+
+    yield* settle(fixture.engine);
+
+    expect(fixture.reads).toStrictEqual([]);
+    expect(fixture.resumed).toStrictEqual([]);
+    expect(fixture.sent).toStrictEqual([]);
+    expect(
+      fixture.database
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM outbound_messages
+           WHERE source_kind = 'CodexAgentItem' AND message_kind = 'Final'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Superseded');
+    expect((yield* fixture.engine.snapshot).active).toBeNull();
+    fixture.remove();
+  }),
+);

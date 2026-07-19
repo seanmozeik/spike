@@ -5,11 +5,23 @@ import { Effect } from 'effect';
 
 import { type LogicalTurnId, type OutageEpisodeId, OutboundMessageId } from '../domain/ids';
 import { JournalTransactionError } from '../errors';
+import type { TurnIdentity } from '../scheduler/model';
 import { chunkFinalAnswer } from './chunk';
-import type { DeliveryJournal, DeliveryMessageKind, PreparedDelivery } from './model';
+import type {
+  DeliveryJournal,
+  DeliveryMessageKind,
+  PreparedDelivery,
+  PreparedTurnNotice,
+  TurnNoticeKind,
+} from './model';
 import { applyPlainTextFallback } from './plain-text';
 
-type DeliverySourceKind = 'CodexAgentItem' | 'Control' | 'OutageEpisode' | 'TurnFailureNotice';
+type DeliverySourceKind =
+  | 'CodexAgentItem'
+  | 'CodexCompactionItem'
+  | 'Control'
+  | 'OutageEpisode'
+  | 'TurnFailureNotice';
 
 interface PrepareInput {
   readonly createdAt: string;
@@ -24,10 +36,10 @@ interface PrepareInput {
 type PendingPrepareInput = Omit<PrepareInput, 'createdAt'>;
 
 interface PrepareFunctions {
-  readonly assistant: DeliveryJournal['prepareAssistantMessage'];
   readonly control: DeliveryJournal['prepareControlMessage'];
   readonly failure: DeliveryJournal['prepareFailureNotice'];
   readonly outage: DeliveryJournal['prepareOutageNotice'];
+  readonly turnNotice: DeliveryJournal['prepareTurnNotice'];
 }
 
 const ACKNOWLEDGEMENT_LIMIT = 240;
@@ -111,19 +123,22 @@ const prepareRows = (database: Database, input: PrepareInput): string => {
   return outboundMessageId;
 };
 
-const assistantInput = (
-  logicalTurnId: LogicalTurnId,
+const turnNoticeInput = (
+  identity: TurnIdentity,
   sourceId: string,
-  kind: DeliveryMessageKind,
+  noticeKind: TurnNoticeKind,
   text: string,
-): PendingPrepareInput => ({
-  kind,
-  logicalTurnId,
-  outageEpisodeId: null,
-  sourceId,
-  sourceKind: 'CodexAgentItem',
-  text,
-});
+): PendingPrepareInput => {
+  const compaction = noticeKind === 'Compaction';
+  return {
+    kind: compaction ? 'Final' : noticeKind,
+    logicalTurnId: identity.logicalTurnId,
+    outageEpisodeId: null,
+    sourceId,
+    sourceKind: compaction ? 'CodexCompactionItem' : 'CodexAgentItem',
+    text,
+  };
+};
 
 const controlInput = (sourceId: string, text: string): PendingPrepareInput => ({
   kind: 'Final',
@@ -152,6 +167,52 @@ const outageInput = (outageEpisodeId: OutageEpisodeId, text: string): PendingPre
   text,
 });
 
+const ownsTurn = (database: Database, identity: TurnIdentity): boolean =>
+  database
+    .query<{ readonly owned: 1 }, [string, string, string, string]>(
+      `SELECT 1 AS owned
+       FROM logical_turns lt
+       JOIN generations g ON g.id = lt.generation_id
+       JOIN scheduler_state s ON s.singleton = 1
+       WHERE lt.id = ? AND lt.generation_id = ? AND lt.state = 'Running'
+         AND g.state = 'Current'
+         AND s.generation_id = ? AND s.active_logical_turn_id = ?`,
+    )
+    .get(
+      identity.logicalTurnId,
+      identity.generationId,
+      identity.generationId,
+      identity.logicalTurnId,
+    ) !== null;
+
+const makePrepareTurnNotice = (
+  database: Database,
+  readPrepared: (outboundMessageId: string, kind: DeliveryMessageKind) => PreparedDelivery,
+): DeliveryJournal['prepareTurnNotice'] => {
+  const transaction = database.transaction(
+    (target: Database, input: PrepareInput, identity: TurnIdentity): string | null =>
+      ownsTurn(target, identity) ? prepareRows(target, input) : null,
+  );
+  return (identity, sourceId, noticeKind, text, createdAt) =>
+    Effect.try({
+      catch: (cause) =>
+        new JournalTransactionError({
+          cause,
+          message: 'prepare turn notice failed',
+          transaction: 'prepareTurnNotice',
+        }),
+      try: (): PreparedTurnNotice | null => {
+        const input = turnNoticeInput(identity, sourceId, noticeKind, text);
+        const id = transaction.immediate(
+          database,
+          { createdAt: createdAt.toISOString(), ...input },
+          identity,
+        );
+        return id === null ? null : { ...readPrepared(id, input.kind), identity, noticeKind };
+      },
+    });
+};
+
 const makePrepare = (
   database: Database,
   readPrepared: (outboundMessageId: string, kind: DeliveryMessageKind) => PreparedDelivery,
@@ -174,13 +235,12 @@ const makePrepare = (
       },
     });
   return {
-    assistant: (logicalTurnId, sourceId, kind, text, createdAt) =>
-      prepare(assistantInput(logicalTurnId, sourceId, kind, text), createdAt),
     control: (sourceId, text, createdAt) => prepare(controlInput(sourceId, text), createdAt),
     failure: (logicalTurnId, text, createdAt) =>
       prepare(failureInput(logicalTurnId, text), createdAt),
     outage: (outageEpisodeId, text, createdAt) =>
       prepare(outageInput(outageEpisodeId, text), createdAt),
+    turnNotice: makePrepareTurnNotice(database, readPrepared),
   };
 };
 

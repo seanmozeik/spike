@@ -7,6 +7,7 @@ import { compactError } from '../delivery/service';
 import { LogicalTurnId as LogicalTurnIdSchema } from '../domain/ids';
 import { isGenerationBroken } from '../errors';
 import type { SchedulerState, TurnIdentity } from '../scheduler/model';
+import { ownsActiveTurn } from '../scheduler/ownership';
 import { classifyAccountFailure } from './account-failover';
 import { report, type EngineContext } from './context';
 import type {
@@ -17,10 +18,6 @@ import type {
 } from './turn-terminal-model';
 
 const MAX_TERMINALS_PER_DRAIN = 8;
-
-const ownsActiveTurn = (state: SchedulerState, identity: TurnIdentity): boolean =>
-  state.generationId === identity.generationId &&
-  state.active?.logicalTurnId === identity.logicalTurnId;
 
 const sourceId = (state: SchedulerState, identity: TurnIdentity): string =>
   state.active?.logicalTurnId === identity.logicalTurnId && state.active.codexTurnId !== null

@@ -38,13 +38,16 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
        filename = NULL, source_path = NULL WHERE attachment_guid = 'terminal-attachment'`,
     );
     const terminal = yield* startCodexTurn(fixture, 'terminal', terminalMessage);
-    const delivered = yield* fixture.delivery.prepareAssistantMessage(
-      terminal.logicalTurnId,
+    const delivered = yield* fixture.delivery.prepareTurnNotice(
+      { generationId: fixture.state.generationId, logicalTurnId: terminal.logicalTurnId },
       'item-terminal',
       'Final',
       'terminal private output',
       OLD,
     );
+    if (delivered === null) {
+      throw new Error('terminal delivery did not own the active turn');
+    }
     const [deliveredChunk] = delivered.chunks;
     if (deliveredChunk === undefined) {
       throw new Error('terminal delivery did not create a chunk');
@@ -65,8 +68,8 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
 
     const activeMessage = yield* ingest(fixture, 2, 'active private input');
     const active = yield* startCodexTurn(fixture, 'active', activeMessage);
-    yield* fixture.delivery.prepareAssistantMessage(
-      active.logicalTurnId,
+    yield* fixture.delivery.prepareTurnNotice(
+      { generationId: fixture.state.generationId, logicalTurnId: active.logicalTurnId },
       'item-active',
       'Final',
       'active private output',
@@ -147,13 +150,16 @@ it.effect('redacts Failed and Prepared sibling chunks after their parent fails',
     const fixture = yield* makeRetentionFixture();
     const message = yield* ingest(fixture, 1, 'delivery failure input');
     const turn = yield* startCodexTurn(fixture, 'failed', message);
-    const prepared = yield* fixture.delivery.prepareAssistantMessage(
-      turn.logicalTurnId,
+    const prepared = yield* fixture.delivery.prepareTurnNotice(
+      { generationId: fixture.state.generationId, logicalTurnId: turn.logicalTurnId },
       'item-failed',
       'Final',
       'private failed output '.repeat(600),
       OLD,
     );
+    if (prepared === null) {
+      throw new Error('failed delivery did not own the active turn');
+    }
     expect(prepared.chunks.length).toBeGreaterThan(1);
     const [first] = prepared.chunks;
     if (first === undefined) {
