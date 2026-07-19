@@ -8,7 +8,11 @@ import type { CodexRuntime } from '../codex/runtime';
 import type { ConversationPolicy } from '../conversation-policy';
 import { compactError, type DeliveryService } from '../delivery/service';
 import type { ChatGuid } from '../domain/ids';
-import { SpikeRuntimeError } from '../errors';
+import {
+  SpikeRuntimeError,
+  type WaitingForAuthentication,
+  type WaitingForCapacity,
+} from '../errors';
 import type { CodexJournal } from '../journal/codex-journal';
 import type { SchedulerJournal } from '../journal/scheduler-journal';
 import type { Journal } from '../journal/service';
@@ -34,13 +38,21 @@ interface SpikeEngineOptions {
   readonly runtime: CodexRuntime;
 }
 
+type AccountFailure = WaitingForAuthentication | WaitingForCapacity;
+
 interface EngineContext {
+  readonly accountFailover: {
+    pending: AccountFailure | null;
+    requested: boolean;
+    readonly signal: PromiseWithResolvers<AccountFailure>;
+  };
   approval: ApprovalManager | null;
   readonly closing: { value: boolean };
   readonly codexJournal: CodexJournal;
   readonly conversationReady: { value: boolean };
   readonly controllerReady: PromiseWithResolvers<SchedulerController>;
   readonly journal: Journal;
+  readonly lastAccountObservationAt: { value: Date };
   readonly lastRedactionAt: { value: Date };
   readonly monitors: Map<string, Promise<void>>;
   readonly now: () => Date;
@@ -99,4 +111,4 @@ const dispatch = async (context: EngineContext, event: SchedulerEvent): Promise<
 };
 
 export { controlReplyText, dispatch, inputText, report };
-export type { EngineContext, SpikeEngineOptions };
+export type { AccountFailure, EngineContext, SpikeEngineOptions };

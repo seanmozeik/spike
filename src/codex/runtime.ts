@@ -8,7 +8,7 @@ import { CodexThreadId, CodexTurnId } from '../domain/ids';
 import { CodexRuntimeError } from '../errors';
 import type { SpikePaths } from '../paths';
 import { assembleSystemPrompt } from '../system-prompt';
-import { activateAccount, discoverAccounts, selectAccount } from './account-pool';
+import { activateAccount, type AccountPoolOptions, type AccountRecord } from './account-pool';
 import type { ClassifiedOutput } from './output-classifier';
 import type { ThreadItem, ThreadSnapshot, ThreadTurn } from './reconcile';
 import { initializeRpc, spawnRpcHandle, type RpcHandle } from './rpc';
@@ -203,36 +203,16 @@ const makeCodexRuntime = (
     waitForTurn(handle, threadId, turnId, handlers),
 });
 
-const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime(
+const openRuntime = Effect.fn('SpikeCodex.open')(function* openRuntime(
   paths: SpikePaths,
   config: SpikeConfig,
+  accountId: string,
   logMode: CodexLogMode = 'quiet',
 ) {
   yield* Effect.tryPromise({
     catch: (cause) => runtimeError('home/create', cause),
     try: () => mkdir(config.codexHome, { recursive: true }),
   });
-  const accountOptions = {
-    accountsDirectory: paths.accounts,
-    codexHome: config.codexHome,
-    seedAuthPath: path.join(config.codexHome, 'auth.json'),
-  };
-  const accounts = yield* discoverAccounts(accountOptions);
-  const selection = selectAccount(accounts, new Date());
-  let accountId: string;
-  if (selection.kind === 'Selected') {
-    yield* activateAccount(accountOptions, selection.account);
-    accountId = selection.account.id;
-  } else {
-    const provider = yield* Effect.tryPromise({
-      catch: (cause) => runtimeError('provider/read', cause),
-      try: () => customProvider(config.codexHome),
-    });
-    if (provider === null) {
-      return yield* selection.error;
-    }
-    accountId = `provider:${provider}`;
-  }
   const userContext = yield* Effect.tryPromise({
     catch: (cause) => runtimeError('prompt/read', cause),
     try: () => readFile(config.promptPath, 'utf8'),
@@ -254,21 +234,32 @@ const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime
   return makeCodexRuntime(handle, prompt, accountId, config.workingDirectory);
 });
 
-const restartCodexRuntime = Effect.fn('SpikeCodex.restart')(function* restartCodexRuntime(
-  current: CodexRuntime,
-  replacement: Effect.Effect<CodexRuntime, CodexRuntimeError>,
-  threadId: CodexThreadId,
-) {
-  yield* Effect.tryPromise({
-    catch: (cause) => runtimeError('restart/close', cause),
-    try: () => current.close(),
-  });
-  const next = yield* replacement;
-  yield* next
-    .resumeThread(threadId)
-    .pipe(Effect.tapError(() => Effect.promise(() => next.close())));
-  return next;
-});
+const openAccountCodexRuntime = Effect.fn('SpikeCodex.openAccount')(
+  function* openAccountCodexRuntime(
+    paths: SpikePaths,
+    config: SpikeConfig,
+    accountOptions: AccountPoolOptions,
+    account: AccountRecord,
+    logMode: CodexLogMode = 'quiet',
+  ) {
+    yield* activateAccount(accountOptions, account);
+    return yield* openRuntime(paths, config, account.id, logMode);
+  },
+);
 
-export { makeCodexRuntime, openCodexRuntime, restartCodexRuntime };
+const readCustomProvider = (config: SpikeConfig): Effect.Effect<null | string, CodexRuntimeError> =>
+  Effect.tryPromise({
+    catch: (cause) => runtimeError('provider/read', cause),
+    try: () => customProvider(config.codexHome),
+  });
+
+const openProviderCodexRuntime = (
+  paths: SpikePaths,
+  config: SpikeConfig,
+  provider: string,
+  logMode: CodexLogMode = 'quiet',
+): Effect.Effect<CodexRuntime, CodexRuntimeError> =>
+  openRuntime(paths, config, `provider:${provider}`, logMode);
+
+export { makeCodexRuntime, openAccountCodexRuntime, openProviderCodexRuntime, readCustomProvider };
 export type { CodexRuntime, StartTurnOptions, SteerTurnOptions } from './runtime-types';

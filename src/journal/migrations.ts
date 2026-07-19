@@ -1,4 +1,4 @@
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -170,8 +170,10 @@ const migrationStatements = [
     account_id TEXT NOT NULL,
     observed_at TEXT NOT NULL,
     usable INTEGER NOT NULL CHECK(usable IN (0,1)),
+    mode TEXT NOT NULL CHECK(mode IN ('Available','Capacity','Authentication')),
     usage_json TEXT,
-    reset_at TEXT
+    reset_at TEXT,
+    selected_at TEXT
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS outage_episodes (
     id TEXT PRIMARY KEY,

@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-
 import { Option, Schema } from 'effect';
+
+import { makeFakeCodexDaemonHandler } from './fake-codex-daemon';
 
 const EXIT_CODE = 17;
 const INVALID_USAGE_CODE = 64;
@@ -11,10 +10,6 @@ const SPLIT_DELAY_MS = 5;
 const LATE_RESPONSE_DELAY_MS = 50;
 const SCRIPTED_ERROR_CODE = -32_000;
 const ORPHAN_RESPONSE_ID = 999_999;
-const EXIT_AFTER_INITIALIZE_MARKER = '.exit-after-initialize';
-const EXIT_DURING_TURN_MARKER = '.exit-during-turn';
-const EXIT_DURING_UNAVAILABLE_TURN_MARKER = '.exit-during-unavailable-turn';
-const ALLOW_UNAVAILABLE_TURN_EXIT_MARKER = '.allow-unavailable-turn-exit';
 
 const RpcRequest = Schema.Struct({
   id: Schema.Union([Schema.Finite, Schema.String]),
@@ -115,42 +110,7 @@ const scheduleLateResult = (request: RpcRequest): void => {
 
 const exitChild = (): never => process.exit(EXIT_CODE);
 
-const markerExists = (marker: string): boolean => {
-  const codexHome = process.env['CODEX_HOME'];
-  return codexHome !== undefined && existsSync(path.join(codexHome, marker));
-};
-
-const exitWhenUnavailableTurnReleased = (): void => {
-  if (markerExists(ALLOW_UNAVAILABLE_TURN_EXIT_MARKER)) {
-    exitChild();
-  }
-  schedule(SPLIT_DELAY_MS, exitWhenUnavailableTurnReleased);
-};
-
-const handleDaemonRequest = (request: RpcRequest): boolean => {
-  if (request.method === 'initialize') {
-    writeJson({ id: request.id, jsonrpc: '2.0', result: {} });
-    if (markerExists(EXIT_AFTER_INITIALIZE_MARKER)) {
-      schedule(SPLIT_DELAY_MS, exitChild);
-    }
-    return true;
-  }
-  if (request.method === 'thread/start') {
-    writeJson({ id: request.id, jsonrpc: '2.0', result: { thread: { id: 'daemon-thread' } } });
-    return true;
-  }
-  if (request.method === 'turn/start') {
-    writeJson({ id: request.id, jsonrpc: '2.0', result: { turn: { id: 'daemon-turn' } } });
-    if (markerExists(EXIT_DURING_TURN_MARKER)) {
-      schedule(LATE_RESPONSE_DELAY_MS, exitChild);
-    }
-    if (markerExists(EXIT_DURING_UNAVAILABLE_TURN_MARKER)) {
-      exitWhenUnavailableTurnReleased();
-    }
-    return true;
-  }
-  return false;
-};
+const handleDaemonRequest = makeFakeCodexDaemonHandler({ exitChild, schedule, writeJson });
 
 const handleRequest = async (request: RpcRequest): Promise<void> => {
   if (handleDaemonRequest(request)) {

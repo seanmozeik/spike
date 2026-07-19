@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import { Command, Flag } from 'effect/unstable/cli';
+import { Argument, Command, Flag } from 'effect/unstable/cli';
 
 import { outputMode } from './cli-flags';
 import { emit, toMode } from './cli-shared';
@@ -10,6 +10,7 @@ import { realPrompts } from './onboarding/prompts';
 import { runOnboarding } from './onboarding/run';
 import { defaultServices } from './onboarding/services';
 import {
+  addAccount,
   accounts,
   approvals,
   doctor,
@@ -18,6 +19,7 @@ import {
   serviceStatus,
   startService,
   stopService,
+  type AccountAddResult,
   type AccountResult,
   type LogResult,
   type ServiceStatusResult,
@@ -36,7 +38,20 @@ type OperationCommand = Command.Command<
   SpikeRuntimeError
 >;
 
+type AccountAddCommand = Command.Command<
+  'add',
+  {
+    readonly accountId: string;
+    readonly agent: boolean;
+    readonly json: boolean;
+    readonly sourcePath: string;
+  },
+  Record<string, never>,
+  SpikeRuntimeError
+>;
+
 interface OperationHandlers {
+  readonly addAccount: (accountId: string, sourcePath: string) => Promise<AccountAddResult>;
   readonly accounts: () => Promise<AccountResult>;
   readonly approvals: () => Promise<ApprovalList>;
   readonly doctor: () => Promise<DoctorReport>;
@@ -89,6 +104,37 @@ const command = (
     );
   }).pipe(Command.withDescription(description));
 
+const makeAccountAddCommand = (handler: OperationHandlers['addAccount']): AccountAddCommand =>
+  Command.make(
+    'add',
+    {
+      ...outputMode,
+      accountId: Argument.string('account-id'),
+      sourcePath: Argument.string('auth-json-path'),
+    },
+    ({ accountId, agent, json, sourcePath }) => {
+      const mode = toMode(agent, json);
+      return Effect.tryPromise({
+        catch: (cause) =>
+          cause instanceof SpikeRuntimeError
+            ? cause
+            : new SpikeRuntimeError({
+                cause,
+                message: cause instanceof Error ? cause.message : String(cause),
+                operation: 'cli/accounts-add',
+              }),
+        try: () => handler(accountId, sourcePath),
+      }).pipe(
+        Effect.tap((value) =>
+          Effect.sync(() => {
+            emit(mode, value, () => {
+              console.log(JSON.stringify(value));
+            });
+          }),
+        ),
+      );
+    },
+  ).pipe(Command.withDescription('Add an isolated Codex credential snapshot'));
 const formatApprovals = (value: unknown): string => {
   if (!isApprovalList(value)) {
     return JSON.stringify(value);
@@ -102,7 +148,7 @@ const formatApprovals = (value: unknown): string => {
 };
 
 const makeOperationCommands = (handlers: OperationHandlers): OperationCommandSet => ({
-  accountsCommand: command('accounts', 'Show configured Codex accounts', handlers.accounts),
+  accountsCommand: command('list', 'Show configured Codex accounts', handlers.accounts),
   approvalsCommand: command(
     'approvals',
     'List pending and recently resolved approvals',
@@ -126,6 +172,7 @@ const makeOperationCommands = (handlers: OperationHandlers): OperationCommandSet
 
 const liveOperationHandlers: OperationHandlers = {
   accounts,
+  addAccount,
   approvals,
   doctor,
   logs: readLogs,
@@ -175,6 +222,10 @@ const serveCommand = Command.make('serve', { verbose: verboseFlag }).pipe(
 
 const makeCliApp = (handlers: OperationHandlers = liveOperationHandlers): SpikeCliApp => {
   const commands = makeOperationCommands(handlers);
+  const accountsCommand = Command.make('accounts').pipe(
+    Command.withDescription('Manage isolated Codex accounts'),
+    Command.withSubcommands([makeAccountAddCommand(handlers.addAccount), commands.accountsCommand]),
+  );
   return Command.make('spike').pipe(
     Command.withSubcommands([
       commands.startCommand,
@@ -184,7 +235,7 @@ const makeCliApp = (handlers: OperationHandlers = liveOperationHandlers): SpikeC
       commands.doctorCommand,
       initCommand,
       commands.logsCommand,
-      commands.accountsCommand,
+      accountsCommand,
       commands.approvalsCommand,
       serveCommand,
     ]),

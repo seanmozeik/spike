@@ -14,6 +14,7 @@ import {
   type LogicalTurnId,
 } from '../domain/ids';
 import { JournalTransactionError } from '../errors';
+import { makeAccountJournal, type AccountJournal } from './account-journal';
 import {
   makeGenerationThreadJournal,
   type GenerationThreadJournal,
@@ -52,7 +53,7 @@ interface AttemptRow {
   readonly submission_kind: 'Start' | 'Steer';
 }
 
-interface CodexJournal extends GenerationThreadJournal {
+interface CodexJournal extends AccountJournal, GenerationThreadJournal {
   readonly acceptCodexTurn: (
     attemptId: CodexAttemptId,
     threadId: CodexThreadId,
@@ -62,6 +63,10 @@ interface CodexJournal extends GenerationThreadJournal {
     input: BeginCodexAttempt,
   ) => Effect.Effect<CodexAttemptId, JournalTransactionError>;
   readonly loadNonterminalAttempts: Effect.Effect<readonly CodexAttemptRecord[]>;
+  readonly reassignCodexAttempt: (
+    attemptId: CodexAttemptId,
+    accountId: AccountId,
+  ) => Effect.Effect<void, JournalTransactionError>;
   readonly finishLogicalTurn: (
     logicalTurnId: LogicalTurnId,
     outcome: 'Completed' | 'Failed',
@@ -72,13 +77,6 @@ interface CodexJournal extends GenerationThreadJournal {
     itemId: CodexItemId,
     kind: string,
     payload: unknown,
-    observedAt: Date,
-  ) => Effect.Effect<void, JournalTransactionError>;
-  readonly recordAccountObservation: (
-    accountId: AccountId,
-    usable: boolean,
-    usage: unknown,
-    resetAt: Date | null,
     observedAt: Date,
   ) => Effect.Effect<void, JournalTransactionError>;
   readonly recordSubmissionUnknown: (
@@ -201,23 +199,18 @@ const makeFinishLogicalTurn =
       },
     });
 
-const makeRecordAccountObservation =
-  (database: Database): CodexJournal['recordAccountObservation'] =>
-  (accountId, usable, usage, resetAt, observedAt) =>
+const makeReassignCodexAttempt =
+  (database: Database): CodexJournal['reassignCodexAttempt'] =>
+  (attemptId, accountId) =>
     Effect.try({
-      catch: (cause) => journalError('recordAccountObservation', cause),
+      catch: (cause) => journalError('reassignCodexAttempt', cause),
       try: () => {
-        database.run(
-          `INSERT INTO account_observations(account_id, observed_at, usable, usage_json, reset_at)
-         VALUES (?, ?, ?, ?, ?)`,
-          [
-            accountId,
-            observedAt.toISOString(),
-            usable ? 1 : 0,
-            JSON.stringify(usage),
-            resetAt?.toISOString() ?? null,
-          ],
+        const result = database.run(
+          `UPDATE codex_attempts SET account_id = ?
+           WHERE id = ? AND state IN ('Prepared','SubmissionUnknown')`,
+          [accountId, attemptId],
         );
+        changedOne(result.changes, 'reassignCodexAttempt');
       },
     });
 
@@ -237,6 +230,7 @@ const makeUnknown =
     });
 
 const makeCodexJournal = (database: Database): CodexJournal => ({
+  ...makeAccountJournal(database),
   ...makeGenerationThreadJournal(database),
   acceptCodexTurn: makeAcceptTurn(database),
   beginCodexAttempt: makeBeginAttempt(database),
@@ -252,7 +246,7 @@ const makeCodexJournal = (database: Database): CodexJournal => ({
       .all()
       .map((row) => parseAttempt(row)),
   ),
-  recordAccountObservation: makeRecordAccountObservation(database),
+  reassignCodexAttempt: makeReassignCodexAttempt(database),
   recordAgentItem: makeRecordItem(database),
   recordSubmissionUnknown: makeUnknown(database),
 });

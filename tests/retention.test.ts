@@ -272,9 +272,9 @@ it.effect('prunes old failure and account observations without deleting recent r
       [OLD.toISOString(), NOW.toISOString()],
     );
     fixture.database.run(
-      `INSERT INTO account_observations(account_id, observed_at, usable, usage_json)
-       VALUES ('old-account', ?, 1, '{"private":"old"}'),
-              ('recent-account', ?, 1, '{"private":"recent"}')`,
+      `INSERT INTO account_observations(account_id, observed_at, usable, mode, usage_json)
+       VALUES ('old-account', ?, 1, 'Available', '{"private":"old"}'),
+              ('recent-account', ?, 1, 'Available', '{"private":"recent"}')`,
       [OLD.toISOString(), NOW.toISOString()],
     );
 

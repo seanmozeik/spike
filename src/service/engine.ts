@@ -1,17 +1,23 @@
-import { randomUUID } from 'node:crypto';
-
 import { Duration, Effect, Fiber, Result } from 'effect';
 
-import { GenerationId, type InboundMessageId, LogicalTurnId } from '../domain/ids';
+import { observeAccount } from '../codex/account-observation';
+import { WaitingForCapacity } from '../errors';
 import { makeCodexJournal } from '../journal/codex-journal';
 import type { PendingControl } from '../journal/control-recovery';
-import type { PendingInboundMessage } from '../journal/inbound-recovery';
 import { makeSchedulerJournal } from '../journal/scheduler-journal';
 import { makeJournal } from '../journal/service';
 import { makeSchedulerController, type SchedulerController } from '../scheduler/controller';
 import type { SchedulerState } from '../scheduler/model';
-import { controlReplyText, report, type EngineContext, type SpikeEngineOptions } from './context';
+import { captureAccountFailure, requestPendingAccountFailover } from './account-failover';
+import {
+  controlReplyText,
+  report,
+  type AccountFailure,
+  type EngineContext,
+  type SpikeEngineOptions,
+} from './context';
 import { initializeConversation } from './conversation-lifecycle';
+import { dispatchPending } from './inbound-dispatch';
 import { pollInbox } from './inbox-poll';
 import { failTurn, retryTurnTerminals } from './turn-failure';
 import { recoverActive } from './turn-recovery';
@@ -19,6 +25,7 @@ import { makeTurnTerminalQueue } from './turn-terminal-model';
 import { makePorts } from './turns';
 
 interface SpikeEngine {
+  readonly accountUnavailable: Effect.Effect<AccountFailure>;
   readonly close: () => void;
   readonly drain: Effect.Effect<void>;
   readonly pollOnce: Effect.Effect<void, unknown>;
@@ -33,6 +40,34 @@ const DEFAULT_POLL_INTERVAL_MS = 500;
 const RETENTION_DAYS = 30;
 const MILLISECONDS_PER_DAY = 86_400_000;
 const REDACTION_INTERVAL_MS = Duration.toMillis('6 hours');
+const ACCOUNT_OBSERVATION_INTERVAL_MS = Duration.toMillis('1 minute');
+
+const observeAccountIfDue = Effect.fn('SpikeEngine.observeAccountIfDue')(
+  function* observeAccountIfDue(context: EngineContext, controller: SchedulerController) {
+    const at = context.now();
+    if (
+      context.options.runtime.accountId.startsWith('provider:') ||
+      context.accountFailover.pending !== null ||
+      at.getTime() - context.lastAccountObservationAt.value.getTime() <
+        ACCOUNT_OBSERVATION_INTERVAL_MS
+    ) {
+      return false;
+    }
+    context.lastAccountObservationAt.value = at;
+    const result = yield* Effect.result(
+      observeAccount(context.options.runtime, context.codexJournal, at),
+    );
+    if (Result.isFailure(result)) {
+      report(context, result.failure);
+      return false;
+    }
+    if (result.success.mode === 'Capacity') {
+      context.accountFailover.pending = new WaitingForCapacity({ resetAt: result.success.resetAt });
+      return yield* requestPendingAccountFailover(context, controller);
+    }
+    return false;
+  },
+);
 
 const redactAt = Effect.fn('SpikeEngine.redactAt')(function* redactAt(
   context: EngineContext,
@@ -68,51 +103,6 @@ const redactIfDue = Effect.fn('SpikeEngine.redactIfDue')(function* redactIfDue(
   context.lastRedactionAt.value = at;
 });
 
-const runLike = (context: EngineContext, id: InboundMessageId, text: string, at: Date): void => {
-  Effect.runFork(context.options.like.acknowledge(id, text, at));
-};
-
-const dispatchPending = (
-  context: EngineContext,
-  controller: SchedulerController,
-  messages: readonly PendingInboundMessage[],
-  at: Date,
-): Effect.Effect<void, unknown> =>
-  Effect.gen(function* dispatchMessages() {
-    for (const message of messages) {
-      if (message.acknowledgementText !== null) {
-        runLike(context, message.id, message.acknowledgementText, at);
-      }
-      const state = yield* controller.snapshot;
-      const nextLogicalTurnId = LogicalTurnId.make(randomUUID());
-      const event = {
-        kind: 'Inbound',
-        message: { id: message.id, receivedAt: message.receivedAt, text: message.text },
-        newGenerationId: GenerationId.make(randomUUID()),
-        nextLogicalTurnId,
-      } as const;
-      const dispatched = yield* Effect.result(controller.dispatch(event));
-      if (Result.isFailure(dispatched)) {
-        const command = message.text.trim().toLowerCase();
-        if (
-          state.active === null &&
-          !state.generationBroken &&
-          command !== '/new' &&
-          command !== '/status'
-        ) {
-          yield* failTurn(
-            context,
-            { generationId: state.generationId, logicalTurnId: nextLogicalTurnId },
-            dispatched.failure,
-          );
-        } else {
-          report(context, dispatched.failure);
-        }
-        return;
-      }
-    }
-  });
-
 const recoverControlReply = (
   context: EngineContext,
   control: PendingControl,
@@ -131,6 +121,34 @@ const recoverControlReplies = (context: EngineContext): Effect.Effect<void, unkn
     }
   });
 
+const recoverPendingTurn = Effect.fn('SpikeEngine.recoverPendingTurn')(function* recoverPendingTurn(
+  context: EngineContext,
+  controller: SchedulerController,
+) {
+  if (!context.recoveryPending.value) {
+    return false;
+  }
+  context.recoveryPending.value = false;
+  const state = yield* controller.snapshot;
+  const recovery = yield* Effect.result(recoverActive(context, controller));
+  if (Result.isSuccess(recovery)) {
+    return false;
+  }
+  if (state.active === null) {
+    report(context, recovery.failure);
+    return false;
+  }
+  if (yield* captureAccountFailure(context, controller, recovery.failure)) {
+    return true;
+  }
+  yield* failTurn(
+    context,
+    { generationId: state.generationId, logicalTurnId: state.active.logicalTurnId },
+    recovery.failure,
+  );
+  return false;
+});
+
 const pollOnce = (
   context: EngineContext,
   controller: SchedulerController,
@@ -141,27 +159,17 @@ const pollOnce = (
     }
     yield* initializeConversation(context);
     yield* retryTurnTerminals(context);
-    if (context.recoveryPending.value) {
-      context.recoveryPending.value = false;
-      const state = yield* controller.snapshot;
-      const recovery = yield* Effect.result(recoverActive(context, controller));
-      if (Result.isFailure(recovery)) {
-        if (state.active === null) {
-          report(context, recovery.failure);
-        } else {
-          yield* failTurn(
-            context,
-            { generationId: state.generationId, logicalTurnId: state.active.logicalTurnId },
-            recovery.failure,
-          );
-        }
-      }
+    if (yield* recoverPendingTurn(context, controller)) {
+      return;
     }
     yield* controller.activate;
     yield* recoverControlReplies(context);
     yield* pollInbox(context);
     if (context.approval !== null) {
       yield* context.approval.poll;
+    }
+    if (yield* requestPendingAccountFailover(context, controller)) {
+      return;
     }
     const at = context.now();
     const pending = yield* context.journal.listPendingInbound;
@@ -186,12 +194,14 @@ const closeEngine = (context: EngineContext): void => {
 };
 
 const makeContext = (options: SpikeEngineOptions, now: () => Date): EngineContext => ({
+  accountFailover: { pending: null, requested: false, signal: Promise.withResolvers() },
   approval: null,
   closing: { value: false },
   codexJournal: makeCodexJournal(options.database),
   controllerReady: Promise.withResolvers<SchedulerController>(),
   conversationReady: { value: false },
   journal: makeJournal(options.database, { chatGuid: options.chatGuid, handle: options.handle }),
+  lastAccountObservationAt: { value: new Date(0) },
   lastRedactionAt: { value: now() },
   monitors: new Map(),
   now,
@@ -245,10 +255,15 @@ const makeSpikeEngine = Effect.fn('SpikeEngine.make')(function* makeSpikeEngine(
     makePorts(context),
   );
   context.controllerReady.resolve(controller);
-  const once = withPeriodicRedaction(context, pollOnce(context, controller));
+  const once = observeAccountIfDue(context, controller).pipe(
+    Effect.flatMap((rotating) =>
+      rotating ? Effect.void : withPeriodicRedaction(context, pollOnce(context, controller)),
+    ),
+  );
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const cycle = makeCycle(context, once, interval);
   return {
+    accountUnavailable: Effect.promise(() => context.accountFailover.signal.promise),
     close: (): void => {
       closeEngine(context);
     },

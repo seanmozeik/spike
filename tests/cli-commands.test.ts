@@ -7,7 +7,7 @@ import { formatApprovals, makeCliApp, type OperationHandlers } from '../src/cli-
 import { SpikeRuntimeError } from '../src/errors';
 
 const outputs = {
-  accounts: { accounts: [], active: null, observations: [], ok: true },
+  accounts: { accounts: [], active: null, observations: [], ok: true, state: null },
   approvals: {
     approvals: [
       {
@@ -48,6 +48,10 @@ const handlersWith = (calls: string[]): OperationHandlers => {
     };
   return {
     accounts: handler('accounts'),
+    addAccount: (accountId, sourcePath) => {
+      calls.push(`addAccount:${accountId}:${sourcePath}`);
+      return Promise.resolve({ account: { id: accountId }, ok: true });
+    },
     approvals: handler('approvals'),
     doctor: handler('doctor'),
     logs: handler('logs'),
@@ -81,7 +85,8 @@ it('routes every operator subcommand through its injected handler', async () => 
   await run(['doctor']);
   await run(['logs']);
   await run(['approvals']);
-  await run(['accounts']);
+  await run(['accounts', 'list']);
+  await run(['accounts', 'add', 'secondary', '/tmp/auth.json']);
 
   expect(calls).toStrictEqual([
     'start',
@@ -92,8 +97,9 @@ it('routes every operator subcommand through its injected handler', async () => 
     'logs',
     'approvals',
     'accounts',
+    'addAccount:secondary:/tmp/auth.json',
   ]);
-  expect(log).toHaveBeenCalledTimes(8);
+  expect(log).toHaveBeenCalledTimes(9);
 });
 
 it('renders hook diagnostics for humans and keeps the structured doctor object stable', async () => {

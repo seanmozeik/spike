@@ -16,7 +16,9 @@ interface TurnBehavior {
   readonly deliveryFailure?: string;
   readonly failure?: string;
   readonly finalAnswer?: string;
-  readonly gate?: Promise<void>;
+  readonly gate?: Promise<unknown>;
+  readonly rateLimits?: Readonly<Record<string, unknown>> | (() => unknown);
+  readonly rateLimitsFailure?: string;
   readonly resumeFailure?: string;
   readonly resumeRuntimeFailure?: string;
   readonly responseFailure?: string;
@@ -24,7 +26,8 @@ interface TurnBehavior {
   readonly startFailureAfter?: number;
   readonly statusFailure?: string;
   readonly steerFailure?: string;
-  readonly steerGate?: Promise<void>;
+  readonly steerGate?: Promise<unknown>;
+  readonly usageFailure?: string;
 }
 
 interface RuntimeTrace {
@@ -38,6 +41,12 @@ interface RuntimeTrace {
   readonly steers: string[];
   readonly turnsStarted: string[];
 }
+
+const accountReadFailure = (
+  operation: string,
+  message: string,
+): Effect.Effect<never, CodexRuntimeError> =>
+  Effect.fail(new CodexRuntimeError({ cause: new Error(message), message, operation }));
 
 const makeWaitForTurn =
   (behavior: TurnBehavior): CodexRuntime['waitForTurn'] =>
@@ -183,7 +192,14 @@ const makeRuntimeHarness = (
     health: Effect.void,
     interruptTurn: (): Effect.Effect<void> => Effect.void,
     loadedThreads: Effect.sync(() => [...loaded].map((id) => CodexThreadId.make(id))),
-    rateLimits: Effect.succeed({}),
+    rateLimits:
+      behavior.rateLimitsFailure === undefined
+        ? Effect.sync(() =>
+            typeof behavior.rateLimits === 'function'
+              ? behavior.rateLimits()
+              : (behavior.rateLimits ?? {}),
+          )
+        : accountReadFailure('account/rateLimits/read', behavior.rateLimitsFailure),
     readThread: (threadId): Effect.Effect<ThreadSnapshot> =>
       Effect.sync(() => {
         trace.reads.push(threadId);
@@ -199,7 +215,10 @@ const makeRuntimeHarness = (
     startThread: makeStartThread(loaded),
     startTurn: makeStartTurn(behavior, trace),
     steerTurn: makeSteerTurn(behavior, trace),
-    usage: Effect.succeed({}),
+    usage:
+      behavior.usageFailure === undefined
+        ? Effect.succeed({})
+        : accountReadFailure('account/usage/read', behavior.usageFailure),
     waitForTurn: makeWaitForTurn(behavior),
   };
   return { runtime, trace };

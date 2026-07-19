@@ -57,7 +57,7 @@ messages_database = ${JSON.stringify(messagesDatabase)}
 };
 
 const boundedDaemonJoin = (fiber: Fiber.Fiber<void, unknown>): Effect.Effect<void, unknown> =>
-  Effect.race(
+  Effect.raceFirst(
     Fiber.join(fiber),
     Effect.sleep(2000).pipe(
       Effect.flatMap(() => Effect.fail(fixtureError('daemon did not stop after Codex child exit'))),
@@ -194,7 +194,7 @@ it.effect('stops cleanly when the Codex child exits so launchd can restart it', 
       yield* ensureRuntimeLayout(paths);
       prepareCodexDaemon(paths, messages.databasePath, '.exit-after-initialize');
 
-      yield* Effect.race(
+      yield* Effect.raceFirst(
         serveDaemon(paths),
         Effect.sleep(2000).pipe(
           Effect.flatMap(() =>

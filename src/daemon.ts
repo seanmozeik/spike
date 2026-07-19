@@ -1,38 +1,37 @@
 import { once } from 'node:events';
 import { appendFile, rm } from 'node:fs/promises';
 import type { Server } from 'node:net';
-import path from 'node:path';
 
-import { Deferred, Effect, Fiber } from 'effect';
+import { Deferred, Effect } from 'effect';
 
-import { loadSpikeConfig, type SpikeConfig } from './app-config';
-import { openCodexRuntime, type CodexRuntime } from './codex/runtime';
+import { loadSpikeConfig } from './app-config';
+import {
+  makeAccountRuntimeCoordinator,
+  type AccountRuntimeCoordinator,
+} from './codex/account-runtime-coordinator';
 import type { CodexLogMode } from './codex/stderr-log';
 import { ensureRuntimeLayout } from './config-files';
 import { startControlSocket } from './control-socket';
-import { makeConversationPolicy } from './conversation-policy';
-import { openJournal, type JournalHandle } from './database';
-import { makeDeliveryJournal } from './delivery/journal';
 import {
-  openMessagesTransport,
-  type MessagesTransport,
-  withConversationAvailability,
-} from './delivery/messages-transport';
-import { makeDeliveryService } from './delivery/service';
-import { SpikeRuntimeError } from './errors';
-import { makeConversationDiagnostic } from './journal/conversation-diagnostic';
-import { makeDisabledLikeAcknowledgement, makeLikeAcknowledgement } from './like/adapter';
-import { makeLikeJournal } from './like/journal';
-import { makeLikeNativeRunner } from './like/native-runner';
-import { openMessagesInbox, type MessagesInboxHandle } from './messages-inbox';
+  initializeInboxFrontier,
+  likeHelperPath,
+  superviseAccounts,
+  type AccountSessionOptions,
+  type RuntimeSlot,
+} from './daemon-account-session';
+import { openJournal, type JournalHandle } from './database';
+import { makeCodexJournal } from './journal/codex-journal';
 import type { SpikePaths } from './paths';
-import { makeSpikeEngine, type SpikeEngine } from './service/engine';
 import { readApprovalList } from './status/approvals';
 import { makeDoctorReport } from './status/doctor';
-import { formatStatus } from './status/format';
 import { makeStatusSnapshot } from './status/snapshot';
 
 type DaemonStopReason = 'CodexConnectionClosed' | 'Control';
+
+interface ServeDaemonOptions extends AccountSessionOptions {
+  readonly codex?: boolean;
+  readonly logMode?: CodexLogMode;
+}
 
 const waitForSignal = Effect.callback<DaemonStopReason>((resume) => {
   const stop = (): void => {
@@ -67,185 +66,36 @@ const releaseServer = (server: Server, paths: SpikePaths): Effect.Effect<void> =
     }
   });
 
-interface ServeDaemonOptions {
-  readonly codex?: boolean;
-  readonly conversationValidationIntervalMs?: number;
-  readonly logMode?: CodexLogMode;
+interface ControlServerContext {
+  readonly coordinator: AccountRuntimeCoordinator;
+  readonly journal: JournalHandle;
+  readonly paths: SpikePaths;
+  readonly runtimeSlot: RuntimeSlot;
+  readonly startedAt: string;
+  readonly stop: Deferred.Deferred<DaemonStopReason>;
 }
 
-const acquireCodex = (
-  paths: SpikePaths,
-  config: SpikeConfig,
-  enabled: boolean,
-  logMode: CodexLogMode,
-): Effect.Effect<CodexRuntime | null, SpikeRuntimeError> =>
-  enabled
-    ? openCodexRuntime(paths, config, logMode).pipe(
-        Effect.mapError(
-          (cause) =>
-            new SpikeRuntimeError({
-              cause,
-              message: 'failed to start supervised Codex runtime',
-              operation: 'start-codex-runtime',
-            }),
-        ),
-      )
-    : Effect.succeed(null);
-
-const releaseCodex = (runtime: CodexRuntime | null): Effect.Effect<void> =>
-  runtime === null ? Effect.void : Effect.promise(runtime.close);
-
-const releaseInbox = (inbox: MessagesInboxHandle): Effect.Effect<void> => Effect.sync(inbox.close);
-
-const releaseTransport = (transport: MessagesTransport): Effect.Effect<void> =>
-  Effect.sync(transport.close);
-
-const releaseEngine = (engine: SpikeEngine): Effect.Effect<void> =>
-  engine.shutdown.pipe(Effect.ignoreCause);
-
-const subscribeRuntimeStop = (
-  runtime: CodexRuntime | null,
-  stop: Deferred.Deferred<DaemonStopReason>,
-): Effect.Effect<() => void> =>
-  Effect.sync(() =>
-    runtime === null
-      ? (): void => undefined
-      : runtime.addConnectionCloseListener(() => {
-          Deferred.doneUnsafe(stop, Effect.succeed('CodexConnectionClosed'));
-        }),
+const acquireControlServer = (context: ControlServerContext): Effect.Effect<Server> => {
+  const { coordinator, journal, paths, runtimeSlot, startedAt, stop } = context;
+  const status = (): ReturnType<typeof makeStatusSnapshot> =>
+    makeStatusSnapshot(journal.database, paths, startedAt, runtimeSlot.value);
+  return Effect.promise(() =>
+    startControlSocket(
+      paths,
+      startedAt,
+      () => {
+        Deferred.doneUnsafe(stop, Effect.succeed('Control'));
+      },
+      status,
+      async () => makeDoctorReport(paths, await status(), likeHelperPath()),
+      () => Promise.resolve(readApprovalList(journal.database)),
+      {
+        add: (accountId, sourcePath) => Effect.runPromise(coordinator.add(accountId, sourcePath)),
+        list: () => Effect.runPromise(coordinator.list),
+      },
+    ),
   );
-
-const drainAfterCodexClose = (
-  reason: DaemonStopReason,
-  engine: SpikeEngine | null,
-  paths: SpikePaths,
-): Effect.Effect<void> =>
-  reason === 'Control'
-    ? Effect.void
-    : Effect.gen(function* drainForRestart() {
-        yield* Effect.promise(() =>
-          appendFile(
-            paths.daemonLog,
-            `${new Date().toISOString()} codex app-server connection closed; stopping daemon\n`,
-            'utf8',
-          ),
-        );
-        if (engine !== null) {
-          yield* engine.drain;
-        }
-      });
-
-const runEngine = (engine: SpikeEngine | null): Effect.Effect<Fiber.Fiber<never> | null, unknown> =>
-  engine === null
-    ? Effect.succeed(null)
-    : Effect.gen(function* runPolling() {
-        yield* engine.redactNow(new Date());
-        return yield* Effect.forkChild(engine.run);
-      });
-
-const quiesceEngine = (
-  reason: DaemonStopReason,
-  engine: SpikeEngine | null,
-  run: Fiber.Fiber<never> | null,
-): Effect.Effect<void> =>
-  Effect.gen(function* stopPolling() {
-    if (run !== null) {
-      yield* Fiber.interrupt(run);
-    }
-    if (engine !== null) {
-      if (reason === 'Control') {
-        engine.close();
-      } else {
-        engine.quiesce();
-      }
-    }
-  });
-
-const likeHelperPath = (): string =>
-  process.env['SPIKE_LIKE_HELPER'] ??
-  path.join(path.dirname(process.argv[1] ?? import.meta.filename), 'spike-like');
-
-const reportLikeFailure = (error: unknown): void => {
-  const message = String(error);
-  process.stderr.write(`Like ${message}\n`);
 };
-
-const resourceError =
-  (operation: string, message: string) =>
-  (cause: unknown): SpikeRuntimeError =>
-    new SpikeRuntimeError({ cause, message, operation });
-
-const acquireInbox = (
-  config: SpikeConfig,
-  enabled: boolean,
-): Effect.Effect<MessagesInboxHandle | null, SpikeRuntimeError> =>
-  enabled
-    ? openMessagesInbox({
-        chatGuid: config.chatGuid,
-        databasePath: config.messagesDatabase,
-        handle: config.handle,
-      }).pipe(Effect.mapError(resourceError('open-inbox', 'failed to open Messages inbox')))
-    : Effect.succeed(null);
-
-const acquireTransport = (
-  config: SpikeConfig,
-  enabled: boolean,
-): Effect.Effect<MessagesTransport | null, SpikeRuntimeError> =>
-  enabled
-    ? openMessagesTransport(config.messagesDatabase, config).pipe(
-        Effect.mapError(resourceError('open-transport', 'failed to open Messages transport')),
-      )
-    : Effect.succeed(null);
-
-const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEngine(
-  paths: SpikePaths,
-  config: SpikeConfig,
-  journal: JournalHandle,
-  runtime: CodexRuntime | null,
-  startedAt: string,
-  options: ServeDaemonOptions,
-) {
-  const inbox = yield* Effect.acquireRelease(
-    acquireInbox(config, options.codex !== false),
-    (resource) => (resource === null ? Effect.void : releaseInbox(resource)),
-  );
-  const transport = yield* Effect.acquireRelease(
-    acquireTransport(config, options.codex !== false),
-    (resource) => (resource === null ? Effect.void : releaseTransport(resource)),
-  );
-  if (runtime === null || inbox === null || transport === null) {
-    return null;
-  }
-  const conversation = yield* makeConversationPolicy({
-    diagnostic: makeConversationDiagnostic(journal.database),
-    initialValidationAt: new Date(startedAt),
-    probe: () => inbox.refresh.pipe(Effect.andThen(transport.refresh)),
-    ...(options.conversationValidationIntervalMs === undefined
-      ? {}
-      : { validationIntervalMs: options.conversationValidationIntervalMs }),
-  });
-  const delivery = makeDeliveryService(
-    makeDeliveryJournal(journal.database),
-    withConversationAvailability(transport, conversation),
-  );
-  const likeJournal = makeLikeJournal(journal.database);
-  const likeRunner = makeLikeNativeRunner(config.handle, likeHelperPath());
-  const like = config.likeAcknowledgements
-    ? makeLikeAcknowledgement(likeJournal, likeRunner, { report: reportLikeFailure })
-    : makeDisabledLikeAcknowledgement(likeJournal);
-  return yield* makeSpikeEngine({
-    chatGuid: config.chatGuid,
-    conversation,
-    database: journal.database,
-    delivery,
-    handle: config.handle,
-    inbox,
-    like,
-    renderStatus: async () =>
-      formatStatus(await makeStatusSnapshot(journal.database, paths, startedAt, runtime)),
-    runtime,
-  });
-});
 
 const serveDaemon = Effect.fn('SpikeDaemon.serve')(
   (paths: SpikePaths, options: ServeDaemonOptions = {}) =>
@@ -253,43 +103,34 @@ const serveDaemon = Effect.fn('SpikeDaemon.serve')(
       yield* ensureRuntimeLayout(paths);
       const config = yield* loadSpikeConfig(paths);
       const journal = yield* Effect.acquireRelease(openJournal(paths.database), releaseJournal);
-      const runtime = yield* Effect.acquireRelease(
-        acquireCodex(paths, config, options.codex !== false, options.logMode ?? 'quiet'),
-        releaseCodex,
+      const coordinator = yield* Effect.acquireRelease(
+        makeAccountRuntimeCoordinator(paths, config, makeCodexJournal(journal.database), {
+          logMode: options.logMode ?? 'quiet',
+        }),
+        (resource) => resource.close,
       );
+      if (options.codex !== false) {
+        yield* initializeInboxFrontier(config, journal);
+      }
       const startedAt = new Date().toISOString();
-      const engine = yield* Effect.acquireRelease(
-        acquireEngine(paths, config, journal, runtime, startedAt, options),
-        (resource) => (resource === null ? Effect.void : releaseEngine(resource)),
-      );
+      const runtimeSlot: RuntimeSlot = { value: null };
       const stop = yield* Deferred.make<DaemonStopReason>();
-      yield* Effect.acquireRelease(subscribeRuntimeStop(runtime, stop), (unsubscribe) =>
-        Effect.sync(unsubscribe),
-      );
-      const engineRun = yield* runEngine(engine);
-      const status = (): ReturnType<typeof makeStatusSnapshot> =>
-        makeStatusSnapshot(journal.database, paths, startedAt, runtime);
       yield* Effect.acquireRelease(
-        Effect.promise(() =>
-          startControlSocket(
-            paths,
-            startedAt,
-            () => {
-              Deferred.doneUnsafe(stop, Effect.succeed('Control'));
-            },
-            status,
-            async () => makeDoctorReport(paths, await status(), likeHelperPath()),
-            () => Promise.resolve(readApprovalList(journal.database)),
-          ),
-        ),
+        acquireControlServer({ coordinator, journal, paths, runtimeSlot, startedAt, stop }),
         (server) => releaseServer(server, paths),
       );
       yield* Effect.promise(() =>
         appendFile(paths.daemonLog, `${startedAt} started pid=${process.pid}\n`, 'utf8'),
       );
-      const reason = yield* Effect.race(waitForSignal, Deferred.await(stop));
-      yield* quiesceEngine(reason, engine, engineRun);
-      yield* drainAfterCodexClose(reason, engine, paths);
+      const control = Effect.race(waitForSignal, Deferred.await(stop));
+      if (options.codex === false) {
+        yield* control;
+        return;
+      }
+      yield* Effect.raceFirst(
+        control,
+        superviseAccounts({ config, coordinator, journal, options, paths, runtimeSlot, startedAt }),
+      );
     }).pipe(Effect.scoped),
 );
 

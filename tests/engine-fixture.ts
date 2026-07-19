@@ -50,6 +50,7 @@ interface EngineFixtureOptions {
   readonly conversationProbe?: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs?: number;
   readonly idleFrontier?: number;
+  readonly like?: LikeAcknowledgement;
   readonly now?: () => Date;
   readonly prepare?: (database: Database) => Effect.Effect<void, unknown>;
   readonly preexisting?: readonly ObservedMessage[];
@@ -137,6 +138,7 @@ interface MakeFixtureOptions {
   readonly conversationProbe: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs: number | undefined;
   readonly idleFrontier: number | undefined;
+  readonly like: LikeAcknowledgement | undefined;
   readonly now: () => Date;
   readonly prepare: ((database: Database) => Effect.Effect<void, unknown>) | undefined;
   readonly preexisting: readonly ObservedMessage[] | undefined;
@@ -195,6 +197,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
   conversationProbe,
   conversationValidationIntervalMs,
   idleFrontier,
+  like,
   now,
   prepare,
   preexisting,
@@ -229,7 +232,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture({
     delivery: makeTestDelivery(handle, sent, behavior, conversation),
     handle: '+15555550199',
     inbox: makeInbox(queue, idleFrontier),
-    like: makeLike(likes),
+    like: like ?? makeLike(likes),
     now,
     renderStatus: () => renderStatus(behavior),
     runtime,
@@ -244,6 +247,7 @@ const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeo
     conversationProbe: options.conversationProbe ?? ((): Effect.Effect<void> => Effect.void),
     conversationValidationIntervalMs: options.conversationValidationIntervalMs,
     idleFrontier: options.idleFrontier,
+    like: options.like,
     now: options.now ?? ((): Date => new Date('2026-07-14T12:00:00.000Z')),
     preexisting: options.preexisting,
     prepare: options.prepare,
@@ -261,6 +265,7 @@ const makeMigratedEngineFixture = (
     conversationProbe: (): Effect.Effect<void> => Effect.void,
     conversationValidationIntervalMs: undefined,
     idleFrontier: undefined,
+    like: undefined,
     now: (): Date => new Date('2026-07-14T12:00:00.000Z'),
     preexisting: undefined,
     prepare: undefined,

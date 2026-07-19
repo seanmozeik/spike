@@ -5,11 +5,6 @@ export class SpikeRuntimeError extends Schema.TaggedErrorClass<SpikeRuntimeError
   { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
 ) {}
 
-export class ControlProtocolError extends Schema.TaggedErrorClass<ControlProtocolError>()(
-  'ControlProtocolError',
-  { message: Schema.String },
-) {}
-
 export class MessagesPermissionError extends Schema.TaggedErrorClass<MessagesPermissionError>()(
   'MessagesPermissionError',
   { cause: Schema.Defect(), databasePath: Schema.String, message: Schema.String },
@@ -38,6 +33,11 @@ export const journalTransactionError = (
 
 export class CodexRuntimeError extends Schema.TaggedErrorClass<CodexRuntimeError>()(
   'CodexRuntimeError',
+  { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
+) {}
+
+export class AccountStoreError extends Schema.TaggedErrorClass<AccountStoreError>()(
+  'AccountStoreError',
   { cause: Schema.Defect(), message: Schema.String, operation: Schema.String },
 ) {}
 

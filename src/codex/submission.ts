@@ -144,6 +144,7 @@ const recoverCodexInput = Effect.fn('SpikeCodex.recover')(function* recoverCodex
       CodexTurnId.make(reconciliation.turnId),
     );
   }
+  yield* journal.reassignCodexAttempt(attempt.id, AccountId.make(runtime.accountId));
   const retried = yield* sendInput(runtime, input, attempt.id);
   return yield* acceptTurn(journal, attempt.id, input.threadId, retried);
 });

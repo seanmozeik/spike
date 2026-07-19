@@ -91,6 +91,12 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
         .all()
         .map(({ name }) => name),
     ).toContain('payload_redacted_at');
+    expect(
+      journal.database
+        .query<{ name: string }, []>('PRAGMA table_info(account_observations)')
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(['mode', 'selected_at']));
     for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
       expect(existsSync(file)).toBe(true);
       expect(mode(file)).toBe('600');
@@ -98,8 +104,40 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
     journal.close();
     expect(inspectJournal(databasePath)).toStrictEqual({
       journalMode: 'wal',
-      migrationVersion: 13,
+      migrationVersion: 14,
     });
+  }),
+);
+
+it.effect('migrates schema version 13 account availability into explicit durable modes', () =>
+  Effect.gen(function* accountModeMigrationFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-account-mode-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    initial.close();
+    const legacy = new Database(databasePath, { strict: true });
+    legacy.run('ALTER TABLE account_observations DROP COLUMN selected_at');
+    legacy.run('ALTER TABLE account_observations DROP COLUMN mode');
+    legacy.run(
+      `INSERT INTO account_observations(account_id, observed_at, usable, usage_json, reset_at)
+       VALUES ('legacy', '2026-07-14T12:00:00.000Z', 0, NULL, NULL)`,
+    );
+    legacy.run('DELETE FROM schema_meta');
+    legacy.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (13, '2026-07-14T12:00:00.000Z')",
+    );
+    legacy.close();
+
+    const migrated = yield* openJournal(databasePath);
+    expect(
+      migrated.database
+        .query<{ mode: string; selected_at: string | null }, []>(
+          "SELECT mode, selected_at FROM account_observations WHERE account_id = 'legacy'",
+        )
+        .get(),
+    ).toEqual({ mode: 'Capacity', selected_at: null });
+    migrated.close();
   }),
 );
 
@@ -186,7 +224,7 @@ it.effect('migrates a version 6 scheduler journal to the canonical generation th
 
     expect(columns).not.toContain('codex_thread_id');
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
   }),
 );
 
@@ -214,7 +252,7 @@ it.effect('migrates a version 7 journal to durable broken-generation state', () 
     migrated.close();
 
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
   }),
 );
 
@@ -248,7 +286,7 @@ it.effect('migrates failed logical turns to terminal Codex attempts', () =>
     migrated.close();
 
     expect(attempt).toStrictEqual({ finished_at: '2026-07-15T00:01:00.000Z', state: 'Failed' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
   }),
 );
 
@@ -276,7 +314,7 @@ it.effect('migrates version 10 approval rows to the payload retention marker', (
     migrated.close();
 
     expect(columns).toContain('payload_redacted_at');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
   }),
 );
 
@@ -307,14 +345,14 @@ it.effect('migrates v11 attempts to causal batch identities and remains idempote
         )
         .get(),
     ).toStrictEqual({ input_batch_id: 'batch-one' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
     migrated.close();
 
     const reopened = yield* openJournal(databasePath);
     expect(
       reopened.database
         .query<{ count: number }, []>(
-          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = 13',
+          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = 14',
         )
         .get()?.count,
     ).toBe(1);
@@ -375,7 +413,7 @@ it.effect('migrates the v12 final index to admit a distinct failure-notice role'
         )
         .get()?.count,
     ).toBe(2);
-    expect(inspectJournal(databasePath).migrationVersion).toBe(13);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(14);
     migrated.close();
   }),
 );

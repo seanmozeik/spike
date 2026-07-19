@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
+import { recordUnavailableAccount } from '../codex/account-observation';
 import { compactError } from '../delivery/service';
 import { LogicalTurnId as LogicalTurnIdSchema } from '../domain/ids';
 import { isGenerationBroken } from '../errors';
 import type { SchedulerState, TurnIdentity } from '../scheduler/model';
+import { classifyAccountFailure } from './account-failover';
 import { report, type EngineContext } from './context';
 import type {
   CompletionTerminalObligation,
@@ -215,6 +217,21 @@ const failTurn = Effect.fn('SpikeEngine.failTurn')(function* failTurn(
       yield* drainTurnTerminals(context);
     }),
   );
+  const availability = classifyAccountFailure(error);
+  if (availability !== null && !context.options.runtime.accountId.startsWith('provider:')) {
+    const recorded = yield* Effect.result(
+      recordUnavailableAccount(
+        context.options.runtime,
+        context.codexJournal,
+        availability,
+        context.now(),
+      ),
+    );
+    if (Result.isFailure(recorded)) {
+      report(context, recorded.failure);
+    }
+    context.accountFailover.pending = availability;
+  }
 });
 
 const completeTurn = Effect.fn('SpikeEngine.completeTurn')(function* completeTurn(

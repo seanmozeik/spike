@@ -5,6 +5,12 @@ import path from 'node:path';
 import { Effect } from 'effect';
 
 import { loadSpikeConfig } from './app-config';
+import {
+  isAccountAddResult,
+  isAccountResult,
+  type AccountAddResult as AccountAddOutput,
+  type AccountResult as AccountOutput,
+} from './codex/account-control';
 import { ensureRuntimeLayout } from './config-files';
 import { requestControl } from './control-socket';
 import { SpikeRuntimeError } from './errors';
@@ -38,17 +44,7 @@ interface LogResult {
   readonly text: string;
 }
 
-interface AccountResult {
-  readonly accounts: readonly { readonly eligible: boolean; readonly id: string }[];
-  readonly active: string | null;
-  readonly observations: readonly Record<string, unknown>[];
-  readonly ok: true;
-}
-
 type ServiceStatusResult = OfflineServiceStatus | StatusSnapshot;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const paths = spikePaths();
 
@@ -180,7 +176,19 @@ const readLogs = async (): Promise<LogResult> => {
   }
 };
 
-const accounts = async (): Promise<AccountResult> => {
+const accounts = async (): Promise<AccountOutput> => {
+  let live: unknown = null;
+  try {
+    live = await requestControl(paths.socket, { kind: 'accounts-list' });
+  } catch {
+    // Listing is read-only, so an offline journal/filesystem fallback is safe.
+  }
+  if (live !== null) {
+    if (!isAccountResult(live)) {
+      throw operatorError('accounts/list-response', new TypeError('invalid account list response'));
+    }
+    return live;
+  }
   const entries = await readdir(paths.accounts, { withFileTypes: true }).catch(() => []);
   const configured = await Promise.all(
     entries
@@ -190,14 +198,14 @@ const accounts = async (): Promise<AccountResult> => {
         id: entry.name,
       })),
   );
-  let observations: readonly Record<string, unknown>[] = [];
+  let observations: AccountOutput['observations'] = [];
   if (await exists(paths.database)) {
     const database = new Database(paths.database, { readonly: true, strict: true });
     try {
       observations = database
-        .query<Record<string, unknown>, []>(
-          `SELECT account_id AS accountId, observed_at AS observedAt, usable,
-                  usage_json AS usage, reset_at AS resetAt
+        .query<AccountOutput['observations'][number], []>(
+          `SELECT account_id AS accountId, observed_at AS observedAt, mode,
+                  reset_at AS resetAt, selected_at AS lastSelectedAt
            FROM account_observations
            WHERE id IN (SELECT MAX(id) FROM account_observations GROUP BY account_id)
            ORDER BY account_id`,
@@ -208,12 +216,24 @@ const accounts = async (): Promise<AccountResult> => {
     }
   }
   const status = await serviceStatus();
-  const account = isObject(status) && isObject(status['account']) ? status['account'] : {};
-  const active = typeof account['active'] === 'string' ? account['active'] : null;
-  return { accounts: configured, active: active ?? null, observations, ok: true };
+  const active = 'account' in status ? status.account.active : null;
+  return { accounts: configured, active, observations, ok: true, state: null };
+};
+
+const addAccount = async (accountId: string, sourcePath: string): Promise<AccountAddOutput> => {
+  const result = await requestControl(paths.socket, {
+    accountId,
+    kind: 'accounts-add',
+    sourcePath,
+  });
+  if (!isAccountAddResult(result)) {
+    throw operatorError('accounts/add-response', new TypeError('invalid account add response'));
+  }
+  return result;
 };
 
 export {
+  addAccount,
   accounts,
   approvals,
   doctor,
@@ -223,4 +243,5 @@ export {
   startService,
   stopService,
 };
-export type { AccountResult, LogResult, OfflineServiceStatus, ServiceStatusResult };
+export type { AccountAddResult, AccountResult } from './codex/account-control';
+export type { LogResult, OfflineServiceStatus, ServiceStatusResult };

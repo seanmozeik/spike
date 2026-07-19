@@ -75,11 +75,31 @@ it.effect('persists the pre-submit frontier and reconciled turn through named tr
     );
     yield* journal.recordAccountObservation(
       AccountId.make('default'),
-      true,
+      'Available',
       { weekly: { remaining: 42 } },
       null,
-      new Date(),
+      new Date('2026-07-14T12:00:00Z'),
     );
+    yield* journal.recordAccountSelection(
+      AccountId.make('default'),
+      new Date('2026-07-14T12:01:00Z'),
+    );
+    yield* journal.recordAccountObservation(
+      AccountId.make('default'),
+      'Capacity',
+      null,
+      new Date('2026-07-14T17:00:00Z'),
+      new Date('2026-07-14T12:02:00Z'),
+    );
+    expect(yield* journal.loadAccountObservations).toEqual([
+      {
+        accountId: 'default',
+        lastSelectedAt: new Date('2026-07-14T12:01:00Z'),
+        mode: 'Capacity',
+        observedAt: new Date('2026-07-14T12:02:00Z'),
+        resetAt: new Date('2026-07-14T17:00:00Z'),
+      },
+    ]);
     yield* journal.recordAgentItem(
       attemptId,
       CodexItemId.make('agent-item'),
@@ -96,7 +116,7 @@ it.effect('persists the pre-submit frontier and reconciled turn through named tr
       handle.database
         .query<{ count: number }, []>('SELECT COUNT(*) AS count FROM account_observations')
         .get()?.count,
-    ).toBe(1);
+    ).toBe(3);
     handle.close();
   }),
 );
