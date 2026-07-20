@@ -174,7 +174,7 @@ const assembleEngine = (
       await Promise.all(context.monitors.values());
       await context.turnTerminals.tail;
     }),
-    pollOnce: phases.withPermit(runExplicitPoll(context, controller, ingestion)),
+    pollOnce: phases.withPermit(runExplicitPoll(context, controller, ingestion, trustedIngestion)),
     quiesce: (): void => {
       watcher?.close();
       quiesceEngine(context);

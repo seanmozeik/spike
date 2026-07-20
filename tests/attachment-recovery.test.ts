@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -64,6 +72,33 @@ it.effect('stages a migrated v13 pool before scheduler reload and active recover
     fixture.engine.close();
     gate.reject(new Error('stop recovered monitor'));
     yield* fixture.engine.drain;
+    fixture.remove();
+  }),
+);
+
+it.effect('does not activate a migrated attachment pool while staging is unavailable', () =>
+  Effect.gen(function* blockIncompleteMigratedInput() {
+    const fixture = yield* makeMigratedEngineFixture(
+      {},
+      { id: 'thread-v13', turns: [{ id: 'turn-v13', items: [], status: 'inProgress' }] },
+      seedVersionThirteenAttachmentState,
+    );
+    const sourceRoot = path.join(path.dirname(fixture.database.filename), 'Attachments');
+    chmodSync(sourceRoot, 0o000);
+
+    yield* fixture.engine.pollOnce;
+
+    expect(fixture.steers).toStrictEqual([]);
+    expect(fixture.attachmentInputs).toStrictEqual([]);
+    expect(
+      fixture.database
+        .query<{ state: string }, []>(
+          "SELECT state FROM attachments WHERE inbound_message_id = 'pooled-message' ORDER BY ordinal",
+        )
+        .all(),
+    ).toStrictEqual([{ state: 'Observed' }, { state: 'Observed' }]);
+    chmodSync(sourceRoot, 0o700);
+    yield* fixture.engine.shutdown;
     fixture.remove();
   }),
 );

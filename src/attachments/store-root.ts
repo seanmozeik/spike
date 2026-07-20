@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
@@ -8,6 +9,9 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmdirSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
@@ -96,15 +100,32 @@ const inspectAttachmentStoreRoot = ({ boundary, root }: AttachmentStoreRoot): bo
   return true;
 };
 
+const initializeAttachmentStoreRoot = (root: string): void => {
+  const parent = path.dirname(root);
+  const temporary = path.join(parent, `.${path.basename(root)}.${randomUUID()}.tmp`);
+  const marker = path.join(temporary, OWNER_MARKER_NAME);
+  mkdirSync(temporary, { mode: OWNER_ONLY_DIRECTORY_MODE });
+  try {
+    writeFileSync(marker, OWNER_MARKER_CONTENT, { flag: 'wx', mode: OWNER_ONLY_FILE_MODE });
+    syncPath(marker);
+    syncPath(temporary);
+    renameSync(temporary, root);
+    syncPath(parent);
+  } finally {
+    if (lstatSync(marker, { throwIfNoEntry: false })?.isFile() === true) {
+      unlinkSync(marker);
+    }
+    if (lstatSync(temporary, { throwIfNoEntry: false })?.isDirectory() === true) {
+      rmdirSync(temporary);
+    }
+  }
+};
+
 const ensureAttachmentStoreRoot = (storeRoot: AttachmentStoreRoot): void => {
   const { boundary, root } = storeRoot;
   inspectAncestors(boundary, root, true);
   if (!inspectDirectory(root)) {
-    mkdirSync(root, { mode: OWNER_ONLY_DIRECTORY_MODE });
-    const marker = path.join(root, OWNER_MARKER_NAME);
-    writeFileSync(marker, OWNER_MARKER_CONTENT, { flag: 'wx', mode: OWNER_ONLY_FILE_MODE });
-    syncPath(marker);
-    syncPath(root);
+    initializeAttachmentStoreRoot(root);
   }
   if (!inspectAttachmentStoreRoot(storeRoot)) {
     throw new SafeStagingError('attachment staging root was not created');

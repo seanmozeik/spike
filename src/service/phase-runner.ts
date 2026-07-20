@@ -112,6 +112,7 @@ const runExplicitPoll = (
   context: EngineContext,
   controller: SchedulerController,
   ingestion: Effect.Effect<void, unknown>,
+  trustedIngestion: Effect.Effect<void, unknown>,
 ): Effect.Effect<void, unknown> =>
   Effect.gen(function* explicitPoll() {
     yield* runAccountObservationPhase(context, controller);
@@ -120,6 +121,7 @@ const runExplicitPoll = (
       return;
     }
     if (!(yield* runExplicitRecovery(context, controller))) {
+      yield* runRetriablePhase(context, INGESTION_RETRY_TIMER, 'Messages', trustedIngestion);
       return;
     }
     yield* runRetriablePhase(context, INGESTION_RETRY_TIMER, 'Messages', ingestion);

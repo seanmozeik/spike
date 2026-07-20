@@ -26,6 +26,16 @@ const recoverControlReplies = (context: EngineContext): Effect.Effect<void, unkn
     }
   });
 
+const recoverRuntimeBoundaries = (
+  context: EngineContext,
+  controller: SchedulerController,
+): Effect.Effect<void, unknown> =>
+  Effect.gen(function* recoverControlsAndApprovals() {
+    yield* recoverControlReplies(context);
+    yield* pollApprovalEvents(context);
+    yield* requestPendingAccountFailover(context, controller);
+  });
+
 const processRecovery = (
   context: EngineContext,
   controller: SchedulerController,
@@ -34,10 +44,14 @@ const processRecovery = (
     if (!(yield* ensureConversation(context))) {
       return false;
     }
-    yield* context.attachmentStaging.stageIfDue(context.now());
+    const attachmentStagingAvailable = yield* context.attachmentStaging.stageIfDue(context.now());
     yield* context.journal.auditStagedAttachments;
     yield* retryTurnTerminals(context);
     if (context.recoveryPending.value) {
+      if (!attachmentStagingAvailable) {
+        yield* recoverRuntimeBoundaries(context, controller);
+        return false;
+      }
       yield* controller.reloadBeforeActivation(context.now());
       context.recoveryPending.value = false;
       const state = yield* controller.snapshot;
@@ -58,9 +72,7 @@ const processRecovery = (
     }
     yield* controller.activate;
     context.schedulerReady.value = true;
-    yield* recoverControlReplies(context);
-    yield* pollApprovalEvents(context);
-    yield* requestPendingAccountFailover(context, controller);
+    yield* recoverRuntimeBoundaries(context, controller);
     return true;
   });
 

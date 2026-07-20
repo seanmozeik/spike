@@ -717,6 +717,28 @@ it('refuses a symlinked staging ancestor without writing outside the working dir
   expect(readdirSync(outside)).toStrictEqual([]);
 });
 
+it('initializes after an interrupted sibling preparation without wedging the final root', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-interrupted-init-'));
+  roots.push(root);
+  const boundary = path.join(root, 'work');
+  const parent = path.join(boundary, 'tmp', 'spike');
+  const stagingRoot = path.join(parent, 'attachments');
+  const interrupted = path.join(parent, '.attachments.interrupted.tmp');
+  mkdirSync(interrupted, { recursive: true });
+  writeFileSync(
+    path.join(interrupted, '.spike-attachment-store-v1'),
+    'spike-attachment-store-v1\n',
+  );
+  const store = makeAttachmentStore(stagingRoot, boundary);
+
+  expect(store.persist(PNG, '0'.repeat(64), '.png')).toBe(
+    path.join(stagingRoot, `${'0'.repeat(64)}.png`),
+  );
+  expect(readFileSync(path.join(interrupted, '.spike-attachment-store-v1'), 'utf8')).toBe(
+    'spike-attachment-store-v1\n',
+  );
+});
+
 it.effect('reconciles the copy-before-journal crash window and assigns before recovery', () =>
   Effect.gen(function* crashAndRecovery() {
     const fixture = yield* makeFixture();
