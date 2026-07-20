@@ -10,6 +10,7 @@ const COMMAND_TIMEOUT_MS = 10_000;
 const PREVIEW_TIMEOUT_MS = 30_000;
 const EXPECT_TIMEOUT_SECONDS = 20;
 const FIXED_LOCALE = 'C';
+const BANNER_MARKER = '____________ |__|';
 const STANDARD_EXECUTABLE_PATHS = [
   '/opt/homebrew/bin',
   '/usr/local/bin',
@@ -207,6 +208,7 @@ const runPreview = async (
     timeoutMs: PREVIEW_TIMEOUT_MS,
   });
   requireExit(preview, 0, 'packaged init --preview');
+  assert.match(preview.stdout, new RegExp(BANNER_MARKER, 'u'));
   await assert.rejects(lstat(trapLog));
   const changedPaths = changedTreePaths(before, await snapshotTree(validationRoot));
   assert.deepEqual(

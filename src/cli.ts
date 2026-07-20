@@ -7,8 +7,15 @@ import pkg from '../package.json' with { type: 'json' };
 import { makeCliApp } from './cli-commands';
 import { errorMessageChain } from './error-message';
 import { failPayload } from './output';
+import { shouldShowCliBanner, showBanner } from './ui/banner';
 
 const JSON_INDENT = 2;
+const cliArguments = process.argv.slice(2);
+
+if (shouldShowCliBanner(cliArguments)) {
+  showBanner();
+}
+
 const app = makeCliApp();
 const program = Command.run(app, { version: pkg.version });
 

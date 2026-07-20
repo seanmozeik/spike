@@ -26,6 +26,7 @@ import { changedTreePaths, snapshotTree } from './package-validation-tree';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const BUILD_TIMEOUT_MS = 120_000;
+const BANNER_MARKER = '____________ |__|';
 const sourceCopyExclusions = new Set(['.ast-bro', '.git', 'artifacts', 'dist', 'node_modules']);
 const sourceSnapshotExclusions = new Set(['.ast-bro', '.git', 'node_modules']);
 
@@ -131,9 +132,12 @@ const validateCliSurface = async (
     path.join(validationRoot, 'users', 'smoke'),
     fakeBin,
   );
-  requireExit(await runCli(cli, ['--help'], work, environment, 'packaged --help'), 0, '--help');
+  const help = await runCli(cli, ['--help'], work, environment, 'packaged --help');
+  requireExit(help, 0, '--help');
+  assert.match(help.stdout, new RegExp(BANNER_MARKER, 'u'));
   const version = await runCli(cli, ['--version'], work, environment, 'packaged --version');
   requireExit(version, 0, '--version');
+  assert.match(version.stdout, new RegExp(BANNER_MARKER, 'u'));
   assert.match(version.stdout, new RegExp(pkg.version.replaceAll('.', String.raw`\.`), 'u'));
   await runPreview(validationRoot, cli, work, fakeBin);
 };

@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import * as clack from '@clack/prompts';
 import { Schema } from 'effect';
 
+import { showBanner } from '../ui/banner';
 import { chooseCodexPrompt } from './prompt-codex';
 import { personalityPrompt } from './prompt-personality';
 import { unwrap } from './prompt-shared';
@@ -232,6 +233,7 @@ const realPrompts = (mode: OnboardingPromptMode = 'install'): OnboardingPrompts 
     clack.outro(message);
   },
   intro: (): void => {
+    showBanner();
     clack.intro(mode === 'preview' ? 'Spike onboarding preview' : 'Spike onboarding');
   },
   peerHandle: peerHandlePrompt,
