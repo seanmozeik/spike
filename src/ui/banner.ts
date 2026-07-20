@@ -34,7 +34,7 @@ const renderBanner = (color = colorIsEnabled()): string =>
     : SPIKE_BANNER;
 
 const showBanner = (): void => {
-  process.stdout.write(`${renderBanner()}\n`);
+  process.stdout.write(`${renderBanner()}\n\n`);
 };
 
 const shouldShowCliBanner = (arguments_: readonly string[]): boolean =>
