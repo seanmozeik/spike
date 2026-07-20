@@ -54,6 +54,8 @@ const renderAppConfig = (
     `wit = ${toml(plan.personality.wit)}`,
     `messages_database = ${toml(plan.messagesDatabase)}`,
     `like_acknowledgements = ${String(plan.personality.likeAcknowledgements)}`,
+    `preferred_name = ${toml(plan.preferredName)}`,
+    `timezone = ${toml(plan.timezone)}`,
     '',
   ].join('\n');
 

@@ -1,3 +1,4 @@
+import { systemTimezone } from '../timezone';
 import { normalizePeerHandle } from './conversation';
 import type { OnboardingPrompts } from './prompts';
 import { summarizeOnboardingPlan } from './summary';
@@ -39,6 +40,8 @@ const collectPreviewPlan = async (prompts: OnboardingPrompts): Promise<Onboardin
   const codex = await prompts.chooseCodex(PREVIEW_MODELS);
   const approvalPolicy = await prompts.approvalPolicy();
   const sandboxMode = await prompts.sandboxMode();
+  const preferredNameAnswer = await prompts.preferredName();
+  const preferredName = preferredNameAnswer.trim();
   const context = await prompts.context();
   return {
     approvalPolicy,
@@ -47,7 +50,9 @@ const collectPreviewPlan = async (prompts: OnboardingPrompts): Promise<Onboardin
     conversation,
     messagesDatabase: '<preview: no Messages database opened>',
     personality,
+    preferredName,
     sandboxMode,
+    timezone: systemTimezone(),
     workingDirectory,
   };
 };

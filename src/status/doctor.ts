@@ -5,39 +5,39 @@ import { Effect, Result } from 'effect';
 
 import { loadSpikeConfig, type SpikeConfig } from '../app-config';
 import { inspectJournal } from '../database';
-import { guiDomain, launchAgentLabel, runLaunchctl } from '../launchd';
+import { guiDomain, launchAgentLabel } from '../launchd';
 import { openMessagesInbox } from '../messages-inbox';
+import { isObject } from '../object-guard';
+import { liveOperatorCommands, type OperatorCommandPort } from '../operator/commands';
+import { classifyServiceInspection } from '../operator/lifecycle';
 import type { SpikePaths } from '../paths';
+import { checkAccessibility } from './accessibility-check';
+import { attachmentStagingCheck } from './attachment-check';
+import { eventLoopCheck } from './event-loop-check';
 import { checkHooks } from './hooks-check';
+import { readScheduleDiagnostics } from './snapshot-guard';
 
 type CheckState = 'fail' | 'pass' | 'warn';
-const AUTOMATION_TIMEOUT_MS = 3000;
-
 interface DiagnosticCheck {
   readonly detail: string;
   readonly name: string;
   readonly state: CheckState;
 }
-
 interface DoctorReport {
   readonly checks: readonly DiagnosticCheck[];
   readonly healthy: boolean;
   readonly ok: true;
 }
-
 type DiagnosticConfig =
   | { readonly app: SpikeConfig; readonly codex: Record<string, unknown>; readonly error: null }
   | { readonly app: null; readonly codex: null; readonly error: string };
-
 const check = (name: string, state: CheckState, detail: string): DiagnosticCheck => ({
   detail,
   name,
   state,
 });
-
 const numericField = (value: Record<string, unknown>, key: string): number =>
   typeof value[key] === 'number' ? value[key] : 0;
-
 const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
   const displayed = numericField(value, 'displayed');
   const orphaned = numericField(value, 'orphaned');
@@ -50,9 +50,32 @@ const approvalCheck = (value: Record<string, unknown>): DiagnosticCheck => {
   }
   return check('approvals', state, `${String(pending)} pending, ${String(orphaned)} orphaned`);
 };
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
+const outageCheck = (value: unknown): DiagnosticCheck => {
+  const outage = isObject(value) ? value : {};
+  const open = Array.isArray(outage['open'])
+    ? outage['open'].filter((kind): kind is string => typeof kind === 'string')
+    : [];
+  return check(
+    'outages',
+    open.length === 0 ? 'pass' : 'fail',
+    open.length === 0 ? 'none open' : open.join(', '),
+  );
+};
+const scheduleCheck = (value: unknown): DiagnosticCheck => {
+  if (value === undefined) {
+    return check('schedules', 'warn', 'not reported by daemon');
+  }
+  const diagnostics = readScheduleDiagnostics(value);
+  if (diagnostics === null) {
+    return check('schedules', 'fail', 'invalid schedule diagnostics');
+  }
+  const { active, cancelled, completed, nextDueAt, paused, queued, running } = diagnostics;
+  return check(
+    'schedules',
+    'pass',
+    `${String(active)} active, ${String(paused)} paused, ${String(completed)} completed, ${String(cancelled)} cancelled, ${String(queued)} queued, ${String(running)} running, next ${nextDueAt ?? 'none'}`,
+  );
+};
 
 const parseObject = (text: string): Record<string, unknown> => {
   const value: unknown = Bun.TOML.parse(text);
@@ -129,7 +152,26 @@ const durableAccountCheck = async (
   }
 };
 
-const messagesChecks = async (app: SpikeConfig | null): Promise<readonly DiagnosticCheck[]> => {
+const messagesAutomationCheck = async (commands: OperatorCommandPort): Promise<DiagnosticCheck> => {
+  const automation = await Effect.runPromise(Effect.result(commands.messagesAutomation));
+  if (Result.isFailure(automation)) {
+    return check('Messages Automation', 'fail', automation.failure.message);
+  }
+  const result = automation.success;
+  if (result.timedOut) {
+    return check('Messages Automation', 'fail', 'command timed out');
+  }
+  return check(
+    'Messages Automation',
+    result.exitCode === 0 ? 'pass' : 'fail',
+    result.exitCode === 0 ? result.stdout.trim() || 'allowed' : result.stderr.trim() || 'denied',
+  );
+};
+
+const messagesChecks = async (
+  app: SpikeConfig | null,
+  commands: OperatorCommandPort,
+): Promise<readonly DiagnosticCheck[]> => {
   if (app === null) {
     return [
       check('chat.db FDA', 'fail', 'unconfigured'),
@@ -158,58 +200,24 @@ const messagesChecks = async (app: SpikeConfig | null): Promise<readonly Diagnos
       check('configured conversation', 'fail', opened.failure.message),
     );
   }
-  const automation = Bun.spawnSync(['osascript', '-e', 'tell application "Messages" to get name'], {
-    stderr: 'pipe',
-    stdout: 'pipe',
-    timeout: AUTOMATION_TIMEOUT_MS,
-  });
-  checks.push(
-    check(
-      'Messages Automation',
-      automation.exitCode === 0 ? 'pass' : 'fail',
-      automation.exitCode === 0
-        ? automation.stdout.toString().trim() || 'allowed'
-        : automation.stderr.toString().trim() || 'denied',
-    ),
-  );
+  checks.push(await messagesAutomationCheck(commands));
   return checks;
-};
-
-const accessibilityChecks = (helperPath: string, enabled: boolean): readonly DiagnosticCheck[] => {
-  if (!enabled) {
-    return [check('Accessibility', 'pass', 'Likes disabled')];
-  }
-  try {
-    const result = Bun.spawnSync([helperPath, '--status'], { stderr: 'pipe', stdout: 'pipe' });
-    if (result.exitCode !== 0) {
-      return [
-        check('Accessibility', 'warn', result.stderr.toString().trim() || 'helper unavailable'),
-        check('lock state', 'warn', 'unknown'),
-      ];
-    }
-    const status: unknown = JSON.parse(result.stdout.toString());
-    if (!isObject(status)) {
-      throw new Error('Accessibility helper returned a non-object response');
-    }
-    const trusted = status['accessibilityTrusted'] === true;
-    const locked = status['locked'] === true;
-    return [
-      check('Accessibility', trusted ? 'pass' : 'warn', trusted ? 'trusted' : 'unavailable'),
-      check('lock state', locked ? 'warn' : 'pass', locked ? 'locked' : 'unlocked'),
-    ];
-  } catch (error) {
-    return [
-      check('Accessibility', 'warn', error instanceof Error ? error.message : String(error)),
-      check('lock state', 'warn', 'unknown'),
-    ];
-  }
 };
 
 const launchdCheck = async (
   paths: SpikePaths,
   config: SpikeConfig | null,
+  commands: OperatorCommandPort,
 ): Promise<DiagnosticCheck> => {
-  const loaded = runLaunchctl(['print', `${guiDomain()}/${launchAgentLabel}`]);
+  const target = `${guiDomain()}/${launchAgentLabel}`;
+  const inspection = commands
+    .launchctl(['print', target])
+    .pipe(Effect.flatMap((result) => classifyServiceInspection(target, result)));
+  const executed = await Effect.runPromise(Effect.result(inspection));
+  if (Result.isFailure(executed)) {
+    return check('LaunchAgent context', 'fail', executed.failure.message);
+  }
+  const loaded = executed.success;
   let plist = '';
   try {
     plist = await readFile(paths.launchAgent, 'utf8');
@@ -224,14 +232,17 @@ const launchdCheck = async (
     plist.includes('CODEX_EXECUTABLE') &&
     plist.includes('<key>PATH</key>');
   const loadedContextMatches =
-    loaded.stdout.includes(paths.root) &&
-    loaded.stdout.includes('CODEX_EXECUTABLE') &&
-    loaded.stdout.includes('PATH =>');
-  const valid = loaded.exitCode === 0 && plistMatches && loadedContextMatches;
+    loaded.result.stdout.includes(paths.root) &&
+    loaded.result.stdout.includes('CODEX_EXECUTABLE') &&
+    loaded.result.stdout.includes('PATH =>');
+  const valid = loaded.loaded && plistMatches && loadedContextMatches;
+  const failureDetail = loaded.loaded
+    ? 'missing or stale launchd context'
+    : loaded.result.stderr.trim() || 'service is not loaded';
   return check(
     'LaunchAgent context',
     valid ? 'pass' : 'fail',
-    valid ? `${launchAgentLabel} loaded with isolated home` : 'missing or stale launchd context',
+    valid ? `${launchAgentLabel} loaded with isolated home` : failureDetail,
   );
 };
 
@@ -239,14 +250,16 @@ const makeDoctorReport = async (
   paths: SpikePaths,
   controlStatus: unknown,
   helperPath: string,
+  commands: OperatorCommandPort = liveOperatorCommands,
 ): Promise<DoctorReport> => {
   const status = isObject(controlStatus) ? controlStatus : {};
   const config = await loadDiagnosticConfig(paths);
-  const [configuration, launchd, durableAccounts, messages] = await Promise.all([
+  const [configuration, launchd, durableAccounts, messages, accessibility] = await Promise.all([
     configChecks(config),
-    launchdCheck(paths, config.app),
+    launchdCheck(paths, config.app, commands),
     durableAccountCheck(paths, config.codex),
-    messagesChecks(config.app),
+    messagesChecks(config.app, commands),
+    checkAccessibility(helperPath, config.app?.likeAcknowledgements === true, commands),
   ]);
   const journal = journalCheck(paths);
   const appServer = isObject(status['appServer']) ? status['appServer'] : {};
@@ -261,15 +274,19 @@ const makeDoctorReport = async (
     ...configuration,
     check('control socket', status['ok'] === true ? 'pass' : 'fail', paths.socket),
     journal,
+    attachmentStagingCheck(paths, status),
     check(
       'app-server',
       appServer['healthy'] === true ? 'pass' : 'fail',
       appServer['healthy'] === true ? 'responsive' : 'unavailable',
     ),
     approvalCheck(approvals),
+    scheduleCheck(status['schedules']),
+    outageCheck(status['outages']),
+    eventLoopCheck(status['eventLoop']),
     accounts,
     ...messages,
-    ...accessibilityChecks(helperPath, config.app?.likeAcknowledgements === true),
+    ...accessibility,
     launchd,
   ];
   return { checks, healthy: !checks.some((item) => item.state === 'fail'), ok: true };

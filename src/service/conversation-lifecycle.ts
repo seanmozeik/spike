@@ -30,6 +30,9 @@ const initializeConversation = Effect.fn('SpikeEngine.initializeConversation')(
         ? {}
         : { expiryMs: context.options.approvalExpiryMs }),
       now: context.now,
+      onWake: () => {
+        context.wakes.signal('Approval');
+      },
       runtime: context.options.runtime,
     });
     context.conversationReady.value = true;

@@ -126,30 +126,34 @@ const replaceMessagesDatabase = (
   renameSync(replacementPath, fixture.databasePath);
 };
 
-const makeInsertMessage =
-  (database: Database) =>
-  (message: FixtureMessage): void => {
-    database.run(
-      `INSERT INTO message(
+const insertFixtureMessage = (database: Database, message: FixtureMessage): void => {
+  database.run(
+    `INSERT INTO message(
        ROWID, guid, text, attributedBody, date, is_from_me,
        cache_has_attachments, service, handle_id
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        message.rowId,
-        message.guid,
-        message.text ?? null,
-        message.attributedBody ?? null,
-        message.date ?? APPLE_NOW,
-        message.isFromMe === true ? 1 : 0,
-        message.hasAttachments === true ? 1 : 0,
-        message.service ?? 'iMessage',
-        message.handleId ?? 1,
-      ],
-    );
-    database.run('INSERT INTO chat_message_join(chat_id, message_id) VALUES (?, ?)', [
-      message.chatId ?? 1,
+    [
       message.rowId,
-    ]);
+      message.guid,
+      message.text ?? null,
+      message.attributedBody ?? null,
+      message.date ?? APPLE_NOW,
+      message.isFromMe === true ? 1 : 0,
+      message.hasAttachments === true ? 1 : 0,
+      message.service ?? 'iMessage',
+      message.handleId ?? 1,
+    ],
+  );
+  database.run('INSERT INTO chat_message_join(chat_id, message_id) VALUES (?, ?)', [
+    message.chatId ?? 1,
+    message.rowId,
+  ]);
+};
+
+const makeInsertMessage =
+  (database: Database) =>
+  (message: FixtureMessage): void => {
+    insertFixtureMessage(database, message);
   };
 
 const makeAddAttachment =
@@ -219,6 +223,7 @@ const withMessagesFixture = <A, E, R>(
 export {
   attributedBody,
   initializeDatabase,
+  insertFixtureMessage,
   makeMessagesFixture,
   replaceMessagesDatabase,
   TEST_CHAT_GUID,

@@ -10,6 +10,10 @@
     "effect",
     "imessage"
   ],
+  "homepage": "https://github.com/seanmozeik/spike#readme",
+  "bugs": {
+    "url": "https://github.com/seanmozeik/spike/issues"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,24 +27,27 @@
     "examples",
     "LICENSE",
     "README.md",
-    "src"
+    "SECURITY.md"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
   ],
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
-  "exports": {
-    ".": "./src/index.ts"
-  },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
+    "benchmark:recovery": "bun scripts/benchmark-recovery-query.ts",
     "build": "bun scripts/build.ts",
     "check": "bun run format && bun run lint:fix && bun run typecheck",
     "dev": "bun run src/cli.ts",
     "prepublishOnly": "bun scripts/build.ts -- --no-formula",
     "test": "bun --bun vitest run --reporter=minimal",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun scripts/typecheck.ts",
+    "validate:package": "bun scripts/validate-package.ts",
     "format": "oxfmt --write .",
     "lint": "oxlint --format agent --tsconfig tsconfig.oxlint.json ./src ./tests ./scripts",
     "lint:fix": "oxlint --format agent --tsconfig tsconfig.oxlint.json --fix ./src ./tests ./scripts",
@@ -51,8 +58,9 @@
     "@clack/prompts": "^1.7.0",
     "@effect/platform-bun": "4.0.0-beta.98",
     "effect": "4.0.0-beta.98",
+    "rrule-temporal": "2.0.0",
     "smol-toml": "^1.6.1",
-    "typescript": "^7.0.2"
+    "temporal-polyfill": "1.0.1"
   },
   "devDependencies": {
     "@effect/tsgo": "^0.18.1",
@@ -61,6 +69,7 @@
     "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",
     "oxlint-tsgolint": "^0.24.0",
+    "typescript": "^7.0.2",
     "vitest": "4.1.10"
   },
   "engines": {

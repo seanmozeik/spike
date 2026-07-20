@@ -6,18 +6,18 @@ import { Effect, Result } from 'effect';
 import type { SpikeConfig } from '../app-config';
 import { CodexThreadId, CodexTurnId } from '../domain/ids';
 import { CodexRuntimeError } from '../errors';
+import { isObject } from '../object-guard';
 import type { SpikePaths } from '../paths';
+import { scheduleDynamicTools } from '../schedule/tool-spec';
 import { assembleSystemPrompt } from '../system-prompt';
-import { activateAccount, discoverAccounts, selectAccount } from './account-pool';
+import { activateAccount, type AccountPoolOptions, type AccountRecord } from './account-pool';
 import type { ClassifiedOutput } from './output-classifier';
 import type { ThreadItem, ThreadSnapshot, ThreadTurn } from './reconcile';
 import { initializeRpc, spawnRpcHandle, type RpcHandle } from './rpc';
 import type { CodexRuntime } from './runtime-types';
+import type { CodexLogMode } from './stderr-log';
 import { classifyThreadLookup, isThreadNotLoaded } from './thread-errors';
 import { waitForTurn } from './turn-wait';
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const HEALTH_RPC_TIMEOUT_MS = 700;
 const STATUS_RPC_TIMEOUT_MS = 2000;
@@ -35,6 +35,25 @@ const customProvider = async (codexHome: string): Promise<null | string> => {
 
 const runtimeError = (operation: string, cause: unknown): CodexRuntimeError =>
   new CodexRuntimeError({ cause, message: `Codex ${operation} failed`, operation });
+
+const spawnAppServer = Effect.fn('SpikeCodex.spawnAppServer')(
+  (paths: SpikePaths, config: SpikeConfig, logMode: CodexLogMode) =>
+    Effect.try({
+      catch: (cause) =>
+        new CodexRuntimeError({
+          cause,
+          message: 'failed to spawn Codex app-server',
+          operation: 'spawn',
+        }),
+      try: () =>
+        spawnRpcHandle({
+          codexExecutable: config.codexExecutable,
+          codexHome: config.codexHome,
+          logMode,
+          stderrLog: paths.daemonLog,
+        }),
+    }),
+);
 
 const request = (
   handle: RpcHandle,
@@ -116,12 +135,23 @@ const parseLoadedThreads = (
 
 const threadStartParams = (prompt: string, workingDirectory: string): Record<string, unknown> => ({
   baseInstructions: prompt,
+  config: {
+    'features.current_time_reminder.clock_source': 'external',
+    'features.current_time_reminder.delivery_mode': 'after_user_or_tool_output',
+    'features.current_time_reminder.enabled': true,
+    'features.current_time_reminder.reminder_interval_seconds': 0,
+  },
   cwd: workingDirectory,
+  dynamicTools: scheduleDynamicTools,
   historyMode: 'legacy',
 });
 
-const textInput = (text: string): readonly Record<string, unknown>[] => [
+const userInput = (
+  text: string,
+  attachments: Parameters<CodexRuntime['startTurn']>[0]['attachments'],
+): readonly Record<string, unknown>[] => [
   { text, text_elements: [], type: 'text' },
+  ...attachments.map((attachment) => ({ path: attachment.path, type: 'localImage' })),
 ];
 
 const readThread = Effect.fn('SpikeCodex.readThread')(function* readThread(
@@ -177,6 +207,7 @@ const makeCodexRuntime = (
   loadedThreads: request(handle, 'thread/loaded/list', {}).pipe(Effect.flatMap(parseLoadedThreads)),
   rateLimits: request(handle, 'account/rateLimits/read', undefined, STATUS_RPC_TIMEOUT_MS),
   respondToServerRequest: handle.respondToServerRequest,
+  respondToServerRequestError: handle.respondToServerRequestError,
   startThread: request(handle, 'thread/start', threadStartParams(prompt, workingDirectory)).pipe(
     Effect.flatMap((response) => responseId('thread/start', response, 'thread')),
     Effect.map((id) => CodexThreadId.make(id)),
@@ -184,7 +215,7 @@ const makeCodexRuntime = (
   startTurn: (options): Effect.Effect<CodexTurnId, CodexRuntimeError> =>
     request(handle, 'turn/start', {
       clientUserMessageId: options.clientUserMessageId,
-      input: textInput(options.input),
+      input: userInput(options.input, options.attachments),
       threadId: options.threadId,
     }).pipe(
       Effect.flatMap((response) => responseId('turn/start', response, 'turn')),
@@ -194,7 +225,7 @@ const makeCodexRuntime = (
     request(handle, 'turn/steer', {
       clientUserMessageId: options.clientUserMessageId,
       expectedTurnId: options.expectedTurnId,
-      input: textInput(options.input),
+      input: userInput(options.input, options.attachments),
       threadId: options.threadId,
     }).pipe(Effect.asVoid),
   usage: request(handle, 'account/usage/read'),
@@ -202,35 +233,16 @@ const makeCodexRuntime = (
     waitForTurn(handle, threadId, turnId, handlers),
 });
 
-const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime(
+const openRuntime = Effect.fn('SpikeCodex.open')(function* openRuntime(
   paths: SpikePaths,
   config: SpikeConfig,
+  accountId: string,
+  logMode: CodexLogMode = 'quiet',
 ) {
   yield* Effect.tryPromise({
     catch: (cause) => runtimeError('home/create', cause),
     try: () => mkdir(config.codexHome, { recursive: true }),
   });
-  const accountOptions = {
-    accountsDirectory: paths.accounts,
-    codexHome: config.codexHome,
-    seedAuthPath: path.join(config.codexHome, 'auth.json'),
-  };
-  const accounts = yield* discoverAccounts(accountOptions);
-  const selection = selectAccount(accounts, new Date());
-  let accountId: string;
-  if (selection.kind === 'Selected') {
-    yield* activateAccount(accountOptions, selection.account);
-    accountId = selection.account.id;
-  } else {
-    const provider = yield* Effect.tryPromise({
-      catch: (cause) => runtimeError('provider/read', cause),
-      try: () => customProvider(config.codexHome),
-    });
-    if (provider === null) {
-      return yield* selection.error;
-    }
-    accountId = `provider:${provider}`;
-  }
   const userContext = yield* Effect.tryPromise({
     catch: (cause) => runtimeError('prompt/read', cause),
     try: () => readFile(config.promptPath, 'utf8'),
@@ -239,33 +251,42 @@ const openCodexRuntime = Effect.fn('SpikeCodex.open')(function* openCodexRuntime
     casing: config.casing,
     emoji: config.emoji,
     finalPunctuation: config.finalPunctuation,
+    preferredName: config.preferredName,
     swearing: config.swearing,
+    timezone: config.timezone,
     wit: config.wit,
   });
-  const handle = spawnRpcHandle({
-    codexExecutable: config.codexExecutable,
-    codexHome: config.codexHome,
-    stderrLog: paths.daemonLog,
-  });
+  const handle = yield* spawnAppServer(paths, config, logMode);
   yield* initializeRpc(handle).pipe(Effect.tapError(() => Effect.promise(() => handle.close())));
   return makeCodexRuntime(handle, prompt, accountId, config.workingDirectory);
 });
 
-const restartCodexRuntime = Effect.fn('SpikeCodex.restart')(function* restartCodexRuntime(
-  current: CodexRuntime,
-  replacement: Effect.Effect<CodexRuntime, CodexRuntimeError>,
-  threadId: CodexThreadId,
-) {
-  yield* Effect.tryPromise({
-    catch: (cause) => runtimeError('restart/close', cause),
-    try: () => current.close(),
-  });
-  const next = yield* replacement;
-  yield* next
-    .resumeThread(threadId)
-    .pipe(Effect.tapError(() => Effect.promise(() => next.close())));
-  return next;
-});
+const openAccountCodexRuntime = Effect.fn('SpikeCodex.openAccount')(
+  function* openAccountCodexRuntime(
+    paths: SpikePaths,
+    config: SpikeConfig,
+    accountOptions: AccountPoolOptions,
+    account: AccountRecord,
+    logMode: CodexLogMode = 'quiet',
+  ) {
+    yield* activateAccount(accountOptions, account);
+    return yield* openRuntime(paths, config, account.id, logMode);
+  },
+);
 
-export { makeCodexRuntime, openCodexRuntime, restartCodexRuntime };
+const readCustomProvider = (config: SpikeConfig): Effect.Effect<null | string, CodexRuntimeError> =>
+  Effect.tryPromise({
+    catch: (cause) => runtimeError('provider/read', cause),
+    try: () => customProvider(config.codexHome),
+  });
+
+const openProviderCodexRuntime = (
+  paths: SpikePaths,
+  config: SpikeConfig,
+  provider: string,
+  logMode: CodexLogMode = 'quiet',
+): Effect.Effect<CodexRuntime, CodexRuntimeError> =>
+  openRuntime(paths, config, `provider:${provider}`, logMode);
+
+export { makeCodexRuntime, openAccountCodexRuntime, openProviderCodexRuntime, readCustomProvider };
 export type { CodexRuntime, StartTurnOptions, SteerTurnOptions } from './runtime-types';

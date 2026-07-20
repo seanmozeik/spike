@@ -11,11 +11,17 @@ import { CodexRuntimeError, GenerationBroken } from '../src/errors';
 interface TurnBehavior {
   readonly acknowledgement?: string;
   readonly approvalExpiryMs?: number;
+  readonly archiveFailure?: string;
+  readonly classifiedOutput?: ClassifiedOutput;
   readonly compactions?: readonly string[];
   readonly deliveryFailure?: string;
   readonly failure?: string;
   readonly finalAnswer?: string;
-  readonly gate?: Promise<void>;
+  readonly gate?: Promise<unknown>;
+  readonly interruptFailure?: string;
+  readonly noticeGate?: Promise<unknown>;
+  readonly rateLimits?: Readonly<Record<string, unknown>> | (() => unknown);
+  readonly rateLimitsFailure?: string;
   readonly resumeFailure?: string;
   readonly resumeRuntimeFailure?: string;
   readonly responseFailure?: string;
@@ -23,12 +29,16 @@ interface TurnBehavior {
   readonly startFailureAfter?: number;
   readonly statusFailure?: string;
   readonly steerFailure?: string;
-  readonly steerGate?: Promise<void>;
+  readonly steerGate?: Promise<unknown>;
+  readonly usageFailure?: string;
 }
 
 interface RuntimeTrace {
+  readonly archived: string[];
+  readonly attachmentInputs: string[][];
   readonly closeListeners: (() => void)[];
   readonly inputs: string[];
+  readonly interrupted: string[];
   readonly notificationListeners: ((notification: JsonRpcNotification) => void)[];
   readonly reads: string[];
   readonly requestListeners: ((request: CodexServerRequest) => void)[];
@@ -38,10 +48,19 @@ interface RuntimeTrace {
   readonly turnsStarted: string[];
 }
 
+const accountReadFailure = (
+  operation: string,
+  message: string,
+): Effect.Effect<never, CodexRuntimeError> =>
+  Effect.fail(new CodexRuntimeError({ cause: new Error(message), message, operation }));
+
 const makeWaitForTurn =
   (behavior: TurnBehavior): CodexRuntime['waitForTurn'] =>
   (_threadId, _turnId, handlers) =>
     Effect.gen(function* wait() {
+      if (behavior.noticeGate !== undefined) {
+        yield* Effect.promise(() => behavior.noticeGate ?? Promise.resolve());
+      }
       if (behavior.acknowledgement !== undefined) {
         handlers.onAcknowledgement(behavior.acknowledgement);
       }
@@ -58,10 +77,12 @@ const makeWaitForTurn =
       if (behavior.gate !== undefined) {
         yield* Effect.promise(() => behavior.gate ?? Promise.resolve());
       }
-      return {
-        acknowledgement: behavior.acknowledgement ?? null,
-        finalAnswer: behavior.finalAnswer ?? 'Done.',
-      } satisfies ClassifiedOutput;
+      return (
+        behavior.classifiedOutput ?? {
+          acknowledgement: behavior.acknowledgement ?? null,
+          final: { itemId: 'final', kind: 'Ready', text: behavior.finalAnswer ?? 'Done.' },
+        }
+      );
     });
 
 const makeResumeThread =
@@ -88,8 +109,9 @@ const makeResumeThread =
 
 const makeStartTurn =
   (behavior: TurnBehavior, trace: RuntimeTrace): CodexRuntime['startTurn'] =>
-  ({ input }) =>
+  ({ attachments, input }) =>
     Effect.gen(function* startTurn() {
+      trace.attachmentInputs.push(attachments.map(({ path }) => path));
       trace.inputs.push(input);
       if (
         behavior.startFailure !== undefined &&
@@ -116,9 +138,50 @@ const subscribe = <A>(listeners: A[], listener: A): (() => void) => {
   };
 };
 
+const makeServerRequestSubscription =
+  (trace: RuntimeTrace): CodexRuntime['addServerRequestListener'] =>
+  (methods, listener) =>
+    subscribe(trace.requestListeners, (request) => {
+      if (methods.has(request.method)) {
+        listener(request);
+      }
+    });
+
+const recordOperation = (
+  entries: string[],
+  entry: string,
+  operation: string,
+  failure: string | undefined,
+): Effect.Effect<void, CodexRuntimeError> =>
+  Effect.sync(() => {
+    entries.push(entry);
+  }).pipe(
+    Effect.andThen(failure === undefined ? Effect.void : accountReadFailure(operation, failure)),
+  );
+
+const readRateLimits = (behavior: TurnBehavior): CodexRuntime['rateLimits'] =>
+  behavior.rateLimitsFailure === undefined
+    ? Effect.sync(() => {
+        const rateLimits =
+          typeof behavior.rateLimits === 'function' ? behavior.rateLimits() : behavior.rateLimits;
+        return rateLimits ?? {};
+      })
+    : accountReadFailure('account/rateLimits/read', behavior.rateLimitsFailure);
+
+const makeReadThread =
+  (snapshot: ThreadSnapshot, trace: RuntimeTrace): CodexRuntime['readThread'] =>
+  (threadId) =>
+    Effect.sync(() => {
+      trace.reads.push(threadId);
+      return snapshot;
+    });
+
 const makeTrace = (): RuntimeTrace => ({
+  archived: [],
+  attachmentInputs: [],
   closeListeners: [],
   inputs: [],
+  interrupted: [],
   notificationListeners: [],
   reads: [],
   requestListeners: [],
@@ -142,8 +205,9 @@ const makeStartThread = (loaded: Set<string>): CodexRuntime['startThread'] => {
 
 const makeSteerTurn =
   (behavior: TurnBehavior, trace: RuntimeTrace): CodexRuntime['steerTurn'] =>
-  ({ input }) => {
+  ({ attachments, input }) => {
     const recorded = Effect.sync(() => {
+      trace.attachmentInputs.push(attachments.map(({ path }) => path));
       trace.steers.push(input);
     });
     const gated =
@@ -174,29 +238,39 @@ const makeRuntimeHarness = (
     accountId: 'test-account',
     addConnectionCloseListener: (listener) => subscribe(trace.closeListeners, listener),
     addNotificationListener: (listener) => subscribe(trace.notificationListeners, listener),
-    addServerRequestListener: (listener) => subscribe(trace.requestListeners, listener),
-    archiveThread: (): Effect.Effect<void> => Effect.void,
+    addServerRequestListener: makeServerRequestSubscription(trace),
+    archiveThread: (threadId): Effect.Effect<void, CodexRuntimeError> =>
+      recordOperation(trace.archived, threadId, 'thread/archive', behavior.archiveFailure),
     close: (): Promise<void> => Promise.resolve(),
     health: Effect.void,
-    interruptTurn: (): Effect.Effect<void> => Effect.void,
+    interruptTurn: (threadId, turnId): Effect.Effect<void, CodexRuntimeError> =>
+      recordOperation(
+        trace.interrupted,
+        `${threadId}:${turnId}`,
+        'turn/interrupt',
+        behavior.interruptFailure,
+      ),
     loadedThreads: Effect.sync(() => [...loaded].map((id) => CodexThreadId.make(id))),
-    rateLimits: Effect.succeed({}),
-    readThread: (threadId): Effect.Effect<ThreadSnapshot> =>
-      Effect.sync(() => {
-        trace.reads.push(threadId);
-        return snapshot;
-      }),
+    rateLimits: readRateLimits(behavior),
+    readThread: makeReadThread(snapshot, trace),
     respondToServerRequest: (id, result): Promise<void> => {
       trace.responses.push({ id, result });
       return behavior.responseFailure === undefined
         ? Promise.resolve()
         : Promise.reject(new Error(behavior.responseFailure));
     },
+    respondToServerRequestError: (id, error): Promise<void> => {
+      trace.responses.push({ id, result: { error } });
+      return Promise.resolve();
+    },
     resumeThread: makeResumeThread(behavior, trace, loaded),
     startThread: makeStartThread(loaded),
     startTurn: makeStartTurn(behavior, trace),
     steerTurn: makeSteerTurn(behavior, trace),
-    usage: Effect.succeed({}),
+    usage:
+      behavior.usageFailure === undefined
+        ? Effect.succeed({})
+        : accountReadFailure('account/usage/read', behavior.usageFailure),
     waitForTurn: makeWaitForTurn(behavior),
   };
   return { runtime, trace };

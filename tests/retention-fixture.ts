@@ -99,6 +99,7 @@ const ingest = Effect.fn('Test.ingestRetentionMessage')(function* ingestMessage(
     throw new Error(`retention message ${String(rowId)} was not persisted`);
   }
   return {
+    attachments: [],
     id: InboundMessageId.make(persisted.id),
     inserted,
     receivedAt: OLD,
@@ -135,6 +136,7 @@ const startCodexTurn = Effect.fn('Test.startRetentionTurn')(function* startTurn(
     logicalTurnId,
     startedAt: OLD,
     submissionKind: 'Start',
+    threadId: CodexThreadId.make(`thread-${suffix}`),
   });
   yield* fixture.codex.acceptCodexTurn(
     attemptId,

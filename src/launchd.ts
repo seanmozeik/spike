@@ -5,6 +5,7 @@ import type { SpikePaths } from './paths';
 
 const launchAgentLabel = 'com.mozeik.spike';
 const FALLBACK_UID = 501;
+const LAUNCHCTL_TIMEOUT_MS = 10_000;
 
 const xmlEscape = (value: string): string =>
   value
@@ -62,16 +63,25 @@ const writeLaunchAgent = async (options: LaunchAgentOptions): Promise<void> => {
 
 interface ProcessResult {
   readonly exitCode: number;
+  readonly signalCode: string | null;
   readonly stdout: string;
   readonly stderr: string;
+  readonly timedOut: boolean;
 }
 
 const runLaunchctl = (args: readonly string[]): ProcessResult => {
-  const result = Bun.spawnSync(['launchctl', ...args], { stderr: 'pipe', stdout: 'pipe' });
+  // The synchronous boundary returns only after Bun has reaped the bounded command process.
+  const result = Bun.spawnSync(['launchctl', ...args], {
+    stderr: 'pipe',
+    stdout: 'pipe',
+    timeout: LAUNCHCTL_TIMEOUT_MS,
+  });
   return {
     exitCode: result.exitCode,
+    signalCode: result.signalCode ?? null,
     stderr: result.stderr.toString(),
     stdout: result.stdout.toString(),
+    timedOut: result.exitedDueToTimeout === true,
   };
 };
 

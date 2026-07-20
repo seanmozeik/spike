@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import * as clack from '@clack/prompts';
 import { Schema } from 'effect';
 
+import { showBanner } from '../ui/banner';
 import { chooseCodexPrompt } from './prompt-codex';
 import { personalityPrompt } from './prompt-personality';
 import { unwrap } from './prompt-shared';
@@ -32,6 +33,7 @@ interface OnboardingPrompts {
   readonly intro: () => void;
   readonly peerHandle: () => Promise<string>;
   readonly personality: () => Promise<PersonalityAnswers>;
+  readonly preferredName: () => Promise<string>;
   readonly runTask: <A>(
     title: string,
     task: (log: (message: string) => void) => Promise<A>,
@@ -151,6 +153,16 @@ const contextPrompt = async (): Promise<string> =>
     }),
   );
 
+const preferredNamePrompt = async (): Promise<string> =>
+  unwrap(
+    await clack.text({
+      message: 'What would you like Spike to call you?',
+      placeholder: 'John Appleseed',
+      validate: (value) =>
+        (value ?? '').trim().length === 0 ? 'Enter the name Spike should use' : undefined,
+    }),
+  );
+
 const peerHandlePrompt = async (): Promise<string> =>
   unwrap(
     await clack.text({
@@ -221,10 +233,12 @@ const realPrompts = (mode: OnboardingPromptMode = 'install'): OnboardingPrompts 
     clack.outro(message);
   },
   intro: (): void => {
+    showBanner();
     clack.intro(mode === 'preview' ? 'Spike onboarding preview' : 'Spike onboarding');
   },
   peerHandle: peerHandlePrompt,
   personality: personalityPrompt,
+  preferredName: preferredNamePrompt,
   runTask: runTaskPrompt,
   sandboxMode: sandboxPrompt,
   waitForFirstMessage: waitForFirstMessagePrompt,

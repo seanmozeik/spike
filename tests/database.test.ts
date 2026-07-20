@@ -10,6 +10,8 @@ import { afterEach, expect } from 'vitest';
 import { canonicalInputFingerprint } from '../src/codex/reconcile';
 import { ensureRuntimeLayout } from '../src/config-files';
 import { inspectJournal, journalInfo, openJournal } from '../src/database';
+import { SCHEMA_VERSION } from '../src/journal/migrations';
+import { makeSchedulerJournal } from '../src/journal/scheduler-journal';
 import { spikePaths } from '../src/paths';
 
 const roots: string[] = [];
@@ -91,6 +93,18 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
         .all()
         .map(({ name }) => name),
     ).toContain('payload_redacted_at');
+    expect(
+      journal.database
+        .query<{ name: string }, []>('PRAGMA table_info(account_observations)')
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(['mode', 'selected_at']));
+    expect(
+      journal.database
+        .query<{ name: string }, []>("PRAGMA index_list('attachments')")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(['attachments_staged_path', 'attachments_inbound_message']));
     for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
       expect(existsSync(file)).toBe(true);
       expect(mode(file)).toBe('600');
@@ -98,8 +112,40 @@ it.effect('opens the daemon-owned journal with durable pragmas', () =>
     journal.close();
     expect(inspectJournal(databasePath)).toStrictEqual({
       journalMode: 'wal',
-      migrationVersion: 12,
+      migrationVersion: SCHEMA_VERSION,
     });
+  }),
+);
+
+it.effect('migrates schema version 13 account availability into explicit durable modes', () =>
+  Effect.gen(function* accountModeMigrationFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-account-mode-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    initial.close();
+    const legacy = new Database(databasePath, { strict: true });
+    legacy.run('ALTER TABLE account_observations DROP COLUMN selected_at');
+    legacy.run('ALTER TABLE account_observations DROP COLUMN mode');
+    legacy.run(
+      `INSERT INTO account_observations(account_id, observed_at, usable, usage_json, reset_at)
+       VALUES ('legacy', '2026-07-14T12:00:00.000Z', 0, NULL, NULL)`,
+    );
+    legacy.run('DELETE FROM schema_meta');
+    legacy.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (13, '2026-07-14T12:00:00.000Z')",
+    );
+    legacy.close();
+
+    const migrated = yield* openJournal(databasePath);
+    expect(
+      migrated.database
+        .query<{ mode: string; selected_at: string | null }, []>(
+          "SELECT mode, selected_at FROM account_observations WHERE account_id = 'legacy'",
+        )
+        .get(),
+    ).toEqual({ mode: 'Capacity', selected_at: null });
+    migrated.close();
   }),
 );
 
@@ -186,7 +232,7 @@ it.effect('migrates a version 6 scheduler journal to the canonical generation th
 
     expect(columns).not.toContain('codex_thread_id');
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -214,7 +260,7 @@ it.effect('migrates a version 7 journal to durable broken-generation state', () 
     migrated.close();
 
     expect(columns).toContain('generation_broken');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -248,7 +294,133 @@ it.effect('migrates failed logical turns to terminal Codex attempts', () =>
     migrated.close();
 
     expect(attempt).toStrictEqual({ finished_at: '2026-07-15T00:01:00.000Z', state: 'Failed' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
+  }),
+);
+
+it.effect('repairs v17 terminal-turn attempts before rotating stale configuration', () =>
+  Effect.gen(function* terminalAttemptRepairFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-v17-terminal-attempts-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    const terminalAt = '2026-07-19T22:57:00.000Z';
+    initial.database.run(
+      `INSERT INTO generations(id, sequence, state, created_at, config_version)
+       VALUES ('stale-generation', 1, 'Current', ?, NULL)`,
+      [terminalAt],
+    );
+    initial.database.run(
+      `INSERT INTO logical_turns(
+         id, generation_id, sequence, state, correlation_id, created_at, completed_at
+       ) VALUES (
+         'completed-turn', 'stale-generation', 1, 'Completed', 'correlation', ?, ?
+       )`,
+      [terminalAt, terminalAt],
+    );
+    for (const [id, state] of [
+      ['accepted-attempt', 'Accepted'],
+      ['prepared-steer', 'Prepared'],
+    ] as const) {
+      initial.database.run(
+        `INSERT INTO codex_attempts(
+           id, logical_turn_id, state, submission_kind, started_at
+         ) VALUES (?, 'completed-turn', ?, 'Steer', ?)`,
+        [id, state, terminalAt],
+      );
+    }
+    initial.database.run('DELETE FROM schema_meta');
+    initial.database.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (17, '2026-07-19T22:57:00.000Z')",
+    );
+    initial.close();
+
+    const migrated = yield* openJournal(databasePath);
+    expect(
+      migrated.database
+        .query<{ finished_at: string; id: string; state: string }, []>(
+          'SELECT id, state, finished_at FROM codex_attempts ORDER BY id',
+        )
+        .all(),
+    ).toStrictEqual([
+      { finished_at: terminalAt, id: 'accepted-attempt', state: 'Completed' },
+      { finished_at: terminalAt, id: 'prepared-steer', state: 'Failed' },
+    ]);
+    const loaded = yield* makeSchedulerJournal(migrated.database).loadOrCreate(
+      new Date('2026-07-19T22:58:00.000Z'),
+    );
+    expect(loaded).toMatchObject({ configurationCurrent: true });
+    expect(loaded.generationId).not.toBe('stale-generation');
+    expect(
+      migrated.database
+        .query<{ state: string }, []>("SELECT state FROM generations WHERE id = 'stale-generation'")
+        .get(),
+    ).toStrictEqual({ state: 'Superseded' });
+    migrated.close();
+
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
+  }),
+);
+
+it.effect('leaves every field of v17 nonterminal attempts unchanged for a running turn', () =>
+  Effect.gen(function* runningAttemptMigrationFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-v17-running-attempts-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    const createdAt = '2026-07-19T23:10:00.000Z';
+    initial.database.run(
+      `INSERT INTO generations(id, sequence, state, created_at)
+       VALUES ('running-generation', 1, 'Current', ?)`,
+      [createdAt],
+    );
+    initial.database.run(
+      `INSERT INTO logical_turns(
+         id, generation_id, sequence, state, correlation_id, created_at
+       ) VALUES ('running-turn', 'running-generation', 1, 'Running', 'running-correlation', ?)`,
+      [createdAt],
+    );
+    for (const [index, state] of [
+      [1, 'Prepared'],
+      [2, 'Submitted'],
+      [3, 'SubmissionUnknown'],
+      [4, 'Accepted'],
+    ] as const) {
+      initial.database.run(
+        `INSERT INTO codex_attempts(
+           id, logical_turn_id, account_id, state, codex_thread_id, codex_turn_id,
+           input_fingerprint, frontier_json, submission_kind, started_at, finished_at
+         ) VALUES (?, 'running-turn', ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [
+          `running-attempt-${String(index)}`,
+          `account-${String(index)}`,
+          state,
+          `thread-${String(index)}`,
+          state === 'Accepted' ? `turn-${String(index)}` : null,
+          `fingerprint-${String(index)}`,
+          JSON.stringify({ itemIds: [`item-${String(index)}`], turnIds: [] }),
+          state === 'Accepted' ? 'Start' : 'Steer',
+          new Date(Date.parse(createdAt) + index).toISOString(),
+        ],
+      );
+    }
+    const before = initial.database
+      .query<Record<string, unknown>, []>('SELECT * FROM codex_attempts ORDER BY id')
+      .all();
+    initial.database.run('DELETE FROM schema_meta');
+    initial.database.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (17, '2026-07-19T23:11:00.000Z')",
+    );
+    initial.close();
+
+    const migrated = yield* openJournal(databasePath);
+    expect(
+      migrated.database
+        .query<Record<string, unknown>, []>('SELECT * FROM codex_attempts ORDER BY id')
+        .all(),
+    ).toStrictEqual(before);
+    migrated.close();
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -276,7 +448,7 @@ it.effect('migrates version 10 approval rows to the payload retention marker', (
     migrated.close();
 
     expect(columns).toContain('payload_redacted_at');
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
   }),
 );
 
@@ -307,16 +479,16 @@ it.effect('migrates v11 attempts to causal batch identities and remains idempote
         )
         .get(),
     ).toStrictEqual({ input_batch_id: 'batch-one' });
-    expect(inspectJournal(databasePath).migrationVersion).toBe(12);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
     migrated.close();
 
     const reopened = yield* openJournal(databasePath);
     expect(
       reopened.database
-        .query<{ count: number }, []>(
-          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = 12',
+        .query<{ count: number }, [number]>(
+          'SELECT COUNT(*) AS count FROM schema_meta WHERE version = ?',
         )
-        .get()?.count,
+        .get(SCHEMA_VERSION)?.count,
     ).toBe(1);
     expect(
       reopened.database
@@ -326,5 +498,56 @@ it.effect('migrates v11 attempts to causal batch identities and remains idempote
         .get(),
     ).toStrictEqual({ input_batch_id: 'batch-one' });
     reopened.close();
+  }),
+);
+
+it.effect('migrates the v12 final index to admit a distinct failure-notice role', () =>
+  Effect.gen(function* failureNoticeIndexMigration() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-db-v12-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'spike.db');
+    const initial = yield* openJournal(databasePath);
+    initial.close();
+
+    const versionTwelve = new Database(databasePath, { strict: true });
+    versionTwelve.run('DROP INDEX outbound_one_failure_notice');
+    versionTwelve.run('DROP INDEX outbound_one_final');
+    versionTwelve.run(
+      `CREATE UNIQUE INDEX outbound_one_final
+       ON outbound_messages(logical_turn_id, message_kind) WHERE message_kind = 'Final'`,
+    );
+    versionTwelve.run('DELETE FROM schema_meta');
+    versionTwelve.run(
+      "INSERT INTO schema_meta(version, applied_at) VALUES (12, '2026-07-15T00:03:00.000Z')",
+    );
+    versionTwelve.close();
+
+    const migrated = yield* openJournal(databasePath);
+    migrated.database.run(
+      "INSERT INTO generations(id, sequence, state, created_at) VALUES ('generation', 1, 'Current', '2026-07-15T00:00:00.000Z')",
+    );
+    migrated.database.run(
+      "INSERT INTO logical_turns(id, generation_id, sequence, state, correlation_id, created_at) VALUES ('turn', 'generation', 1, 'Running', 'correlation', '2026-07-15T00:00:00.000Z')",
+    );
+    for (const [id, sourceKind] of [
+      ['failure', 'TurnFailureNotice'],
+      ['answer', 'CodexAgentItem'],
+    ] as const) {
+      migrated.database.run(
+        `INSERT INTO outbound_messages(
+           id, logical_turn_id, source_kind, source_id, message_kind, text, state, created_at
+         ) VALUES (?, 'turn', ?, 'turn-1', 'Final', ?, 'Delivered', '2026-07-15T00:01:00.000Z')`,
+        [id, sourceKind, id],
+      );
+    }
+    expect(
+      migrated.database
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM outbound_messages WHERE logical_turn_id = 'turn'",
+        )
+        .get()?.count,
+    ).toBe(2);
+    expect(inspectJournal(databasePath).migrationVersion).toBe(SCHEMA_VERSION);
+    migrated.close();
   }),
 );

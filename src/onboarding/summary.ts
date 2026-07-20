@@ -11,6 +11,8 @@ const summarizeOnboardingPlan = (plan: OnboardingPlan): string => {
     `Conversation  ${plan.conversation.handle}`,
     `Chat GUID     ${plan.conversation.chatGuid}`,
     `Workspace     ${plan.workingDirectory}`,
+    `Name          ${plan.preferredName}`,
+    `Timezone      ${plan.timezone}`,
     `Codex         ${codex}`,
     `Permissions   ${plan.approvalPolicy} · ${plan.sandboxMode}`,
     `Likes         ${plan.personality.likeAcknowledgements ? 'on' : 'off'}`,

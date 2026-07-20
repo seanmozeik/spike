@@ -2,23 +2,22 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Result } from 'effect';
 
-import { compactError } from '../delivery/service';
-import { LogicalTurnId as LogicalTurnIdSchema } from '../domain/ids';
+import { recordUnavailableAccount } from '../codex/account-observation';
+import { GenerationId, LogicalTurnId as LogicalTurnIdSchema } from '../domain/ids';
+import { safeErrorDiagnostic } from '../error-message';
 import { isGenerationBroken } from '../errors';
 import type { SchedulerState, TurnIdentity } from '../scheduler/model';
+import { ownsActiveTurn } from '../scheduler/ownership';
+import { classifyAccountFailure } from './account-failover';
 import { report, type EngineContext } from './context';
 import type {
-  CompletionTerminalObligation,
   FailureTerminalEvent,
   FailureTerminalObligation,
   TurnTerminalObligation,
 } from './turn-terminal-model';
+import { terminalSuccessorIdentity } from './turn-terminal-successor';
 
 const MAX_TERMINALS_PER_DRAIN = 8;
-
-const ownsActiveTurn = (state: SchedulerState, identity: TurnIdentity): boolean =>
-  state.generationId === identity.generationId &&
-  state.active?.logicalTurnId === identity.logicalTurnId;
 
 const sourceId = (state: SchedulerState, identity: TurnIdentity): string =>
   state.active?.logicalTurnId === identity.logicalTurnId && state.active.codexTurnId !== null
@@ -31,11 +30,18 @@ const failureEvent = (
   error: unknown,
 ): FailureTerminalEvent =>
   isGenerationBroken(error)
-    ? { at: context.now(), kind: 'GenerationBroken', logicalTurnId: identity.logicalTurnId }
+    ? {
+        at: context.now(),
+        kind: 'GenerationBroken',
+        logicalTurnId: identity.logicalTurnId,
+        newGenerationId: GenerationId.make(randomUUID()),
+        nextLogicalTurnId: LogicalTurnIdSchema.make(randomUUID()),
+      }
     : {
         at: context.now(),
         kind: 'TurnFailed',
         logicalTurnId: identity.logicalTurnId,
+        newGenerationId: GenerationId.make(randomUUID()),
         nextLogicalTurnId: LogicalTurnIdSchema.make(randomUUID()),
       };
 
@@ -45,11 +51,9 @@ const deliverFailure = (
 ): Effect.Effect<void> =>
   Effect.gen(function* deliverTurnFailure() {
     const delivered = yield* Effect.result(
-      context.options.delivery.deliverAssistantMessage(
+      context.options.delivery.deliverFailureNotice(
         obligation.identity.logicalTurnId,
-        obligation.sourceId,
-        'Final',
-        `Spike hit an error: ${compactError(obligation.error)}`,
+        `Spike hit an error: ${safeErrorDiagnostic(obligation.error)}`,
         context.now(),
       ),
     );
@@ -61,16 +65,9 @@ const deliverFailure = (
 const registerSuccessorFailure = (
   context: EngineContext,
   state: SchedulerState,
+  identity: TurnIdentity,
   error: unknown,
 ): void => {
-  if (state.active === null) {
-    report(context, error);
-    return;
-  }
-  const identity = {
-    generationId: state.generationId,
-    logicalTurnId: state.active.logicalTurnId,
-  } satisfies TurnIdentity;
   if (!context.turnTerminals.pending.has(identity.logicalTurnId)) {
     context.turnTerminals.pending.set(identity.logicalTurnId, {
       error,
@@ -79,25 +76,9 @@ const registerSuccessorFailure = (
       kind: 'Failure',
       sourceId: sourceId(state, identity),
     });
+    context.wakes.signal('Recovery');
   }
 };
-
-const finishDeliveredAttempt = (
-  context: EngineContext,
-  obligation: CompletionTerminalObligation,
-): Effect.Effect<boolean> =>
-  context.codexJournal
-    .finishLogicalTurn(obligation.identity.logicalTurnId, 'Completed', obligation.event.at)
-    .pipe(
-      Effect.result,
-      Effect.map((finished) => {
-        if (Result.isFailure(finished)) {
-          report(context, finished.failure);
-          return false;
-        }
-        return true;
-      }),
-    );
 
 const finishSuccessfulTerminal = (
   context: EngineContext,
@@ -105,7 +86,10 @@ const finishSuccessfulTerminal = (
   after: SchedulerState,
 ): Effect.Effect<void> => {
   context.turnTerminals.pending.delete(obligation.identity.logicalTurnId);
-  return obligation.kind === 'Failure' && after.generationId === obligation.identity.generationId
+  const terminalOwned =
+    after.generationId === obligation.identity.generationId ||
+    after.generationId === obligation.event.newGenerationId;
+  return obligation.kind === 'Failure' && terminalOwned
     ? deliverFailure(context, obligation)
     : Effect.void;
 };
@@ -122,13 +106,19 @@ const reconcileFailedTerminal = (
       return 'Blocked' as const;
     }
     context.turnTerminals.pending.delete(obligation.identity.logicalTurnId);
+    const successor = terminalSuccessorIdentity(obligation, after);
     if (after.generationId !== obligation.identity.generationId) {
+      if (successor !== null) {
+        registerSuccessorFailure(context, after, successor, error);
+      }
       return 'Continue' as const;
     }
     if (obligation.kind === 'Failure') {
       yield* deliverFailure(context, obligation);
     }
-    registerSuccessorFailure(context, after, error);
+    if (successor !== null) {
+      registerSuccessorFailure(context, after, successor, error);
+    }
     return 'Continue' as const;
   });
 
@@ -144,10 +134,6 @@ const processTerminal = Effect.fn('SpikeEngine.processTurnTerminal')(function* p
       report(context, obligation.error);
     }
     return 'Continue' as const;
-  }
-
-  if (obligation.kind === 'Completion' && !(yield* finishDeliveredAttempt(context, obligation))) {
-    return 'Blocked' as const;
   }
 
   const dispatched = yield* Effect.result(controller.dispatch(obligation.event));
@@ -213,10 +199,26 @@ const failTurn = Effect.fn('SpikeEngine.failTurn')(function* failTurn(
           kind: 'Failure',
           sourceId: sourceId(state, identity),
         });
+        context.wakes.signal('Recovery');
       }
       yield* drainTurnTerminals(context);
     }),
   );
+  const availability = classifyAccountFailure(error);
+  if (availability !== null && !context.options.runtime.accountId.startsWith('provider:')) {
+    const recorded = yield* Effect.result(
+      recordUnavailableAccount(
+        context.options.runtime,
+        context.codexJournal,
+        availability,
+        context.now(),
+      ),
+    );
+    if (Result.isFailure(recorded)) {
+      report(context, recorded.failure);
+    }
+    context.accountFailover.pending = availability;
+  }
 });
 
 const completeTurn = Effect.fn('SpikeEngine.completeTurn')(function* completeTurn(
@@ -237,12 +239,14 @@ const completeTurn = Effect.fn('SpikeEngine.completeTurn')(function* completeTur
             at: context.now(),
             kind: 'TurnCompleted',
             logicalTurnId: identity.logicalTurnId,
+            newGenerationId: GenerationId.make(randomUUID()),
             nextLogicalTurnId: LogicalTurnIdSchema.make(randomUUID()),
           },
           identity,
           kind: 'Completion',
           sourceId: sourceId(state, identity),
         });
+        context.wakes.signal('Recovery');
       }
       yield* drainTurnTerminals(context);
     }),

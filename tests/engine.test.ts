@@ -2,47 +2,13 @@ import type { Database } from 'bun:sqlite';
 
 import { it } from '@effect/vitest';
 import { Effect } from 'effect';
+import { TestClock } from 'effect/testing';
 import { expect } from 'vitest';
 
 import { makeJournal } from '../src/journal/service';
+import { SCHEDULE_CONFIGURATION_VERSION } from '../src/schedule/configuration';
 import { CHAT_GUID, inbound, makeEngineFixture, settle } from './engine-fixture';
-
-const seedActiveTurn = (database: Database): void => {
-  const now = '2026-07-14T12:00:00.000Z';
-  database.run(
-    "INSERT INTO generations VALUES ('generation', 1, 'Current', ?, NULL, 'thread-1', NULL, NULL)",
-    [now],
-  );
-  database.run(
-    "INSERT INTO logical_turns VALUES ('logical-turn', 'generation', 1, 'Running', 'correlation', ?, NULL, NULL)",
-    [now],
-  );
-  database.run(
-    `INSERT INTO inbound_messages(
-       id, message_guid, messages_rowid, chat_guid, handle, service, text, sent_at, observed_at
-     ) VALUES (
-       'inbound-initial', 'message-initial', 1000, 'any;-;+15555550199', '+15555550199',
-       'iMessage', 'recovered request', ?, ?
-     )`,
-    [now, now],
-  );
-  database.run(
-    `INSERT INTO input_batches(id, logical_turn_id, sequence, kind, fingerprint, created_at)
-     VALUES ('batch-initial', 'logical-turn', 1, 'Initial', '["inbound-initial"]', ?)`,
-    [now],
-  );
-  database.run(
-    `INSERT INTO input_batch_messages(input_batch_id, inbound_message_id, ordinal)
-     VALUES ('batch-initial', 'inbound-initial', 0)`,
-  );
-  database.run(
-    `INSERT INTO scheduler_state(
-      singleton, generation_id, active_logical_turn_id, active_codex_turn_id,
-      active_acknowledged, timer_deadline_at, updated_at
-    ) VALUES (1, 'generation', 'logical-turn', 'turn-1', 0, NULL, ?)`,
-    [now],
-  );
-};
+import { seedActiveTurn } from './engine-seeds';
 
 const seedAcceptedAttempt = (database: Database): void => {
   database.run(
@@ -52,6 +18,28 @@ const seedAcceptedAttempt = (database: Database): void => {
      ) VALUES (
        'attempt-1', 'logical-turn', 'batch-initial', 'test-account', 'Accepted', 'thread-1', 'turn-1',
        'fingerprint', '{"turnIds":[],"itemIds":[]}', 'Start', '2026-07-14T12:00:00.000Z'
+     )`,
+  );
+};
+
+const seedDeliveredFailureNotice = (database: Database): void => {
+  database.run(
+    `INSERT INTO outbound_messages(
+       id, logical_turn_id, source_kind, source_id, message_kind, text, state,
+       created_at, delivered_at
+     ) VALUES (
+       'failure-outbound', 'logical-turn', 'TurnFailureNotice', 'turn-1', 'Final',
+       'Spike hit an error: interrupted before terminal persistence', 'Delivered',
+       '2026-07-14T12:00:00.000Z', '2026-07-14T12:00:01.000Z'
+     )`,
+  );
+  database.run(
+    `INSERT INTO outbound_chunks(
+       id, outbound_message_id, ordinal, text, messages_rowid, message_guid, state
+     ) VALUES (
+       'failure-chunk', 'failure-outbound', 0,
+       'Spike hit an error: interrupted before terminal persistence', 900,
+       'failure-message-guid', 'Reconciled'
      )`,
   );
 };
@@ -83,6 +71,31 @@ it.effect('/new keeps its pre-bound thread unread until the first turn materiali
     expect(fixture.reads).toStrictEqual([]);
     expect(fixture.turnsStarted).toStrictEqual(['turn-1']);
     expect(fixture.sent).toStrictEqual(['New chat started', 'First answer']);
+    fixture.remove();
+  }),
+);
+
+it.effect('preserves inbound order when ordinary work precedes /new', () =>
+  Effect.gen(function* ordinaryBeforeNew() {
+    const turn = Promise.withResolvers<null>();
+    const fixture = yield* makeEngineFixture({
+      behavior: { finalAnswer: 'superseded answer', gate: turn.promise },
+    });
+    fixture.push(inbound(1, 'work before reset'), inbound(2, '/new'));
+
+    yield* fixture.engine.pollOnce;
+
+    expect(
+      fixture.database
+        .query<{ state: string }, []>('SELECT state FROM logical_turns ORDER BY rowid')
+        .all(),
+    ).toStrictEqual([{ state: 'Superseded' }]);
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+
+    turn.resolve(null);
+    yield* Effect.promise(() => Bun.sleep(0));
+    yield* fixture.engine.drain;
+    yield* fixture.engine.shutdown;
     fixture.remove();
   }),
 );
@@ -137,6 +150,15 @@ it.effect('delivers one compacting notice before the final answer', () =>
     fixture.push(inbound(1, 'investigate this deeply'));
     yield* settle(fixture.engine);
     expect(fixture.sent).toStrictEqual(['Looking into it now', 'compacting...', 'Finished']);
+    const compaction = fixture.database
+      .query<{ logical_turn_id: null | string; source_kind: string; state: string }, []>(
+        `SELECT logical_turn_id, source_kind, state FROM outbound_messages
+         WHERE source_kind = 'CodexCompactionItem'`,
+      )
+      .get();
+    expect(compaction?.logical_turn_id).not.toBeNull();
+    expect(compaction?.source_kind).toBe('CodexCompactionItem');
+    expect(compaction?.state).toBe('Delivered');
     fixture.remove();
   }),
 );
@@ -149,14 +171,20 @@ it.effect('advances a turn to failed after its bounded delivery path is exhauste
     fixture.push(inbound(1, 'hello Spike'));
     yield* settle(fixture.engine);
     yield* settle(fixture.engine);
-    expect(fixture.sent).toStrictEqual(['Done']);
+    expect(fixture.sent).toStrictEqual(['Done', 'Spike hit an error: chat.db unavailable']);
     expect(
       fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
     ).toBe('Failed');
     expect(
-      fixture.database.query<{ state: string }, []>('SELECT state FROM outbound_messages').get()
-        ?.state,
-    ).toBe('Failed');
+      fixture.database
+        .query<{ source_kind: string; state: string }, []>(
+          'SELECT source_kind, state FROM outbound_messages ORDER BY source_kind',
+        )
+        .all(),
+    ).toStrictEqual([
+      { source_kind: 'CodexAgentItem', state: 'Failed' },
+      { source_kind: 'TurnFailureNotice', state: 'Failed' },
+    ]);
     expect(
       fixture.database.query<{ state: string }, []>('SELECT state FROM codex_attempts').get()
         ?.state,
@@ -236,8 +264,8 @@ it.effect('fails an active turn when its persisted steer side effect fails', () 
     yield* Effect.promise(() => Bun.sleep(0));
     fixture.push(inbound(2, 'follow-up detail'));
     yield* fixture.engine.pollOnce;
-    yield* Effect.promise(() => Bun.sleep(3100));
-    yield* Effect.promise(() => Bun.sleep(0));
+    yield* TestClock.adjust('3100 millis');
+    yield* Effect.yieldNow;
 
     expect(fixture.steers).toStrictEqual(['follow-up detail', 'follow-up detail']);
     expect(fixture.sent).toStrictEqual(['Spike hit an error: follow-up steer unavailable']);
@@ -250,6 +278,30 @@ it.effect('fails an active turn when its persisted steer side effect fails', () 
     yield* fixture.engine.drain;
     expect(fixture.sent).toStrictEqual(['Spike hit an error: follow-up steer unavailable']);
     fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('cancels and joins a pooled steer debounce during engine shutdown', () =>
+  Effect.gen(function* cancelledSteer() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({ behavior: { gate: gate.promise } });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    fixture.push(inbound(2, 'follow-up detail'));
+    yield* fixture.engine.pollOnce;
+
+    yield* fixture.engine.shutdown;
+    yield* TestClock.adjust('3100 millis');
+    yield* Effect.yieldNow;
+
+    expect(fixture.steers).toStrictEqual([]);
+    expect((yield* fixture.engine.snapshot).pool.map(({ text }) => text)).toStrictEqual([
+      'follow-up detail',
+    ]);
+    gate.reject(new Error('monitor stopped after engine close'));
+    yield* fixture.engine.drain;
     fixture.remove();
   }),
 );
@@ -280,8 +332,8 @@ it.effect('quarantines a generation when a pool-timer steer finds a legacy attem
 
     fixture.push(inbound(2, 'follow-up detail'));
     yield* fixture.engine.pollOnce;
-    yield* Effect.promise(() => Bun.sleep(3100));
-    yield* Effect.promise(() => Bun.sleep(0));
+    yield* TestClock.adjust('3100 millis');
+    yield* Effect.yieldNow;
 
     expect(fixture.steers).toStrictEqual([]);
     expect(fixture.sent).toStrictEqual([
@@ -333,6 +385,81 @@ it.effect('/new suppresses a late failure from the superseded monitor', () =>
   }),
 );
 
+it.effect('/new suppresses a late success from the superseded monitor', () =>
+  Effect.gen(function* supersededMonitorSuccess() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({
+      behavior: { finalAnswer: 'Stale answer.', gate: gate.promise },
+    });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    fixture.push(inbound(2, '/new'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Superseded');
+
+    gate.resolve();
+    yield* fixture.engine.drain;
+
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+    expect(
+      fixture.database
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM outbound_messages
+           WHERE source_kind = 'CodexAgentItem' AND message_kind = 'Final'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect((yield* fixture.engine.snapshot).active).toBeNull();
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
+it.effect('/new suppresses late acknowledgements and compaction notices', () =>
+  Effect.gen(function* supersededTurnNotices() {
+    const gate = Promise.withResolvers<undefined>();
+    const fixture = yield* makeEngineFixture({
+      behavior: {
+        acknowledgement: 'Late acknowledgement.',
+        compactions: ['late-compaction'],
+        finalAnswer: 'Late final.',
+        noticeGate: gate.promise,
+      },
+    });
+    fixture.push(inbound(1, 'first request'));
+    yield* fixture.engine.pollOnce;
+    yield* Effect.promise(() => Bun.sleep(0));
+
+    fixture.push(inbound(2, '/new'));
+    yield* fixture.engine.pollOnce;
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+
+    gate.resolve();
+    yield* fixture.engine.drain;
+
+    expect(fixture.sent).toStrictEqual(['New chat started']);
+    expect(
+      fixture.database
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM outbound_messages
+           WHERE source_kind IN ('CodexAgentItem','CodexCompactionItem')`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Superseded');
+    fixture.engine.close();
+    fixture.remove();
+  }),
+);
+
 it.effect('redispatches a durably ingested message after a crash advanced the inbox cursor', () =>
   Effect.gen(function* replayInbound() {
     const fixture = yield* makeEngineFixture({ behavior: { finalAnswer: 'Recovered.' } });
@@ -343,6 +470,41 @@ it.effect('redispatches a durably ingested message after a crash advanced the in
     yield* settle(fixture.engine);
     expect(fixture.sent).toStrictEqual(['Recovered']);
     expect(fixture.turnsStarted).toStrictEqual(['turn-1']);
+    fixture.remove();
+  }),
+);
+
+it.effect('persists an idle frontier and ingests the next inbound exactly once', () =>
+  Effect.gen(function* idleFrontier() {
+    const fixture = yield* makeEngineFixture({
+      behavior: { finalAnswer: 'After idle.' },
+      idleFrontier: 100,
+      prepare: (database) =>
+        Effect.sync(() => {
+          database.run(
+            `INSERT INTO inbox_cursor(chat_guid, last_rowid, last_message_guid, updated_at)
+             VALUES (?, 0, NULL, ?)`,
+            [CHAT_GUID, new Date('2026-07-14T11:59:00.000Z').toISOString()],
+          );
+        }),
+    });
+    yield* fixture.engine.pollOnce;
+    expect(
+      fixture.database
+        .query<{ last_rowid: number }, []>('SELECT last_rowid FROM inbox_cursor')
+        .get()?.last_rowid,
+    ).toBe(100);
+
+    fixture.push(inbound(101, 'arrived after idle'));
+    yield* settle(fixture.engine);
+    yield* fixture.engine.pollOnce;
+    expect(fixture.inputs).toStrictEqual(['arrived after idle']);
+    expect(fixture.sent).toStrictEqual(['After idle']);
+    expect(
+      fixture.database
+        .query<{ last_rowid: number }, []>('SELECT last_rowid FROM inbox_cursor')
+        .get()?.last_rowid,
+    ).toBe(101);
     fixture.remove();
   }),
 );
@@ -426,7 +588,9 @@ it.effect('submits attachment-only inbound content without attempting a text Lik
       text: null,
     });
     yield* settle(fixture.engine);
-    expect(fixture.inputs).toStrictEqual(['[Attachment: photo.jpg (image/jpeg)]']);
+    expect(fixture.inputs).toStrictEqual(['[Image attachment (image/jpeg)]']);
+    expect(fixture.attachmentInputs).toHaveLength(1);
+    expect(fixture.attachmentInputs[0]?.[0]).toMatch(/[a-f0-9]{64}\.jpg$/u);
     expect(fixture.likes).toStrictEqual([]);
     expect(fixture.sent).toStrictEqual(['Image received']);
     fixture.remove();
@@ -472,11 +636,11 @@ it.effect(
       yield* Effect.promise(() => Bun.sleep(0));
       fixture.push(inbound(2, 'follow-up detail'));
       yield* fixture.engine.pollOnce;
-      yield* Effect.promise(() => Bun.sleep(3100));
-      yield* Effect.promise(() => Bun.sleep(0));
+      yield* TestClock.adjust('3100 millis');
+      yield* Effect.yieldNow;
       fixture.push(inbound(3, 'follow-up detail'));
       yield* fixture.engine.pollOnce;
-      yield* Effect.promise(() => Bun.sleep(3100));
+      yield* TestClock.adjust('3100 millis');
       gate.resolve();
       yield* fixture.engine.drain;
       expect(fixture.steers).toStrictEqual(['follow-up detail', 'follow-up detail']);
@@ -486,12 +650,13 @@ it.effect(
   10_000,
 );
 
-it.effect('resumes and completes a turn whose terminal notification was lost before restart', () =>
+it.effect('recovers one final after a delivered failure and repeated reconciliation', () =>
   Effect.gen(function* recoveredCompletion() {
     const fixture = yield* makeEngineFixture({
       prepare: (database) =>
         Effect.sync(() => {
           seedActiveTurn(database);
+          seedDeliveredFailureNotice(database);
         }),
       snapshot: {
         id: 'thread-1',
@@ -505,6 +670,12 @@ it.effect('resumes and completes a turn whose terminal notification was lost bef
                 text: 'Recovered terminal answer.',
                 type: 'agentMessage',
               },
+              {
+                id: 'trailing-commentary',
+                phase: 'commentary',
+                text: 'Trailing recovery note.',
+                type: 'agentMessage',
+              },
             ],
             status: 'completed',
           },
@@ -512,11 +683,77 @@ it.effect('resumes and completes a turn whose terminal notification was lost bef
       },
     });
     yield* settle(fixture.engine);
+    yield* settle(fixture.engine);
     expect(fixture.resumed).toStrictEqual(['thread-1']);
-    expect(fixture.sent).toStrictEqual(['Recovered terminal answer']);
+    expect(fixture.sent).toStrictEqual(['Trailing recovery note', 'Recovered terminal answer']);
+    expect(
+      fixture.database
+        .query<{ count: number; message_kind: string; source_kind: string }, []>(
+          `SELECT source_kind, message_kind, COUNT(*) AS count
+           FROM outbound_messages GROUP BY source_kind, message_kind
+           ORDER BY source_kind, message_kind`,
+        )
+        .all(),
+    ).toStrictEqual([
+      { count: 1, message_kind: 'Final', source_kind: 'CodexAgentItem' },
+      { count: 1, message_kind: 'WorkAck', source_kind: 'CodexAgentItem' },
+      { count: 1, message_kind: 'Final', source_kind: 'TurnFailureNotice' },
+    ]);
     expect(
       fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
     ).toBe('Completed');
+    fixture.remove();
+  }),
+);
+
+it.effect('fails commentary-only recovery explicitly and preserves diagnostics', () =>
+  Effect.gen(function* commentaryOnlyRecovery() {
+    const fixture = yield* makeEngineFixture({
+      prepare: (database) =>
+        Effect.sync(() => {
+          seedActiveTurn(database);
+        }),
+      snapshot: {
+        id: 'thread-1',
+        turns: [
+          {
+            id: 'turn-1',
+            items: [
+              {
+                id: 'commentary-only',
+                phase: 'commentary',
+                text: 'Still investigating.',
+                type: 'agentMessage',
+              },
+            ],
+            status: 'completed',
+          },
+        ],
+      },
+    });
+
+    yield* settle(fixture.engine);
+
+    expect(fixture.sent).toStrictEqual([
+      'Still investigating',
+      'Spike hit an error: Codex completed without a final answer',
+    ]);
+    expect(
+      fixture.database
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM outbound_messages
+           WHERE source_kind = 'CodexAgentItem' AND message_kind = 'Final'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      fixture.database
+        .query<{ message: string }, []>('SELECT message FROM failures ORDER BY id DESC LIMIT 1')
+        .get()?.message,
+    ).toBe('Codex completed without a final answer');
+    expect(
+      fixture.database.query<{ state: string }, []>('SELECT state FROM logical_turns').get()?.state,
+    ).toBe('Failed');
     fixture.remove();
   }),
 );
@@ -597,7 +834,7 @@ it.effect('terminates a non-generation startup recovery failure after one attemp
   }),
 );
 
-it.effect('replaces an unused bound thread after the bind-before-first-turn crash window', () =>
+it.effect('retires a recovered thread when stale configuration rotates after completion', () =>
   Effect.gen(function* replaceUnusedThread() {
     const fixture = yield* makeEngineFixture({
       behavior: {
@@ -629,38 +866,43 @@ it.effect('replaces an unused bound thread after the bind-before-first-turn cras
     });
     yield* settle(fixture.engine);
     expect({
+      archived: fixture.archived,
       attempts: fixture.database
         .query<{ state: string }, []>('SELECT state FROM codex_attempts')
         .all(),
+      current: fixture.database
+        .query<{ codex_thread_id: null | string; config_version: null | string }, []>(
+          "SELECT codex_thread_id, config_version FROM generations WHERE state = 'Current'",
+        )
+        .get(),
       failures: fixture.database
         .query<{ error_tag: string; message: string }, []>(
           'SELECT error_tag, message FROM failures',
         )
         .all(),
       resumed: fixture.resumed,
-      thread: fixture.database
-        .query<{ codex_thread_id: string }, []>(
-          "SELECT codex_thread_id FROM generations WHERE state = 'Current'",
+      retiredThread: fixture.database
+        .query<{ codex_thread_id: null | string }, []>(
+          "SELECT codex_thread_id FROM generations WHERE state = 'Superseded' ORDER BY sequence DESC LIMIT 1",
         )
         .get()?.codex_thread_id,
       turnsStarted: fixture.turnsStarted,
     }).toStrictEqual({
+      archived: ['thread-new'],
       attempts: [{ state: 'Completed' }],
+      current: { codex_thread_id: null, config_version: SCHEDULE_CONFIGURATION_VERSION },
       failures: [],
       resumed: ['thread-1'],
-      thread: 'thread-new',
+      retiredThread: 'thread-new',
       turnsStarted: ['turn-1'],
     });
     expect(fixture.sent).toStrictEqual(['Recovered first turn']);
     expect(fixture.reads).toStrictEqual([]);
-    expect(
-      fixture.database
-        .query<{ codex_thread_id: string }, []>(
-          "SELECT codex_thread_id FROM generations WHERE state = 'Current'",
-        )
-        .get()?.codex_thread_id,
-    ).toBe('thread-new');
-    expect((yield* fixture.engine.snapshot).generationBroken).toBe(false);
+    expect(yield* fixture.engine.snapshot).toMatchObject({
+      codexThreadId: null,
+      configurationCurrent: true,
+      generationBroken: false,
+    });
     fixture.remove();
   }),
 );

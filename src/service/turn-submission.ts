@@ -8,7 +8,8 @@ import type { PersistedInputBatch } from '../journal/scheduler-recovery';
 import type { SchedulerControllerError } from '../scheduler/controller';
 import { inputBatchFingerprint } from '../scheduler/input-batch';
 import type { PooledMessage, SchedulerState } from '../scheduler/model';
-import { inputText, type EngineContext } from './context';
+import { renderCodexInput } from './codex-input';
+import type { EngineContext } from './context';
 
 interface EnsuredThread {
   readonly threadId: CodexInput['threadId'];
@@ -95,9 +96,9 @@ const submit = (
     const { threadId } = ensured;
     const kind = batch.kind === 'Initial' ? 'Start' : 'Steer';
     const input: CodexInput = {
+      ...renderCodexInput(batch.messages),
       ...(expectedTurnId === undefined ? {} : { expectedTurnId }),
       batchId: batch.id,
-      input: inputText(batch.messages),
       kind,
       logicalTurnId: batch.logicalTurnId,
       threadId,
@@ -123,6 +124,7 @@ const submit = (
             frontier: ensured.unused ? 'Empty' : 'Read',
           })
         : yield* recoverCodexInput(context.options.runtime, context.codexJournal, attempt, input);
+    context.scheduleRequests?.attemptAccepted();
     return { threadId, turnId };
   });
 

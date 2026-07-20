@@ -7,62 +7,16 @@ import { Effect } from 'effect';
 
 import { loadSpikeConfig } from '../app-config';
 import type { CodexRuntime } from '../codex/runtime';
+import { readAttachmentStagingDiagnostic } from '../journal/attachment-diagnostic';
+import { isObject } from '../object-guard';
 import type { SpikePaths } from '../paths';
+import type { EngineEventLoopDiagnostics } from '../service/event-loop-diagnostics';
 import { spikeVersion } from '../version';
-import { readRateLimits, type RateLimitWindow } from './rate-limits';
-
-interface StatusSnapshot {
-  readonly account: {
-    readonly active: string | null;
-    readonly availability: 'available' | 'unavailable';
-    readonly configured: number;
-    readonly eligible: number;
-  };
-  readonly appServer: { readonly healthy: boolean };
-  readonly approvals: {
-    readonly displayed: number;
-    readonly orphaned: number;
-    readonly pending: number;
-    readonly recentlyResolved: number;
-  };
-  readonly codex: {
-    readonly fiveHour: RateLimitWindow | null;
-    readonly rawUsage: unknown;
-    readonly weekly: RateLimitWindow | null;
-  };
-  readonly config: {
-    readonly fast: boolean;
-    readonly model: string;
-    readonly reasoning: string;
-    readonly verbosity: string;
-  };
-  readonly like: {
-    readonly available: boolean;
-    readonly degraded: boolean;
-    readonly lastFailureAt: string | null;
-    readonly lastFailureReason: string | null;
-    readonly lastSuccessAt: string | null;
-  };
-  readonly ok: true;
-  readonly service: {
-    readonly healthy: true;
-    readonly pid: number;
-    readonly startedAt: string;
-    readonly version: string;
-  };
-  readonly system: {
-    readonly cpuLoad: number;
-    readonly memoryPressurePercent: number;
-    readonly uptimeSeconds: number;
-  };
-  readonly turn: {
-    readonly lastFinalAt: string | null;
-    readonly lastWorkAcknowledgementAt: string | null;
-    readonly pooledMessages: number;
-    readonly state: 'idle' | 'running';
-    readonly threadAgeSeconds: number | null;
-  };
-}
+import type { StatusSnapshot } from './model';
+import { readOpenOutageKinds } from './outages';
+import { readRateLimits } from './rate-limits';
+import { readScheduleStatus } from './schedule-status';
+import { isStatusSnapshotShape } from './snapshot-guard';
 
 interface SchedulerStatusRow {
   readonly active_logical_turn_id: string | null;
@@ -79,9 +33,6 @@ interface LikeStatusRow {
 
 const PERCENT = 100;
 const SECONDS_TO_MILLISECONDS = 1000;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
 
 const readString = (value: unknown, key: string, fallback: string): string => {
   if (!isObject(value)) {
@@ -165,34 +116,37 @@ const readLiveCodex = async (
   return { healthy: true, rateLimits: usage, usage };
 };
 
+const readApprovals = (database: Database): StatusSnapshot['approvals'] => {
+  const row = database
+    .query<{ displayed: number; orphaned: number; pending: number; recently_resolved: number }, []>(
+      `SELECT
+         SUM(CASE WHEN state = 'Pending' THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN state = 'Pending' AND delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS displayed,
+         SUM(CASE WHEN state = 'Orphaned' THEN 1 ELSE 0 END) AS orphaned,
+         SUM(CASE WHEN state != 'Pending' AND resolved_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS recently_resolved
+       FROM approval_requests`,
+    )
+    .get();
+  return {
+    displayed: row?.displayed ?? 0,
+    orphaned: row?.orphaned ?? 0,
+    pending: row?.pending ?? 0,
+    recentlyResolved: row?.recently_resolved ?? 0,
+  };
+};
+
 const readDatabaseStatus = (
   database: Database,
 ): {
   readonly approvals: StatusSnapshot['approvals'];
+  readonly attachment: ReturnType<typeof readAttachmentStagingDiagnostic>;
   readonly like: LikeStatusRow | null;
+  readonly outages: NonNullable<StatusSnapshot['outages']>;
   readonly scheduler: SchedulerStatusRow | null;
+  readonly schedules: NonNullable<StatusSnapshot['schedules']>;
 } => ({
-  approvals: ((): StatusSnapshot['approvals'] => {
-    const row = database
-      .query<
-        { displayed: number; orphaned: number; pending: number; recently_resolved: number },
-        []
-      >(
-        `SELECT
-           SUM(CASE WHEN state = 'Pending' THEN 1 ELSE 0 END) AS pending,
-           SUM(CASE WHEN state = 'Pending' AND delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS displayed,
-           SUM(CASE WHEN state = 'Orphaned' THEN 1 ELSE 0 END) AS orphaned,
-           SUM(CASE WHEN state != 'Pending' AND resolved_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS recently_resolved
-         FROM approval_requests`,
-      )
-      .get();
-    return {
-      displayed: row?.displayed ?? 0,
-      orphaned: row?.orphaned ?? 0,
-      pending: row?.pending ?? 0,
-      recentlyResolved: row?.recently_resolved ?? 0,
-    };
-  })(),
+  approvals: readApprovals(database),
+  attachment: readAttachmentStagingDiagnostic(database),
   like:
     database
       .query<LikeStatusRow, []>(
@@ -200,6 +154,7 @@ const readDatabaseStatus = (
          FROM like_status WHERE singleton = 1`,
       )
       .get() ?? null,
+  outages: { open: readOpenOutageKinds(database) },
   scheduler:
     database
       .query<SchedulerStatusRow, []>(
@@ -209,6 +164,7 @@ const readDatabaseStatus = (
          WHERE s.singleton = 1`,
       )
       .get() ?? null,
+  schedules: readScheduleStatus(database),
 });
 
 const turnStatus = (
@@ -227,7 +183,8 @@ const turnStatus = (
   return {
     lastFinalAt: scalarString(
       database,
-      "SELECT MAX(delivered_at) AS value FROM outbound_messages WHERE message_kind = 'Final'",
+      `SELECT MAX(delivered_at) AS value FROM outbound_messages
+           WHERE message_kind = 'Final' AND source_kind = 'CodexAgentItem'`,
     ),
     lastWorkAcknowledgementAt: scalarString(
       database,
@@ -239,18 +196,30 @@ const turnStatus = (
   };
 };
 
+const eventLoopStatus = (
+  eventLoop: EngineEventLoopDiagnostics | null,
+): Pick<StatusSnapshot, 'eventLoop'> => (eventLoop === null ? {} : { eventLoop });
+
+const systemStatus = (): StatusSnapshot['system'] => ({
+  cpuLoad: Number((loadavg()[0] ?? 0).toFixed(2)),
+  memoryPressurePercent: memoryPressure(),
+  uptimeSeconds: Math.floor(uptime()),
+});
+
 const makeStatusSnapshot = async (
   database: Database,
   paths: SpikePaths,
   startedAt: string,
   runtime: CodexRuntime | null,
+  eventLoop: EngineEventLoopDiagnostics | null = null,
 ): Promise<StatusSnapshot> => {
   const [counts, config, live] = await Promise.all([
     accountCounts(paths),
     configStatus(paths),
     readLiveCodex(runtime),
   ]);
-  const { approvals, like, scheduler } = readDatabaseStatus(database);
+  const { approvals, attachment, like, outages, scheduler, schedules } =
+    readDatabaseStatus(database);
   const limits = readRateLimits(live.rateLimits);
   const providerActive = runtime?.accountId.startsWith('provider:') === true;
   const effectiveCounts = providerActive ? { configured: 1, eligible: 1 } : counts;
@@ -262,8 +231,14 @@ const makeStatusSnapshot = async (
     },
     appServer: { healthy: live.healthy },
     approvals,
+    attachments: {
+      available: attachment === null,
+      blockedSince: attachment?.blockedSince ?? null,
+      diagnostic: attachment?.diagnostic ?? null,
+    },
     codex: { ...limits, rawUsage: live.usage },
     config,
+    ...eventLoopStatus(eventLoop),
     like: {
       available: like?.available === 1,
       degraded: like?.degraded === 1,
@@ -272,21 +247,15 @@ const makeStatusSnapshot = async (
       lastSuccessAt: like?.last_success_at ?? null,
     },
     ok: true,
+    outages,
+    schedules,
     service: { healthy: true, pid: process.pid, startedAt, version: spikeVersion },
-    system: {
-      cpuLoad: Number((loadavg()[0] ?? 0).toFixed(2)),
-      memoryPressurePercent: memoryPressure(),
-      uptimeSeconds: Math.floor(uptime()),
-    },
+    system: systemStatus(),
     turn: turnStatus(database, scheduler),
   };
 };
 
-const isStatusSnapshot = (value: unknown): value is StatusSnapshot =>
-  isObject(value) &&
-  value['ok'] === true &&
-  isObject(value['service']) &&
-  isObject(value['appServer']);
+const isStatusSnapshot = (value: unknown): value is StatusSnapshot => isStatusSnapshotShape(value);
 
 export { isStatusSnapshot, makeStatusSnapshot, parseMemoryPressure };
-export type { StatusSnapshot };
+export type { StatusSnapshot } from './model';

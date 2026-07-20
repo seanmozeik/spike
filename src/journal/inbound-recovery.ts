@@ -1,68 +1,92 @@
 import type { Database } from 'bun:sqlite';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
-import { InboundMessageId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import type { StagedImageAttachment } from '../attachments/model';
+import { parseControlCommand } from '../domain/control-command';
+import { InboundMessageId, type MessagesRowId } from '../domain/ids';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
+import { readStagedImages, renderPersistedInputText } from './attachment-input';
+import { PENDING_INBOUND_QUERY } from './recovery-query';
 
 interface PendingInboundMessage {
   readonly acknowledgementText: null | string;
+  readonly attachments: readonly StagedImageAttachment[];
   readonly id: InboundMessageId;
   readonly receivedAt: Date;
   readonly text: string;
 }
 
+interface PendingInboundScan {
+  readonly blocked: boolean;
+  readonly controls: readonly PendingInboundMessage[];
+  readonly messages: readonly PendingInboundMessage[];
+}
+
 interface PendingInboundRow {
   readonly attachment_text: null | string;
+  readonly has_observed_attachment: number;
   readonly id: string;
   readonly observed_at: string;
   readonly text: null | string;
 }
 
-const renderPendingText = (row: PendingInboundRow): string =>
-  [row.text, row.attachment_text].filter((part): part is string => part !== null).join('\n');
+const toTrustedControlMessage = (row: PendingInboundRow): PendingInboundMessage => ({
+  acknowledgementText: row.text,
+  attachments: [],
+  id: InboundMessageId.make(row.id),
+  receivedAt: new Date(row.observed_at),
+  text: row.text ?? '',
+});
+
+const readPendingInboundRows = (
+  database: Database,
+  after: MessagesRowId,
+  through: MessagesRowId,
+): readonly PendingInboundRow[] =>
+  database.query<PendingInboundRow, [number, number]>(PENDING_INBOUND_QUERY).all(after, through);
+
+const toOrdinaryMessage = (database: Database, row: PendingInboundRow): PendingInboundMessage => ({
+  acknowledgementText: row.text,
+  attachments: readStagedImages(database, row.id),
+  id: InboundMessageId.make(row.id),
+  receivedAt: new Date(row.observed_at),
+  text: renderPersistedInputText({ attachmentText: row.attachment_text, text: row.text }),
+});
+
+const dispatchableMessages = (
+  database: Database,
+  rows: readonly PendingInboundRow[],
+): PendingInboundScan => {
+  const controls: PendingInboundMessage[] = [];
+  const messages: PendingInboundMessage[] = [];
+  let ordinaryBlocked = false;
+  for (const row of rows) {
+    if (parseControlCommand(row.text) !== null) {
+      const control = toTrustedControlMessage(row);
+      controls.push(control);
+      messages.push(control);
+    } else if (!ordinaryBlocked && row.has_observed_attachment > 0) {
+      ordinaryBlocked = true;
+    } else if (!ordinaryBlocked) {
+      const message = toOrdinaryMessage(database, row);
+      if (message.text.trim().length > 0) {
+        messages.push(message);
+      }
+    }
+  }
+  return { blocked: ordinaryBlocked, controls, messages };
+};
 
 const makeListPendingInbound =
   (database: Database) =>
-  (): Effect.Effect<readonly PendingInboundMessage[], JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'failed to load unassigned inbound messages',
-          transaction: 'listPendingInbound',
-        }),
-      try: () =>
-        database
-          .query<PendingInboundRow, []>(
-            `SELECT im.id, im.text, im.observed_at,
-                    GROUP_CONCAT(
-                      '[Attachment: ' || COALESCE(a.filename, a.transfer_name, a.attachment_guid) ||
-                      CASE WHEN a.mime_type IS NULL THEN '' ELSE ' (' || a.mime_type || ')' END || ']'
-                    , char(10)) AS attachment_text
-             FROM inbound_messages im
-             LEFT JOIN attachments a ON a.inbound_message_id = im.id
-             WHERE NOT EXISTS (
-               SELECT 1 FROM input_batch_messages ibm WHERE ibm.inbound_message_id = im.id
-             ) AND NOT EXISTS (
-               SELECT 1 FROM scheduler_pool_messages spm WHERE spm.inbound_message_id = im.id
-             ) AND NOT EXISTS (
-               SELECT 1 FROM handled_control_messages hcm WHERE hcm.inbound_message_id = im.id
-             ) AND NOT EXISTS (
-               SELECT 1 FROM handled_approval_messages ham WHERE ham.inbound_message_id = im.id
-             )
-             GROUP BY im.id, im.text, im.observed_at, im.messages_rowid
-             ORDER BY im.messages_rowid`,
-          )
-          .all()
-          .map((row) => ({
-            acknowledgementText: row.text,
-            id: InboundMessageId.make(row.id),
-            receivedAt: new Date(row.observed_at),
-            text: renderPendingText(row),
-          }))
-          .filter((message) => message.text.trim().length > 0),
-    });
+  (
+    after: MessagesRowId,
+    through: MessagesRowId,
+  ): Effect.Effect<PendingInboundScan, JournalTransactionError> =>
+    tryJournalTransaction('listPendingInbound', 'failed to load unassigned inbound messages', () =>
+      dispatchableMessages(database, readPendingInboundRows(database, after, through)),
+    );
 
 export { makeListPendingInbound };
-export type { PendingInboundMessage };
+export type { PendingInboundMessage, PendingInboundScan };

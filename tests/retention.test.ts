@@ -33,21 +33,30 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
         uti: 'public.jpeg',
       },
     ]);
+    fixture.database.run(
+      `UPDATE attachments SET state = 'Failed', failure_code = 'missing-source',
+       filename = NULL, source_path = NULL WHERE attachment_guid = 'terminal-attachment'`,
+    );
     const terminal = yield* startCodexTurn(fixture, 'terminal', terminalMessage);
-    const delivered = yield* fixture.delivery.prepareAssistantMessage(
-      terminal.logicalTurnId,
+    const delivered = yield* fixture.delivery.prepareTurnNotice(
+      { generationId: fixture.state.generationId, logicalTurnId: terminal.logicalTurnId },
       'item-terminal',
       'Final',
       'terminal private output',
       OLD,
     );
+    if (delivered === null) {
+      throw new Error('terminal delivery did not own the active turn');
+    }
     const [deliveredChunk] = delivered.chunks;
     if (deliveredChunk === undefined) {
       throw new Error('terminal delivery did not create a chunk');
     }
-    const deliveryAttempt = yield* fixture.delivery.beginAttempt(deliveredChunk.id, 0, OLD);
+    const deliveryAttempt = yield* fixture.delivery.claimAttempt(deliveredChunk.id, 0, OLD);
+    if (deliveryAttempt === null) {
+      throw new Error('terminal delivery attempt was not claimed');
+    }
     yield* fixture.delivery.markSent(deliveryAttempt, deliveredChunk.id, OLD);
-    yield* fixture.codex.finishLogicalTurn(terminal.logicalTurnId, 'Completed', OLD);
     yield* fixture.scheduler.commitTransition(
       {
         actions: [{ kind: 'CompleteTurn', logicalTurnId: terminal.logicalTurnId }],
@@ -58,8 +67,8 @@ it.effect('redacts completed turn payloads while preserving a live turn', () =>
 
     const activeMessage = yield* ingest(fixture, 2, 'active private input');
     const active = yield* startCodexTurn(fixture, 'active', activeMessage);
-    yield* fixture.delivery.prepareAssistantMessage(
-      active.logicalTurnId,
+    yield* fixture.delivery.prepareTurnNotice(
+      { generationId: fixture.state.generationId, logicalTurnId: active.logicalTurnId },
       'item-active',
       'Final',
       'active private output',
@@ -140,19 +149,22 @@ it.effect('redacts Failed and Prepared sibling chunks after their parent fails',
     const fixture = yield* makeRetentionFixture();
     const message = yield* ingest(fixture, 1, 'delivery failure input');
     const turn = yield* startCodexTurn(fixture, 'failed', message);
-    const prepared = yield* fixture.delivery.prepareAssistantMessage(
-      turn.logicalTurnId,
+    const prepared = yield* fixture.delivery.prepareTurnNotice(
+      { generationId: fixture.state.generationId, logicalTurnId: turn.logicalTurnId },
       'item-failed',
       'Final',
       'private failed output '.repeat(600),
       OLD,
     );
+    if (prepared === null) {
+      throw new Error('failed delivery did not own the active turn');
+    }
     expect(prepared.chunks.length).toBeGreaterThan(1);
     const [first] = prepared.chunks;
     if (first === undefined) {
       throw new Error('failed delivery did not create a chunk');
     }
-    yield* fixture.delivery.beginAttempt(first.id, 0, OLD);
+    yield* fixture.delivery.claimAttempt(first.id, 0, OLD);
     yield* fixture.delivery.markFailed(first.id, 'delivery failed', OLD);
     yield* fixture.scheduler.commitTransition(
       {
@@ -191,6 +203,7 @@ it.effect('terminalizes reset attempts and redacts legacy superseded-turn items'
     const replacement = {
       active: null,
       codexThreadId: null,
+      configurationCurrent: true,
       generationBroken: false,
       generationId: GenerationId.make('replacement-generation'),
       pool: [],
@@ -272,9 +285,9 @@ it.effect('prunes old failure and account observations without deleting recent r
       [OLD.toISOString(), NOW.toISOString()],
     );
     fixture.database.run(
-      `INSERT INTO account_observations(account_id, observed_at, usable, usage_json)
-       VALUES ('old-account', ?, 1, '{"private":"old"}'),
-              ('recent-account', ?, 1, '{"private":"recent"}')`,
+      `INSERT INTO account_observations(account_id, observed_at, usable, mode, usage_json)
+       VALUES ('old-account', ?, 1, 'Available', '{"private":"old"}'),
+              ('recent-account', ?, 1, 'Available', '{"private":"recent"}')`,
       [OLD.toISOString(), NOW.toISOString()],
     );
 

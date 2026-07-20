@@ -7,6 +7,7 @@ import { ConversationMismatchError } from '../src/errors';
 import { decodeAttributedBody, openMessagesInbox } from '../src/messages-inbox';
 import {
   attributedBody,
+  insertFixtureMessage,
   replaceMessagesDatabase,
   TEST_CHAT_GUID as CHAT_GUID,
   TEST_HANDLE as HANDLE,
@@ -49,7 +50,7 @@ it.effect('observes only ordered inbound iMessage rows from the configured conve
       });
       try {
         expect(yield* inbox.frontier).toBe(7);
-        const messages = yield* inbox.observeAfter(MessagesRowId.make(0));
+        const { messages } = yield* inbox.scanAfter(MessagesRowId.make(0));
         expect(messages.map(({ messageGuid }) => messageGuid)).toStrictEqual([
           'valid-text',
           'typedstream',
@@ -67,10 +68,172 @@ it.effect('observes only ordered inbound iMessage rows from the configured conve
           },
         ]);
         expect(
-          (yield* inbox.observeAfter(MessagesRowId.make(6))).map(({ rowId }) => rowId),
+          (yield* inbox.scanAfter(MessagesRowId.make(6))).messages.map(({ rowId }) => rowId),
         ).toStrictEqual([7]);
       } finally {
         inbox.close();
+      }
+    }),
+  ),
+);
+
+it.effect('advances an idle scan only through the configured chat outbound prefix', () =>
+  withMessagesFixture((fixture) =>
+    Effect.gen(function* idleFrontierFixture() {
+      fixture.insertMessage({
+        guid: 'configured-outbound',
+        isFromMe: true,
+        rowId: 20,
+        text: 'sent',
+      });
+      fixture.insertMessage({ guid: 'configured-partial', rowId: 30 });
+      for (let rowId = 100; rowId < 200; rowId += 1) {
+        fixture.insertMessage({
+          chatId: 3,
+          guid: `unrelated-${String(rowId)}`,
+          handleId: 2,
+          rowId,
+          text: 'unrelated traffic',
+        });
+      }
+      const inbox = yield* openMessagesInbox({
+        chatGuid: CHAT_GUID,
+        databasePath: fixture.databasePath,
+        handle: HANDLE,
+      });
+      try {
+        const scan = yield* inbox.scanAfter(MessagesRowId.make(0));
+        expect(scan.messages).toStrictEqual([]);
+        expect(scan.frontier).toBe(20);
+        expect(
+          fixture.database
+            .query<{ rowid: number }, []>('SELECT MAX(ROWID) AS rowid FROM message')
+            .get()?.rowid,
+        ).toBe(199);
+      } finally {
+        inbox.close();
+      }
+    }),
+  ),
+);
+
+it.effect('does not advance across an uncommitted WAL row', () =>
+  withMessagesFixture((fixture) =>
+    Effect.gen(function* walFrontierFixture() {
+      fixture.database.run('PRAGMA journal_mode = WAL');
+      fixture.database.run('PRAGMA wal_autocheckpoint = 0');
+      fixture.insertMessage({
+        chatId: 3,
+        guid: 'wal-sidecar-seed',
+        handleId: 2,
+        rowId: 100,
+        text: 'unrelated',
+      });
+      const inbox = yield* openMessagesInbox({
+        chatGuid: CHAT_GUID,
+        databasePath: fixture.databasePath,
+        handle: HANDLE,
+      });
+      let writerTransactionOpen = false;
+      try {
+        fixture.database.run('BEGIN IMMEDIATE');
+        writerTransactionOpen = true;
+        fixture.insertMessage({
+          guid: 'uncommitted-outbound',
+          isFromMe: true,
+          rowId: 1,
+          text: 'sent',
+        });
+        expect((yield* inbox.scanAfter(MessagesRowId.make(0))).frontier).toBe(0);
+
+        fixture.database.run('COMMIT');
+        writerTransactionOpen = false;
+        expect((yield* inbox.scanAfter(MessagesRowId.make(0))).frontier).toBe(1);
+      } finally {
+        if (writerTransactionOpen) {
+          fixture.database.run('ROLLBACK');
+        }
+        inbox.close();
+      }
+    }),
+  ),
+);
+
+it.effect('holds later inbound rows behind an attachment that has not materialized', () =>
+  withMessagesFixture((fixture) =>
+    Effect.gen(function* delayedAttachmentFixture() {
+      fixture.insertMessage({
+        guid: 'outbound-before-parent',
+        isFromMe: true,
+        rowId: 1,
+        text: 'sent',
+      });
+      fixture.insertMessage({ guid: 'delayed-parent', hasAttachments: true, rowId: 2 });
+      fixture.insertMessage({ guid: 'later-ready', rowId: 3, text: 'do not skip the parent' });
+      const inbox = yield* openMessagesInbox({
+        chatGuid: CHAT_GUID,
+        databasePath: fixture.databasePath,
+        handle: HANDLE,
+      });
+      try {
+        const blocked = yield* inbox.scanAfter(MessagesRowId.make(0));
+        expect(blocked).toStrictEqual({ frontier: 1, messages: [] });
+
+        fixture.addAttachment({
+          filename: '/tmp/delayed.jpg',
+          guid: 'delayed-attachment',
+          messageRowId: 2,
+          mimeType: 'image/jpeg',
+          rowId: 1,
+        });
+        const ready = yield* inbox.scanAfter(blocked.frontier);
+        expect(ready.frontier).toBe(3);
+        expect(ready.messages.map(({ messageGuid }) => messageGuid)).toStrictEqual([
+          'delayed-parent',
+          'later-ready',
+        ]);
+        expect(
+          ready.messages[0]?.attachments.map(({ attachmentGuid }) => attachmentGuid),
+        ).toStrictEqual(['delayed-attachment']);
+      } finally {
+        inbox.close();
+      }
+    }),
+  ),
+);
+
+it.effect('keeps the idle frontier after a database replacement and inbox restart', () =>
+  withMessagesFixture((fixture) =>
+    Effect.gen(function* replacementFrontierFixture() {
+      fixture.insertMessage({ guid: 'old-outbound', isFromMe: true, rowId: 10, text: 'old' });
+      const inbox = yield* openMessagesInbox({
+        chatGuid: CHAT_GUID,
+        databasePath: fixture.databasePath,
+        handle: HANDLE,
+      });
+      expect((yield* inbox.scanAfter(MessagesRowId.make(0))).frontier).toBe(10);
+
+      replaceMessagesDatabase(fixture, (database) => {
+        insertFixtureMessage(database, {
+          guid: 'replacement-outbound',
+          isFromMe: true,
+          rowId: 20,
+          text: 'replacement',
+        });
+      });
+      yield* inbox.refresh;
+      expect((yield* inbox.scanAfter(MessagesRowId.make(10))).frontier).toBe(20);
+      inbox.close();
+
+      const restarted = yield* openMessagesInbox({
+        chatGuid: CHAT_GUID,
+        databasePath: fixture.databasePath,
+        handle: HANDLE,
+      });
+      try {
+        expect((yield* restarted.scanAfter(MessagesRowId.make(10))).frontier).toBe(20);
+      } finally {
+        restarted.close();
       }
     }),
   ),

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { attachmentRoots } from '../src/attachments/roots';
 import { spikePaths } from '../src/paths';
 
 describe('spike paths', () => {
@@ -7,6 +8,7 @@ describe('spike paths', () => {
     const paths = spikePaths('/tmp/spike-fixture');
     expect(paths.config).toBe('/tmp/spike-fixture/config.toml');
     expect(paths.database).toBe('/tmp/spike-fixture/state/spike.db');
+    expect(paths.attachments).toBe('/tmp/spike-fixture/state/attachments');
     expect(paths.socket).toBe('/tmp/spike-fixture/run/spike.sock');
     expect(paths.daemonLog).toBe('/tmp/spike-fixture/logs/daemon.log');
     expect(paths.codexConfig).toBe('/tmp/spike-fixture/codex-home/config.toml');
@@ -21,5 +23,15 @@ describe('spike paths', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it('stages model-visible attachments inside the configured working directory', () => {
+    expect(
+      attachmentRoots('/Users/test/Library/Messages/chat.db', '/Users/test/spike-work'),
+    ).toEqual({
+      attachmentSourceRoot: '/Users/test/Library/Messages/Attachments',
+      attachmentStagingBoundary: '/Users/test/spike-work',
+      attachmentStagingRoot: '/Users/test/spike-work/tmp/spike/attachments',
+    });
   });
 });

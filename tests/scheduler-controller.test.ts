@@ -1,6 +1,6 @@
 import { it } from '@effect/vitest';
-import { Effect } from 'effect';
-import { expect } from 'vitest';
+import { Deferred, Effect } from 'effect';
+import { expect, it as vitestIt } from 'vitest';
 
 import {
   CodexThreadId,
@@ -17,6 +17,7 @@ import type { SchedulerEvent, SchedulerState } from '../src/scheduler/model';
 const initial: SchedulerState = {
   active: null,
   codexThreadId: null,
+  configurationCurrent: true,
   generationBroken: false,
   generationId: GenerationId.make('generation'),
   pool: [],
@@ -30,7 +31,7 @@ const journal = (): SchedulerJournal => ({
 
 const inbound = (id: string, at: number, logicalTurnId: string): SchedulerEvent => ({
   kind: 'Inbound',
-  message: { id: InboundMessageId.make(id), receivedAt: new Date(at), text: id },
+  message: { attachments: [], id: InboundMessageId.make(id), receivedAt: new Date(at), text: id },
   newGenerationId: GenerationId.make(`generation-${id}`),
   nextLogicalTurnId: LogicalTurnId.make(logicalTurnId),
 });
@@ -99,7 +100,12 @@ it.effect('re-arms a persisted pool once only after explicit activation', () =>
           logicalTurnId: LogicalTurnId.make('turn-1'),
         },
         pool: [
-          { id: InboundMessageId.make('pooled'), receivedAt: pooledAt, text: 'still waiting' },
+          {
+            attachments: [],
+            id: InboundMessageId.make('pooled'),
+            receivedAt: pooledAt,
+            text: 'still waiting',
+          },
         ],
       },
       journal(),
@@ -145,7 +151,12 @@ it.effect('/new binds a ready thread and replies even when old-thread cleanup fa
     const controller = yield* makeSchedulerController(initial, journal(), ports);
     yield* controller.dispatch({
       kind: 'Inbound',
-      message: { id: InboundMessageId.make('new-command'), receivedAt: new Date(), text: '/new' },
+      message: {
+        attachments: [],
+        id: InboundMessageId.make('new-command'),
+        receivedAt: new Date(),
+        text: '/new',
+      },
       newGenerationId: GenerationId.make('generation-2'),
       nextLogicalTurnId: LogicalTurnId.make('unused'),
     });
@@ -154,3 +165,70 @@ it.effect('/new binds a ready thread and replies even when old-thread cleanup fa
     expect((yield* controller.snapshot).codexThreadId).toBe('fresh-thread');
   }),
 );
+
+vitestIt('/new waits for an owned turn-notice critical section', async () => {
+  await Effect.runPromise(
+    Effect.gen(function* serializedTurnNotice() {
+      const started = yield* Deferred.make<boolean>();
+      const order: string[] = [];
+      const active = {
+        ...initial,
+        active: {
+          acknowledged: false,
+          codexTurnId: CodexTurnId.make('codex-turn'),
+          logicalTurnId: LogicalTurnId.make('turn-1'),
+        },
+      } satisfies SchedulerState;
+      const ports: SchedulerPorts = {
+        bindThread: (): Effect.Effect<null> => Effect.succeed(null),
+        cleanupGeneration: (): Effect.Effect<void> => Effect.void,
+        replyLocal: (): Effect.Effect<void> => Effect.void,
+        reportFailure: (): Effect.Effect<void> => Effect.void,
+        schedulePool: (): Effect.Effect<void> => Effect.void,
+        startTurn: () =>
+          Effect.succeed({
+            threadId: CodexThreadId.make('thread'),
+            turnId: CodexTurnId.make('codex-turn'),
+          }),
+        steerTurn: (): Effect.Effect<void> => Effect.void,
+      };
+      const guardedJournal: SchedulerJournal = {
+        ...journal(),
+        commitTransition: (transition): Effect.Effect<void> =>
+          Effect.sync(() => {
+            if (transition.actions.some(({ kind }) => kind === 'ResetGeneration')) {
+              order.push('reset');
+            }
+          }),
+      };
+      const controller = yield* makeSchedulerController(active, guardedJournal, ports);
+      const notice = controller.runIfTurnOwned(
+        { generationId: active.generationId, logicalTurnId: active.active.logicalTurnId },
+        Effect.gen(function* heldNotice() {
+          order.push('notice-start');
+          yield* Deferred.succeed(started, true);
+          yield* Effect.yieldNow;
+          order.push('notice-end');
+        }),
+      );
+      const reset = Effect.gen(function* resetAfterNoticeStarts() {
+        yield* Deferred.await(started);
+        yield* controller.dispatch({
+          kind: 'Inbound',
+          message: {
+            attachments: [],
+            id: InboundMessageId.make('new-command'),
+            receivedAt: new Date(),
+            text: '/new',
+          },
+          newGenerationId: GenerationId.make('generation-2'),
+          nextLogicalTurnId: LogicalTurnId.make('unused'),
+        });
+      });
+      yield* Effect.all([notice, reset], { concurrency: 'unbounded', discard: true });
+
+      expect(order).toEqual(['notice-start', 'notice-end', 'reset']);
+      expect((yield* controller.snapshot).generationId).toBe('generation-2');
+    }),
+  );
+});

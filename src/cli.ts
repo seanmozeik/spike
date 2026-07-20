@@ -4,42 +4,26 @@ import { Cause, Effect, Layer, Logger, type LogLevel, References } from 'effect'
 import { CliError, Command } from 'effect/unstable/cli';
 
 import pkg from '../package.json' with { type: 'json' };
-import {
-  accountsCommand,
-  approvalsCommand,
-  doctorCommand,
-  initCommand,
-  logsCommand,
-  restartCommand,
-  serveCommand,
-  startCommand,
-  statusCommand,
-  stopCommand,
-} from './cli-commands';
+import { makeCliApp } from './cli-commands';
+import { errorMessageChain } from './error-message';
 import { failPayload } from './output';
+import { shouldShowCliBanner, showBanner } from './ui/banner';
 
 const JSON_INDENT = 2;
-const app = Command.make('spike').pipe(
-  Command.withSubcommands([
-    startCommand,
-    stopCommand,
-    restartCommand,
-    statusCommand,
-    doctorCommand,
-    initCommand,
-    logsCommand,
-    accountsCommand,
-    approvalsCommand,
-    serveCommand,
-  ]),
-);
+const cliArguments = process.argv.slice(2);
+
+if (shouldShowCliBanner(cliArguments)) {
+  showBanner();
+}
+
+const app = makeCliApp();
 const program = Command.run(app, { version: pkg.version });
 
 const stderrLogger = Logger.make(({ logLevel, message }) => {
   const text = Array.isArray(message) ? message.map(String).join(' ') : String(message);
   process.stderr.write(`[${logLevel.toLowerCase()}] ${text}\n`);
 });
-const verbose = process.argv.includes('--verbose') || process.argv.includes('-v');
+const verbose = process.argv.includes('--verbose');
 const minLogLevel: LogLevel.LogLevel = verbose ? 'Debug' : 'Warn';
 const runtimeLayer = Layer.mergeAll(
   BunServices.layer,
@@ -81,7 +65,7 @@ const handled = program.pipe(
         return;
       }
       const error = boundaryErrorFromCause(cause);
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessageChain(error);
       if (process.argv.includes('--agent')) {
         console.log(JSON.stringify(failPayload(message)));
       } else if (process.argv.includes('--json')) {

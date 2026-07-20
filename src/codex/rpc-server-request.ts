@@ -9,6 +9,10 @@ const APPROVAL_METHODS = new Set([
   'item/fileChange/requestApproval',
   'item/permissions/requestApproval',
 ]);
+const CLIENT_REQUEST_METHODS = new Set([...APPROVAL_METHODS, 'currentTime/read', 'item/tool/call']);
+const SCHEDULE_REQUEST_METHODS = new Set(['currentTime/read', 'item/tool/call']);
+
+const isApprovalMethod = (method: string): boolean => APPROVAL_METHODS.has(method);
 
 const isId = (value: unknown): value is number | string =>
   typeof value === 'number' || typeof value === 'string';
@@ -23,7 +27,7 @@ const routeServerRequest = (
     return false;
   }
   const { method } = message;
-  if (APPROVAL_METHODS.has(method)) {
+  if (CLIENT_REQUEST_METHODS.has(method)) {
     publish({ id, method, params: message['params'] });
   } else {
     write({
@@ -35,4 +39,4 @@ const routeServerRequest = (
   return true;
 };
 
-export { routeServerRequest };
+export { APPROVAL_METHODS, isApprovalMethod, routeServerRequest, SCHEDULE_REQUEST_METHODS };

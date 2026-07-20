@@ -6,6 +6,7 @@ import { poolDeadline, transitionScheduler } from '../src/scheduler/transition';
 
 const at = (milliseconds: number): Date => new Date(1_700_000_000_000 + milliseconds);
 const message = (id: string, milliseconds: number, text = id): PooledMessage => ({
+  attachments: [],
   id: InboundMessageId.make(id),
   receivedAt: at(milliseconds),
   text,
@@ -13,6 +14,7 @@ const message = (id: string, milliseconds: number, text = id): PooledMessage => 
 const idle = (): SchedulerState => ({
   active: null,
   codexThreadId: null,
+  configurationCurrent: true,
   generationBroken: false,
   generationId: GenerationId.make('generation-1'),
   pool: [],
@@ -32,6 +34,8 @@ it('quarantines a broken generation until /new without flushing pooled input', (
     at: at(20),
     kind: 'GenerationBroken',
     logicalTurnId: LogicalTurnId.make('turn-1'),
+    newGenerationId: GenerationId.make('generation-2'),
+    nextLogicalTurnId: LogicalTurnId.make('turn-2'),
   });
   expect(broken.actions).toEqual([{ kind: 'FailTurn', logicalTurnId: 'turn-1' }]);
   expect(broken.state).toMatchObject({ active: null, generationBroken: true });
@@ -87,9 +91,19 @@ it('pools active-turn input for three quiet seconds with a ten-second hard cap',
     nextLogicalTurnId: LogicalTurnId.make('unused'),
   });
   expect(poolDeadline(last.state.pool)).toEqual(at(10_000));
-  const stale = transitionScheduler(last.state, { deadlineAt: at(3000), kind: 'PoolTimer' });
+  const stale = transitionScheduler(last.state, {
+    deadlineAt: at(3000),
+    kind: 'PoolTimer',
+    newGenerationId: GenerationId.make('unused'),
+    nextLogicalTurnId: LogicalTurnId.make('unused'),
+  });
   expect(stale.actions).toEqual([{ deadlineAt: at(10_000), kind: 'SchedulePool' }]);
-  const flush = transitionScheduler(last.state, { deadlineAt: at(10_000), kind: 'PoolTimer' });
+  const flush = transitionScheduler(last.state, {
+    deadlineAt: at(10_000),
+    kind: 'PoolTimer',
+    newGenerationId: GenerationId.make('unused'),
+    nextLogicalTurnId: LogicalTurnId.make('unused'),
+  });
   expect(flush.actions).toMatchObject([{ kind: 'SteerTurn', logicalTurnId: 'turn-1' }]);
   expect(flush.state.pool).toEqual([]);
 });
@@ -131,10 +145,66 @@ it('starts pooled input only after the active turn completes', () => {
     at: at(200),
     kind: 'TurnCompleted',
     logicalTurnId: LogicalTurnId.make('turn-1'),
+    newGenerationId: GenerationId.make('unused'),
     nextLogicalTurnId: LogicalTurnId.make('turn-2'),
   });
   expect(result.actions.map(({ kind }) => kind)).toEqual(['CompleteTurn', 'StartTurn']);
   expect(result.state.active?.logicalTurnId).toBe('turn-2');
+});
+
+it('rotates stale thread configuration only after its active turn terminates', () => {
+  const state: SchedulerState = {
+    ...idle(),
+    active: {
+      acknowledged: true,
+      codexTurnId: CodexTurnId.make('codex-turn'),
+      logicalTurnId: LogicalTurnId.make('turn-1'),
+    },
+    configurationCurrent: false,
+    pool: [message('next', 100)],
+  };
+  const result = transitionScheduler(state, {
+    at: at(200),
+    kind: 'TurnCompleted',
+    logicalTurnId: LogicalTurnId.make('turn-1'),
+    newGenerationId: GenerationId.make('generation-2'),
+    nextLogicalTurnId: LogicalTurnId.make('turn-2'),
+  });
+  expect(result.actions.map(({ kind }) => kind)).toEqual([
+    'CompleteTurn',
+    'RotateConfiguration',
+    'StartTurn',
+  ]);
+  expect(result.state).toMatchObject({
+    configurationCurrent: true,
+    generationId: 'generation-2',
+    pool: [],
+  });
+  expect(result.state.active?.logicalTurnId).toBe('turn-2');
+});
+
+it('preserves a pre-upgrade idle pool when its timer safely rotates configuration', () => {
+  const state: SchedulerState = {
+    ...idle(),
+    configurationCurrent: false,
+    generationBroken: true,
+    pool: [message('pooled-before-upgrade', 0)],
+  };
+  const result = transitionScheduler(state, {
+    deadlineAt: at(3000),
+    kind: 'PoolTimer',
+    newGenerationId: GenerationId.make('generation-2'),
+    nextLogicalTurnId: LogicalTurnId.make('turn-2'),
+  });
+  expect(result.actions.map(({ kind }) => kind)).toEqual(['RotateConfiguration', 'StartTurn']);
+  expect(result.actions.find(({ kind }) => kind === 'StartTurn')).toMatchObject({
+    messages: [{ id: 'pooled-before-upgrade' }],
+  });
+  expect(result.state).toMatchObject({
+    configurationCurrent: true,
+    generationBroken: false,
+    generationId: 'generation-2',
+  });
 });
 
 it('/new drops pooled state and makes old-generation events inert', () => {
@@ -163,6 +233,7 @@ it('/new drops pooled state and makes old-generation events inert', () => {
     at: at(2),
     kind: 'TurnCompleted',
     logicalTurnId: LogicalTurnId.make('turn-1'),
+    newGenerationId: GenerationId.make('unused'),
     nextLogicalTurnId: LogicalTurnId.make('turn-2'),
   });
   expect(late.actions).toEqual([{ event: 'TurnCompleted', kind: 'IgnoreLateEvent' }]);

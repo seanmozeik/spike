@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import {
   InboundMessageId,
@@ -9,9 +9,13 @@ import {
   type InputBatchId as InputBatchIdType,
   type LogicalTurnId as LogicalTurnIdType,
 } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
 import type { PooledMessage } from '../scheduler/model';
-import { attachmentInputTextSql, renderPersistedInputText } from './input-message-text';
+import {
+  attachmentInputTextSql,
+  readStagedImages,
+  renderPersistedInputText,
+} from './attachment-input';
 
 interface PersistedInputBatch {
   readonly fingerprint: string;
@@ -78,6 +82,7 @@ const readInputBatches = (
       batches.set(row.batch_id, batch);
     }
     batch.messages.push({
+      attachments: readStagedImages(database, row.id),
       id: InboundMessageId.make(row.id),
       receivedAt: new Date(row.observed_at),
       text: renderPersistedInputText({ attachmentText: row.attachment_text, text: row.text }),
@@ -92,15 +97,11 @@ const makeLoadInputBatches =
     logicalTurnId: LogicalTurnIdType,
     kind: 'Initial' | 'Steer',
   ): Effect.Effect<readonly PersistedInputBatch[], JournalTransactionError> =>
-    Effect.try({
-      catch: (cause) =>
-        new JournalTransactionError({
-          cause,
-          message: 'scheduler journal transaction failed: loadInputBatches',
-          transaction: 'loadInputBatches',
-        }),
-      try: () => readInputBatches(database, logicalTurnId, kind),
-    });
+    tryJournalTransaction(
+      'loadInputBatches',
+      'scheduler journal transaction failed: loadInputBatches',
+      () => readInputBatches(database, logicalTurnId, kind),
+    );
 
 export { makeLoadInputBatches };
 export type { PersistedInputBatch };

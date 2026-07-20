@@ -1,20 +1,20 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { isObject } from '../object-guard';
+
 interface HookDiagnostic {
   readonly detail: string;
   readonly name: 'hooks';
   readonly state: 'fail' | 'pass';
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const checkHooks = async (
   codexHome: string,
   codex: Record<string, unknown>,
 ): Promise<HookDiagnostic> => {
-  const features = isObject(codex['features']) ? codex['features'] : {};
+  const features =
+    isObject(codex['features']) && !Array.isArray(codex['features']) ? codex['features'] : {};
   if (features['hooks'] !== true && features['plugin_hooks'] !== true) {
     return { detail: 'none configured', name: 'hooks', state: 'pass' };
   }

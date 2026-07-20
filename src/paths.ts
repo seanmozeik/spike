@@ -10,6 +10,7 @@ export interface SpikePaths {
   readonly prompt: string;
   readonly accounts: string;
   readonly state: string;
+  readonly attachments: string;
   readonly database: string;
   readonly run: string;
   readonly socket: string;
@@ -30,6 +31,7 @@ export const spikePaths = (root = process.env['SPIKE_HOME']): SpikePaths => {
   const codexHome = path.join(resolvedRoot, 'codex-home');
   return {
     accounts: path.join(resolvedRoot, 'accounts'),
+    attachments: path.join(state, 'attachments'),
     codexConfig: path.join(codexHome, 'config.toml'),
     codexHome,
     codexHooks: path.join(codexHome, 'hooks.json'),

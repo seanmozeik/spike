@@ -7,6 +7,7 @@ import { Effect, Schema } from 'effect';
 import { ChatGuid } from './domain/ids';
 import { SpikeRuntimeError } from './errors';
 import type { SpikePaths } from './paths';
+import { IanaTimezone, systemTimezone } from './timezone';
 
 const NonEmptyString = Schema.String.pipe(
   Schema.check(
@@ -39,8 +40,10 @@ const SpikeConfigFile = Schema.Struct({
   handle: NonEmptyString,
   like_acknowledgements: Schema.optionalKey(Schema.Boolean),
   messages_database: Schema.optionalKey(NonEmptyString),
+  preferred_name: Schema.optionalKey(NonEmptyString),
   prompt_path: Schema.optionalKey(NonEmptyString),
   swearing: Schema.optionalKey(SwearingMode),
+  timezone: Schema.optionalKey(IanaTimezone),
   wit: Schema.optionalKey(WitMode),
   working_directory: NonEmptyString,
 });
@@ -55,8 +58,10 @@ interface SpikeConfig {
   readonly handle: string;
   readonly likeAcknowledgements: boolean;
   readonly messagesDatabase: string;
+  readonly preferredName: null | string;
   readonly promptPath: string;
   readonly swearing: SwearingMode;
+  readonly timezone: string;
   readonly wit: WitMode;
   readonly workingDirectory: string;
 }
@@ -97,8 +102,10 @@ const loadSpikeConfig = (paths: SpikePaths): Effect.Effect<SpikeConfig, SpikeRun
       messagesDatabase: expandPath(
         decoded.messages_database ?? path.join(homedir(), 'Library', 'Messages', 'chat.db'),
       ),
+      preferredName: decoded.preferred_name?.trim() ?? null,
       promptPath: expandPath(decoded.prompt_path ?? paths.prompt),
       swearing: decoded.swearing ?? 'tasteful',
+      timezone: decoded.timezone ?? systemTimezone(),
       wit: decoded.wit ?? 'dry',
       workingDirectory: expandPath(decoded.working_directory),
     };

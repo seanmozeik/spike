@@ -1,10 +1,15 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 
-import { Effect } from 'effect';
+import type { Effect } from 'effect';
 
 import type { LogicalTurnId } from '../domain/ids';
-import { JournalTransactionError } from '../errors';
+import { tryJournalTransaction, type JournalTransactionError } from '../errors';
+import {
+  claimSchedule,
+  finishScheduledRuns,
+  markScheduleRunStarted,
+} from '../schedule/scheduler-persistence';
 import { inputBatchFingerprint } from '../scheduler/input-batch';
 import type {
   PooledMessage,
@@ -12,12 +17,12 @@ import type {
   SchedulerState,
   SchedulerTransition,
 } from '../scheduler/model';
+import { finishLogicalTurnAttempts } from './attempt-lifecycle';
+import { rotateCurrentGeneration } from './scheduler-generation';
+import { makeLoadSchedulerState } from './scheduler-load';
 import { makeLoadInputBatches, type PersistedInputBatch } from './scheduler-recovery';
-import {
-  currentGeneration,
-  readSchedulerState,
-  writeSchedulerState,
-} from './scheduler-state-store';
+import { resetGeneration } from './scheduler-reset';
+import { currentGeneration, writeSchedulerState } from './scheduler-state-store';
 
 interface SchedulerJournal {
   readonly commitTransition: (
@@ -30,13 +35,6 @@ interface SchedulerJournal {
   ) => Effect.Effect<readonly PersistedInputBatch[], JournalTransactionError>;
   readonly loadOrCreate: (now: Date) => Effect.Effect<SchedulerState, JournalTransactionError>;
 }
-
-const journalError = (transaction: string, cause: unknown): JournalTransactionError =>
-  new JournalTransactionError({
-    cause,
-    message: `scheduler journal transaction failed: ${transaction}`,
-    transaction,
-  });
 
 const insertInputBatch = (
   database: Database,
@@ -61,57 +59,22 @@ const insertInputBatch = (
        VALUES (?, ?, ?)`,
       [batchId, message.id, ordinal],
     );
+    const observed = database
+      .query<{ count: number }, [string]>(
+        `SELECT COUNT(*) AS count FROM attachments
+         WHERE inbound_message_id = ? AND state = 'Observed'`,
+      )
+      .get(message.id)?.count;
+    if ((observed ?? 0) > 0) {
+      throw new Error('cannot assign an attachment before staging completes');
+    }
+    database.run(
+      `UPDATE attachments SET state = 'Assigned'
+       WHERE inbound_message_id = ? AND state = 'Staged'`,
+      [message.id],
+    );
+    markScheduleRunStarted(database, message.id, logicalTurnId, createdAt);
   }
-};
-
-const resetGeneration = (
-  database: Database,
-  state: SchedulerState,
-  action: Extract<SchedulerAction, { readonly kind: 'ResetGeneration' }>,
-  resetAt: string,
-): void => {
-  const current = database
-    .query<{ id: string }, []>("SELECT id FROM generations WHERE state = 'Current'")
-    .get();
-  if (
-    current === null ||
-    current.id !== action.oldGenerationId ||
-    state.generationId !== action.newGenerationId
-  ) {
-    throw new Error('reset generation ownership does not match the scheduler transition');
-  }
-  database.run(
-    "UPDATE generations SET state = 'Superseded', superseded_at = ? WHERE id = ? AND state = 'Current'",
-    [resetAt, current.id],
-  );
-  database.run(
-    `UPDATE codex_attempts SET state = 'Failed', finished_at = COALESCE(finished_at, ?)
-     WHERE logical_turn_id IN (
-       SELECT id FROM logical_turns WHERE generation_id = ?
-     ) AND state IN ('Prepared','Submitted','SubmissionUnknown','Accepted')`,
-    [resetAt, current.id],
-  );
-  database.run(
-    `UPDATE logical_turns SET state = 'Superseded', completed_at = COALESCE(completed_at, ?)
-     WHERE generation_id = ? AND state NOT IN ('Completed','Failed','Superseded')`,
-    [resetAt, current.id],
-  );
-  database.run(
-    `UPDATE outbound_messages SET state = 'Superseded'
-     WHERE logical_turn_id IN (SELECT id FROM logical_turns WHERE generation_id = ?)
-       AND state IN ('Prepared','Delivering')`,
-    [current.id],
-  );
-  database.run(
-    `INSERT INTO generations(id, sequence, state, created_at)
-     VALUES (?, COALESCE((SELECT MAX(sequence) + 1 FROM generations), 1), 'Current', ?)`,
-    [state.generationId, resetAt],
-  );
-  database.run(
-    `INSERT OR IGNORE INTO handled_control_messages(inbound_message_id, command, handled_at)
-     VALUES (?, '/new', ?)`,
-    [action.commandMessageId, resetAt],
-  );
 };
 
 const beginTurn = (
@@ -137,12 +100,7 @@ const failTurn = (
   action: Extract<SchedulerAction, { readonly kind: 'FailTurn' }>,
   failedAt: string,
 ): void => {
-  database.run(
-    `UPDATE codex_attempts SET state = 'Failed', finished_at = ?
-     WHERE logical_turn_id = ?
-       AND state IN ('Prepared','Submitted','SubmissionUnknown','Accepted')`,
-    [failedAt, action.logicalTurnId],
-  );
+  finishLogicalTurnAttempts(database, action.logicalTurnId, 'Failed', failedAt);
   const result = database.run(
     `UPDATE logical_turns SET state = 'Failed', completed_at = ?
      WHERE id = ? AND state IN ('Submitted','Running')`,
@@ -151,6 +109,7 @@ const failTurn = (
   if (result.changes !== 1) {
     throw new Error('failed transition expected one active logical turn');
   }
+  finishScheduledRuns(database, action.logicalTurnId, 'Failed', failedAt);
 };
 
 const completeTurn = (
@@ -158,10 +117,15 @@ const completeTurn = (
   action: Extract<SchedulerAction, { readonly kind: 'CompleteTurn' }>,
   completedAt: string,
 ): void => {
-  database.run(
+  finishLogicalTurnAttempts(database, action.logicalTurnId, 'Completed', completedAt);
+  const result = database.run(
     "UPDATE logical_turns SET state = 'Completed', completed_at = ? WHERE id = ? AND state = 'Running'",
     [completedAt, action.logicalTurnId],
   );
+  if (result.changes !== 1) {
+    throw new Error('completed transition expected one running logical turn');
+  }
+  finishScheduledRuns(database, action.logicalTurnId, 'Completed', completedAt);
 };
 
 const recordAcknowledgement = (
@@ -186,10 +150,22 @@ const consumeStatus = (
   );
 };
 
-const persistAction = (
+type TurnPersistenceAction = Extract<
+  SchedulerAction,
+  {
+    readonly kind:
+      | 'CompleteTurn'
+      | 'FailTurn'
+      | 'RecordAcknowledgement'
+      | 'StartTurn'
+      | 'SteerTurn';
+  }
+>;
+
+const persistTurnAction = (
   database: Database,
   state: SchedulerState,
-  action: SchedulerAction,
+  action: TurnPersistenceAction,
   committedAt: string,
 ): void => {
   switch (action.kind) {
@@ -213,8 +189,53 @@ const persistAction = (
       recordAcknowledgement(database, action);
       break;
     }
-    case 'ResetGeneration': {
-      resetGeneration(database, state, action, committedAt);
+    default: {
+      const unreachable: never = action;
+      throw new Error(`unsupported turn persistence action: ${String(unreachable)}`);
+    }
+  }
+};
+
+type GenerationPersistenceAction = Extract<
+  SchedulerAction,
+  { readonly kind: 'ResetGeneration' | 'RotateConfiguration' }
+>;
+
+const persistGenerationAction = (
+  database: Database,
+  state: SchedulerState,
+  action: GenerationPersistenceAction,
+  committedAt: string,
+): void => {
+  if (action.kind === 'ResetGeneration') {
+    resetGeneration(database, state, action, committedAt);
+    return;
+  }
+  rotateCurrentGeneration(database, action.oldGenerationId, action.newGenerationId, committedAt);
+};
+
+const persistAction = (
+  database: Database,
+  state: SchedulerState,
+  action: SchedulerAction,
+  committedAt: string,
+): void => {
+  switch (action.kind) {
+    case 'ClaimSchedule': {
+      claimSchedule(database, action, committedAt);
+      break;
+    }
+    case 'CompleteTurn':
+    case 'FailTurn':
+    case 'RecordAcknowledgement':
+    case 'StartTurn':
+    case 'SteerTurn': {
+      persistTurnAction(database, state, action, committedAt);
+      break;
+    }
+    case 'ResetGeneration':
+    case 'RotateConfiguration': {
+      persistGenerationAction(database, state, action, committedAt);
       break;
     }
     case 'ReplyStatus': {
@@ -248,32 +269,19 @@ const makeCommitTransition = (database: Database): SchedulerJournal['commitTrans
     },
   );
   return (transition, committedAt) =>
-    Effect.try({
-      catch: (cause) => journalError('commitTransition', cause),
-      try: () => {
+    tryJournalTransaction(
+      'commitTransition',
+      'scheduler journal transaction failed: commitTransition',
+      () => {
         transaction(transition, committedAt.toISOString());
       },
-    });
-};
-
-const makeLoadOrCreate = (database: Database): SchedulerJournal['loadOrCreate'] => {
-  const transaction = database.transaction((now: string): SchedulerState => {
-    const generationId = currentGeneration(database, now);
-    const state = readSchedulerState(database, generationId);
-    writeSchedulerState(database, state, now);
-    return state;
-  });
-  return (now) =>
-    Effect.try({
-      catch: (cause) => journalError('loadOrCreate', cause),
-      try: () => transaction(now.toISOString()),
-    });
+    );
 };
 
 const makeSchedulerJournal = (database: Database): SchedulerJournal => ({
   commitTransition: makeCommitTransition(database),
   loadInputBatches: makeLoadInputBatches(database),
-  loadOrCreate: makeLoadOrCreate(database),
+  loadOrCreate: makeLoadSchedulerState(database),
 });
 
 export { makeSchedulerJournal };

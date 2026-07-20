@@ -18,6 +18,7 @@ import type {
   SchedulerState,
   TurnIdentity,
 } from './model';
+import { ownsActiveTurn } from './ownership';
 import { poolDeadline, transitionScheduler } from './transition';
 
 type SchedulerControllerError =
@@ -38,6 +39,7 @@ interface SchedulerPorts {
   readonly bindThread: () => Effect.Effect<CodexThreadId | null, SchedulerControllerError>;
   readonly cleanupGeneration: (
     previous: SchedulerState,
+    kind: 'ResetGeneration' | 'RotateConfiguration',
   ) => Effect.Effect<void, SchedulerControllerError>;
   readonly replyLocal: (
     kind: 'NewChat' | 'Status',
@@ -61,7 +63,16 @@ interface SchedulerPorts {
 interface SchedulerController {
   readonly activate: Effect.Effect<void, SchedulerControllerError>;
   readonly dispatch: (event: SchedulerEvent) => Effect.Effect<void, SchedulerControllerError>;
+  readonly reloadBeforeActivation: (now: Date) => Effect.Effect<void, JournalTransactionError>;
+  readonly runIfTurnOwned: <E, R>(
+    identity: TurnIdentity,
+    effect: Effect.Effect<void, E, R>,
+  ) => Effect.Effect<void, E, R>;
   readonly snapshot: Effect.Effect<SchedulerState>;
+}
+
+interface ActivationState {
+  value: boolean;
 }
 
 const eventTime = (event: SchedulerEvent): Date => {
@@ -81,6 +92,18 @@ const turnIdentity = (state: SchedulerState): TurnIdentity | null =>
   state.active === null
     ? null
     : { generationId: state.generationId, logicalTurnId: state.active.logicalTurnId };
+
+const makeTurnOwnerGuard =
+  (
+    state: Ref.Ref<SchedulerState>,
+    semaphore: Semaphore.Semaphore,
+  ): SchedulerController['runIfTurnOwned'] =>
+  (identity, effect) =>
+    semaphore.withPermits(1)(
+      Effect.flatMap(Ref.get(state), (current) =>
+        ownsActiveTurn(current, identity) ? effect : Effect.void,
+      ),
+    );
 
 const runSideEffects = Effect.fn('SpikeScheduler.runSideEffects')(function* runSideEffects(
   ports: SchedulerPorts,
@@ -111,8 +134,8 @@ const runSideEffects = Effect.fn('SpikeScheduler.runSideEffects')(function* runS
         kind: 'TurnStarted',
         logicalTurnId: action.logicalTurnId,
       });
-    } else if (action.kind === 'ResetGeneration') {
-      const cleanup = yield* Effect.result(ports.cleanupGeneration(previous));
+    } else if (action.kind === 'ResetGeneration' || action.kind === 'RotateConfiguration') {
+      const cleanup = yield* Effect.result(ports.cleanupGeneration(previous, action.kind));
       if (Result.isFailure(cleanup)) {
         yield* ports.reportFailure(cleanup.failure);
       }
@@ -124,6 +147,40 @@ const runSideEffects = Effect.fn('SpikeScheduler.runSideEffects')(function* runS
   }
 });
 
+const makeReloadBeforeActivation =
+  (
+    state: Ref.Ref<SchedulerState>,
+    semaphore: Semaphore.Semaphore,
+    journal: SchedulerJournal,
+    activation: ActivationState,
+  ): SchedulerController['reloadBeforeActivation'] =>
+  (now) =>
+    semaphore.withPermits(1)(
+      activation.value
+        ? Effect.die(new Error('scheduler state cannot be reloaded after activation'))
+        : journal.loadOrCreate(now).pipe(Effect.flatMap((persisted) => Ref.set(state, persisted))),
+    );
+
+const makeActivate = (
+  state: Ref.Ref<SchedulerState>,
+  semaphore: Semaphore.Semaphore,
+  ports: SchedulerPorts,
+  activation: ActivationState,
+): SchedulerController['activate'] =>
+  semaphore.withPermits(1)(
+    Effect.gen(function* activateScheduler() {
+      if (activation.value) {
+        return;
+      }
+      const current = yield* Ref.get(state);
+      const restartDeadline = poolDeadline(current.pool);
+      if (restartDeadline !== null) {
+        yield* ports.schedulePool(restartDeadline, turnIdentity(current));
+      }
+      activation.value = true;
+    }),
+  );
+
 const makeSchedulerController = Effect.fn('SpikeScheduler.make')(function* makeSchedulerController(
   initial: SchedulerState,
   journal: SchedulerJournal,
@@ -131,7 +188,7 @@ const makeSchedulerController = Effect.fn('SpikeScheduler.make')(function* makeS
 ) {
   const state = yield* Ref.make(initial);
   const semaphore = yield* Semaphore.make(1);
-  let activated = false;
+  const activation = { value: false };
   const applyUnlocked = (event: SchedulerEvent): Effect.Effect<void, SchedulerControllerError> =>
     Effect.gen(function* applySchedulerEvent() {
       const previous = yield* Ref.get(state);
@@ -150,20 +207,16 @@ const makeSchedulerController = Effect.fn('SpikeScheduler.make')(function* makeS
     });
   const dispatch = (event: SchedulerEvent): Effect.Effect<void, SchedulerControllerError> =>
     semaphore.withPermits(1)(applyUnlocked(event));
-  const activate = semaphore.withPermits(1)(
-    Effect.gen(function* activateScheduler() {
-      if (activated) {
-        return;
-      }
-      const current = yield* Ref.get(state);
-      const restartDeadline = poolDeadline(current.pool);
-      if (restartDeadline !== null) {
-        yield* ports.schedulePool(restartDeadline, turnIdentity(current));
-      }
-      activated = true;
-    }),
-  );
-  return { activate, dispatch, snapshot: Ref.get(state) } satisfies SchedulerController;
+  const reloadBeforeActivation = makeReloadBeforeActivation(state, semaphore, journal, activation);
+  const runIfTurnOwned = makeTurnOwnerGuard(state, semaphore);
+  const activate = makeActivate(state, semaphore, ports, activation);
+  return {
+    activate,
+    dispatch,
+    reloadBeforeActivation,
+    runIfTurnOwned,
+    snapshot: Ref.get(state),
+  } satisfies SchedulerController;
 });
 
 export { makeSchedulerController };

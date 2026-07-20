@@ -1,0 +1,50 @@
+const ACCOUNT_OBSERVATIONS_LATEST_INDEX = `CREATE INDEX IF NOT EXISTS account_observations_latest
+  ON account_observations(account_id, id DESC)`;
+
+const ACCOUNT_OBSERVATIONS_RETENTION_INDEX = `CREATE INDEX IF NOT EXISTS account_observations_retention
+  ON account_observations(observed_at)`;
+
+const APPROVAL_PENDING_DELIVERED_INDEX = `CREATE INDEX IF NOT EXISTS approval_pending_fifo
+  ON approval_requests(delivered_at) WHERE state = 'Pending'`;
+
+const APPROVAL_PENDING_REQUESTED_INDEX = `CREATE INDEX IF NOT EXISTS approval_pending_requested
+  ON approval_requests(requested_at) WHERE state = 'Pending'`;
+
+const ATTACHMENTS_INBOUND_MESSAGE_INDEX = `CREATE INDEX IF NOT EXISTS attachments_inbound_message
+  ON attachments(inbound_message_id, ordinal, id)`;
+
+const ATTACHMENTS_LEGACY_SAFE_INDEX = `CREATE INDEX IF NOT EXISTS attachments_inbound_message
+  ON attachments(inbound_message_id)`;
+
+const FAILURES_RETENTION_INDEX = `CREATE INDEX IF NOT EXISTS failures_retention
+  ON failures(created_at)`;
+
+const OUTBOUND_RECOVERABLE_INDEX = `CREATE INDEX IF NOT EXISTS outbound_recoverable
+  ON outbound_messages(created_at) WHERE state IN ('Prepared', 'Delivering')`;
+
+const SCHEDULES_DUE_INDEX = `CREATE INDEX IF NOT EXISTS schedules_due
+  ON schedules(state, next_due_at, created_at)`;
+
+const HOT_QUERY_INDEXES = [
+  ACCOUNT_OBSERVATIONS_LATEST_INDEX,
+  ACCOUNT_OBSERVATIONS_RETENTION_INDEX,
+  APPROVAL_PENDING_DELIVERED_INDEX,
+  APPROVAL_PENDING_REQUESTED_INDEX,
+  ATTACHMENTS_INBOUND_MESSAGE_INDEX,
+  FAILURES_RETENTION_INDEX,
+  OUTBOUND_RECOVERABLE_INDEX,
+  SCHEDULES_DUE_INDEX,
+] as const;
+
+export {
+  ACCOUNT_OBSERVATIONS_LATEST_INDEX,
+  ACCOUNT_OBSERVATIONS_RETENTION_INDEX,
+  APPROVAL_PENDING_DELIVERED_INDEX,
+  APPROVAL_PENDING_REQUESTED_INDEX,
+  ATTACHMENTS_INBOUND_MESSAGE_INDEX,
+  ATTACHMENTS_LEGACY_SAFE_INDEX,
+  FAILURES_RETENTION_INDEX,
+  HOT_QUERY_INDEXES,
+  OUTBOUND_RECOVERABLE_INDEX,
+  SCHEDULES_DUE_INDEX,
+};

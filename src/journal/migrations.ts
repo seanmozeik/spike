@@ -1,4 +1,15 @@
-const SCHEMA_VERSION = 12;
+import {
+  ACCOUNT_OBSERVATIONS_LATEST_INDEX,
+  ACCOUNT_OBSERVATIONS_RETENTION_INDEX,
+  APPROVAL_PENDING_DELIVERED_INDEX,
+  APPROVAL_PENDING_REQUESTED_INDEX,
+  ATTACHMENTS_LEGACY_SAFE_INDEX,
+  FAILURES_RETENTION_INDEX,
+  OUTBOUND_RECOVERABLE_INDEX,
+} from './query-indexes';
+import { scheduleMigrationStatements } from './schedule-migration-statements';
+
+const SCHEMA_VERSION = 19;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -25,15 +36,24 @@ const migrationStatements = [
     ON generations(state) WHERE state = 'Current'`,
   `CREATE TABLE IF NOT EXISTS inbound_messages (
     id TEXT PRIMARY KEY,
-    message_guid TEXT NOT NULL UNIQUE,
-    messages_rowid INTEGER NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL DEFAULT 'Messages'
+      CHECK(source_kind IN ('Messages','ScheduleRun')),
+    source_id TEXT,
+    message_guid TEXT,
+    messages_rowid INTEGER,
     chat_guid TEXT NOT NULL,
     handle TEXT NOT NULL,
-    service TEXT NOT NULL CHECK(service = 'iMessage'),
+    service TEXT NOT NULL CHECK(service IN ('iMessage','Schedule')),
     text TEXT,
     sent_at TEXT NOT NULL,
     observed_at TEXT NOT NULL,
-    payload_redacted_at TEXT
+    payload_redacted_at TEXT,
+    CHECK(
+      (source_kind = 'Messages' AND message_guid IS NOT NULL
+        AND messages_rowid IS NOT NULL AND service = 'iMessage')
+      OR (source_kind = 'ScheduleRun' AND source_id IS NOT NULL
+        AND message_guid IS NULL AND messages_rowid IS NULL AND service = 'Schedule')
+    )
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS attachments (
     id TEXT PRIMARY KEY,
@@ -48,9 +68,13 @@ const migrationStatements = [
     source_path TEXT,
     staged_path TEXT,
     content_hash TEXT,
+    failure_code TEXT,
+    ordinal INTEGER NOT NULL DEFAULT 0 CHECK(ordinal >= 0),
     created_at TEXT NOT NULL,
     payload_redacted_at TEXT
   ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS attachments_staged_path ON attachments(staged_path)`,
+  ATTACHMENTS_LEGACY_SAFE_INDEX,
   `CREATE TABLE IF NOT EXISTS logical_turns (
     id TEXT PRIMARY KEY,
     generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE RESTRICT,
@@ -117,7 +141,11 @@ const migrationStatements = [
   `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_work_ack
     ON outbound_messages(logical_turn_id, message_kind) WHERE message_kind = 'WorkAck'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_final
-    ON outbound_messages(logical_turn_id, message_kind) WHERE message_kind = 'Final'`,
+    ON outbound_messages(logical_turn_id, message_kind)
+    WHERE message_kind = 'Final' AND source_kind = 'CodexAgentItem'`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_failure_notice
+    ON outbound_messages(logical_turn_id, source_kind)
+    WHERE source_kind = 'TurnFailureNotice'`,
   `CREATE UNIQUE INDEX IF NOT EXISTS outbound_one_outage_notice
     ON outbound_messages(outage_episode_id, message_kind) WHERE message_kind = 'OutageNotice'`,
   `CREATE TABLE IF NOT EXISTS outbound_chunks (
@@ -166,9 +194,13 @@ const migrationStatements = [
     account_id TEXT NOT NULL,
     observed_at TEXT NOT NULL,
     usable INTEGER NOT NULL CHECK(usable IN (0,1)),
+    mode TEXT NOT NULL CHECK(mode IN ('Available','Capacity','Authentication')),
     usage_json TEXT,
-    reset_at TEXT
+    reset_at TEXT,
+    selected_at TEXT
   ) STRICT`,
+  ACCOUNT_OBSERVATIONS_LATEST_INDEX,
+  ACCOUNT_OBSERVATIONS_RETENTION_INDEX,
   `CREATE TABLE IF NOT EXISTS outage_episodes (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -187,6 +219,7 @@ const migrationStatements = [
     details_json TEXT,
     created_at TEXT NOT NULL
   ) STRICT`,
+  FAILURES_RETENTION_INDEX,
   `CREATE TABLE IF NOT EXISTS scheduler_state (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE RESTRICT,
@@ -240,8 +273,8 @@ const migrationStatements = [
     payload_redacted_at TEXT,
     UNIQUE(connection_id, rpc_request_id_json)
   ) STRICT`,
-  `CREATE INDEX IF NOT EXISTS approval_pending_fifo
-    ON approval_requests(state, delivered_at, requested_at)`,
+  APPROVAL_PENDING_DELIVERED_INDEX,
+  APPROVAL_PENDING_REQUESTED_INDEX,
   `CREATE TABLE IF NOT EXISTS handled_approval_messages (
     inbound_message_id TEXT PRIMARY KEY REFERENCES inbound_messages(id) ON DELETE RESTRICT,
     approval_id TEXT REFERENCES approval_requests(id) ON DELETE RESTRICT,
@@ -249,6 +282,8 @@ const migrationStatements = [
     outcome TEXT NOT NULL CHECK(outcome IN ('Resolved','NoPending','Invalid')),
     handled_at TEXT NOT NULL
   ) STRICT`,
+  OUTBOUND_RECOVERABLE_INDEX,
+  ...scheduleMigrationStatements,
 ] as const;
 
 export { migrationStatements, SCHEMA_VERSION };

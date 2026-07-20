@@ -1,62 +1,157 @@
-# spike
+# Spike
 
-Your Codex, in iMessage.
+Spike is an open-source take on the Interaction Company's Poke - the always-on iMessage agent with a personality. It's powered by the Codex App Server.
+Spike runs one Codex conversation from one direct chat on your Mac. The configured peer can be your own address or a separate Apple ID you control.
 
-Spike runs Codex app-server on your Mac and connects it to one direct iMessage conversation. The configured peer can be your own address or a separate Apple ID you created for Spike.
+Spike is a local power tool: it has all the power, features and security of the Codex harness, and can access to your files, run local commands, configure credentials, call MCP servers, and use hooks. Read [Security and privacy](SECURITY.md) before installing it.
 
-## Before you install
+## Supported release
 
-Spike is a trusted power tool for a Mac you control. Its useful mode gives Codex access to your files, local CLIs, credentials, MCP servers, hooks, and skills. Read the choices in `spike init`, use a dedicated machine or account where appropriate, and do not expose the configured iMessage address to people you do not trust.
+The packaged release targets Apple Silicon on macOS 26 or newer. Intel Macs and older macOS releases are not supported by the current archive because it contains an arm64 native helper. Spike also requires:
 
-You need:
+- [Bun](https://bun.com/docs/installation) 1.3 or newer;
+- the [Codex CLI](https://developers.openai.com/codex/cli);
+- Messages signed in to iMessage;
+- one direct, single-participant iMessage conversation; and
+- Xcode Command Line Tools when building from source.
 
-- macOS with Messages signed in
-- Bun 1.3 or newer
-- the Codex CLI
-- a direct iMessage conversation with the phone number or iMessage email Spike should accept
-- Full Disk Access for the Homebrew Bun executable
-- permission for Bun to control Messages
-- Accessibility permission for the Like helper if you enable Likes
+Spike is not affiliated with or endorsed by Apple, OpenAI, or any other third party.
 
-Homebrew installs Bun as a formula dependency. macOS grants Full Disk Access to a specific executable, so a Bun upgrade may require you to approve the new executable again.
+## Permissions to understand first
 
-## Onboarding
+Spike does not request these permissions until onboarding is applied, but a working installation needs:
 
-Run:
+- **Full Disk Access** for the exact Bun executable that runs Spike, so it can read `~/Library/Messages/chat.db`;
+- **Automation → Messages** for that Bun executable, so it can send replies; and
+- optional **Accessibility** access for `spike-like`, if Like acknowledgements are enabled.
 
-```nu
+macOS grants privacy permissions to a particular executable. Homebrew or Bun upgrades can replace that executable and require a renewed grant. `spike doctor` reports missing access without changing it. When Bun itself is updated, it will need those permissions to be re-granted.
+
+## Install a published release
+
+The current supported install method is via Bun:
+
+```bash
+bun install -g @seanmozeik/spike
+```
+
+## Configure and start
+
+Apply a new installation:
+
+```bash
 spike init
 ```
 
-To inspect the complete prompt flow without preflight checks, permission requests, authentication,
-filesystem writes, LaunchAgent changes, or Messages access, run:
+Onboarding selects the direct conversation, working directory, response style, model, reasoning settings, service tier, approval policy, sandbox, and optional personal context. OpenAI authentication uses device login inside Spike's isolated Codex home. Spike does not copy your normal Codex authentication or configuration.
+
+Nothing is installed before the review screen is confirmed. Apply writes the configuration, installs the user LaunchAgent, runs diagnostics, and waits for a real round trip in the configured conversation. A failed first installation removes the state it created.
+
+## Operate Spike
 
 ```nu
-spike init --preview
+spike start       # write the current LaunchAgent and start it
+spike stop        # stop the LaunchAgent
+spike restart     # rewrite the LaunchAgent and restart it
+spike status      # compact runtime, turn, account, and approval state
+spike doctor      # read-only configuration, permission, journal, and service diagnostics
+spike logs        # bounded daemon-log tail
+spike accounts    # configured accounts and current observations
+spike approvals   # pending and recently resolved permission requests
 ```
 
-Preview uses a synthetic conversation and clearly labelled static models. It ends at the review
-screen and is safe to run on an already configured Mac.
+The operator commands accept `--json` for formatted structured output and `--agent` for compact single-line JSON. `spike serve` is the foreground daemon entry point used by launchd; it is not a second installation mode.
 
-The Clack flow asks for the exact conversation, working directory, six personality choices, Codex model and reasoning settings, service tier, approval policy, sandbox, and optional personal context. OpenAI authentication uses device login inside Spike's isolated Codex home. It does not copy your main Codex authentication or configuration.
+If an existing installation is unhealthy, start with:
 
-Spike recommends `approval_policy = "never"` and `sandbox_mode = "danger-full-access"` for a fully unattended personal agent. Choose `on-request` if you want Codex tool permissions routed to the configured iMessage conversation. Spike shows one request at a time; reply with exactly `/yes` or `/no`. Replies never contain or require an approval ID, and extra text is rejected.
+```nu
+spike doctor
+spike status
+```
 
-Nothing is installed before the review screen is confirmed. Spike stages and validates the complete configuration, installs the LaunchAgent, runs `spike doctor`, then waits for a real message and reply in the configured conversation. A failed apply or verification removes the virgin installation.
+## Approval and sandbox choices
 
-`spike init` is only for a new installation. Use `spike doctor` for read-only diagnostics if an existing installation is unhealthy; reconfiguration and repair are separate workflows.
+For unattended use, onboarding offers `approval_policy = "never"` with `sandbox_mode = "danger-full-access"`. That combination is powerful: Codex can act without asking again inside the trust boundary described below. This mode is recommended to be combined with hooks to prevent accidents from happening.
 
-Pending and recent permission requests are visible through `spike approvals`. `spike status` includes compact approval counts, and `spike doctor` reports queued, orphaned, or incorrectly concurrent prompts. Requests expire after ten minutes, fail closed if delivery or the Codex connection fails, and do not create session-wide grants.
+Choose `on-request` to route supported Codex permission requests to iMessage. Spike persists one request at a time. Reply with exactly `/yes` or `/no`; extra prose is rejected, requests expire after ten minutes, and a failed delivery or Codex connection fails closed.
 
-## Conversation boundary
+## Conversation trust boundary
 
-Spike accepts only inbound iMessages from the configured direct conversation and canonical peer handle. It checks the chat GUID, peer handle, iMessage service, inbound direction, and one-participant membership when reading Messages, then checks the same identity again before writing to its journal. Other direct messages, group chats, SMS messages, and outbound messages cannot enter the scheduler or Codex context.
+The configured peer is trusted input. Spike accepts only inbound iMessages from the configured direct chat and canonical peer handle. It validates the chat GUID, handle, iMessage service, direction, and one-participant membership before journalling a message, and revalidates membership while running.
 
-## Development
+Other direct messages, group chats, SMS messages, and outbound messages do not enter the scheduler or Codex context. This boundary does not make malicious instructions from the configured peer safe; it defines who is allowed to instruct the agent.
+
+Incoming attachments are copied to `<working_directory>/tmp/spike/attachments` with owner-only permissions before Codex sees them. JPEG, PNG, GIF, and WebP files are submitted as image inputs. Spike converts HEIC images to JPEG; PDFs, audio, and other files are included in the prompt by their absolute staged path. Each attachment is limited to 25 MiB, including the converted HEIC output.
+
+## Configuration and examples
+
+Spike's own configuration lives at `~/.config/spike/config.toml`. Codex model, provider, MCP, hook, feature, approval, and sandbox settings belong under `~/.config/spike/codex-home/`.
+
+The repository and release archive include fictional, path-safe examples:
+
+- [`examples/spike.config.toml`](examples/spike.config.toml) for the conversation, working directory, preferred name, and local timezone;
+- [`examples/codex/openai.toml`](examples/codex/openai.toml) for OpenAI model, sandbox, and approvals;
+- [`examples/codex/custom-provider.toml`](examples/codex/custom-provider.toml), [`ollama.toml`](examples/codex/ollama.toml), and [`lm-studio.toml`](examples/codex/lm-studio.toml) for alternate providers; and
+- [`examples/codex/mcp-and-hooks.toml`](examples/codex/mcp-and-hooks.toml) for MCP and hook configuration.
+
+Provider secrets stay in the provider's named environment variable or its own authentication store. Do not put tokens in `config.toml`, prompts, or hook files.
+
+## Upgrade
+
+Upgrade through the same channel used to install Spike, then rewrite the LaunchAgent so it points at the new release:
+
+```nu
+spike restart
+spike doctor
+```
+
+An upgrade preserves `~/.config/spike`, including the Spike configuration, prompt, isolated Codex home, account snapshots, and SQLite journal. It does not migrate data into a different `SPIKE_HOME`. Database migrations are additive and run when the new daemon opens the existing journal.
+
+The binary path can change after a Homebrew or Bun upgrade. If Messages access fails afterward, restore Full Disk Access and Automation for the exact Bun executable reported by `which bun`, then rerun `spike doctor` and `spike restart`.
+
+## Local data, retention, and recovery
+
+The default home is `~/.config/spike`:
+
+| Path              | Contents                                                            |
+| ----------------- | ------------------------------------------------------------------- |
+| `config.toml`     | conversation and runtime configuration                              |
+| `prompt.md`       | generated prompt overlay                                            |
+| `codex-home/`     | isolated Codex configuration and authentication                     |
+| `accounts/`       | optional account snapshots                                          |
+| `state/spike.db`  | durable cursor, scheduler, approval, delivery, and recovery journal |
+| `logs/daemon.log` | bounded operator diagnostics                                        |
+| `run/spike.sock`  | owner-only local control socket                                     |
+
+Staged message attachments live under `<working_directory>/tmp/spike/attachments`, outside the Spike home, so they remain reachable from the Codex working directory during recovery.
+
+The LaunchAgent is written to `~/Library/LaunchAgents/com.mozeik.spike.plist`. Runtime directories and sensitive files are owner-only. Eligible terminal payloads are redacted after 30 days; unresolved work remains until it is safe to reconcile or redact. Logs and the journal are local but can still contain sensitive operational context, so do not publish them.
+
+Spike uses its journal to recover persisted work after daemon or app-server restarts. Recovery is designed to suppress duplicate turns and duplicate delivery, but it cannot make macOS, Messages, external providers, hooks, or local tools transactional. Inspect `spike status`, `spike doctor`, and `spike logs` after an interrupted upgrade or prolonged outage.
+
+## Known limits
+
+- Spike runs as a user LaunchAgent. It is unavailable before login and while the Mac is off or asleep.
+- A locked session interrupts Accessibility automation. Like acknowledgement degrades independently and does not block text replies.
+- Spike depends on the installed Codex app-server protocol. Upgrade Codex deliberately and run `spike doctor` plus a bounded self-chat check afterward.
+- Provider authentication and rate limits remain external constraints.
+
+## Development and release
+
+Spike is written entirely in Effect v4 typescript.
 
 ```nu
 bun install
-just verify
+bun run setup
+bun run verify
 ```
 
-The public repository starts from a sanitized source snapshot. Its earlier private history contained machine-specific configuration and personal operational data. No private credentials, account snapshots, Messages databases, logs, or personal configuration are required to build Spike.
+`bun run setup` patches the local TypeScript compiler with Effect diagnostics. `bun run verify` formats, lints, typechecks, tests, and builds the CLI plus native Like helper. Building therefore requires Xcode Command Line Tools even with `--no-formula`.
+
+Create the versioned archive and update its formula checksum with:
+
+```nu
+bun run build
+```
+
+Spike is licensed under the [MIT License](LICENSE).

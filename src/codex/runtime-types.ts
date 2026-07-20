@@ -1,13 +1,16 @@
 import type { Effect } from 'effect';
 
+import type { StagedImageAttachment } from '../attachments/model';
 import type { CodexThreadId, CodexTurnId } from '../domain/ids';
 import type { CodexRuntimeError, GenerationBroken } from '../errors';
 import type { ClassifiedOutput } from './output-classifier';
 import type { ThreadSnapshot } from './reconcile';
 import type { JsonRpcNotification } from './rpc';
+import type { JsonRpcError } from './rpc-types';
 import type { CodexServerRequest, JsonRpcId } from './server-request-registry';
 
 interface StartTurnOptions {
+  readonly attachments: readonly StagedImageAttachment[];
   readonly clientUserMessageId: string;
   readonly input: string;
   readonly threadId: CodexThreadId;
@@ -29,6 +32,7 @@ interface CodexRuntime {
     listener: (notification: JsonRpcNotification) => void,
   ) => () => void;
   readonly addServerRequestListener: (
+    methods: ReadonlySet<string>,
     listener: (request: CodexServerRequest) => void,
   ) => () => void;
   readonly archiveThread: (threadId: CodexThreadId) => Effect.Effect<void, CodexRuntimeError>;
@@ -37,6 +41,7 @@ interface CodexRuntime {
   readonly loadedThreads: Effect.Effect<readonly CodexThreadId[], CodexRuntimeError>;
   readonly rateLimits: Effect.Effect<unknown, CodexRuntimeError>;
   readonly respondToServerRequest: (id: JsonRpcId, result: unknown) => Promise<void>;
+  readonly respondToServerRequestError: (id: JsonRpcId, error: JsonRpcError) => Promise<void>;
   readonly readThread: (
     threadId: CodexThreadId,
   ) => Effect.Effect<ThreadSnapshot, CodexRuntimeError | GenerationBroken>;

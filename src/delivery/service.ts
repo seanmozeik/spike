@@ -1,35 +1,37 @@
 import { Effect, Result } from 'effect';
 
-import type { DeliveryAttemptId, LogicalTurnId } from '../domain/ids';
+import type { DeliveryAttemptId, LogicalTurnId, OutageEpisodeId } from '../domain/ids';
+import { safeErrorDiagnostic } from '../error-message';
 import type { JournalTransactionError } from '../errors';
 import { MessagesDeliveryError } from './error';
 import type { DeliveryReceipt, MessagesTransport } from './messages-transport';
-import type {
-  AssistantMessageKind,
-  DeliveryChunk,
-  DeliveryJournal,
-  PreparedDelivery,
-} from './model';
+import type { DeliveryChunk, DeliveryJournal, PreparedDelivery, PreparedTurnNotice } from './model';
 
 type DeliveryError = JournalTransactionError | MessagesDeliveryError;
 
 interface DeliveryService {
-  readonly deliverAssistantMessage: (
+  readonly deliverPreparedTurnNotice: (
+    prepared: PreparedTurnNotice,
+  ) => Effect.Effect<void, DeliveryError>;
+  readonly deliverFailureNotice: (
     logicalTurnId: LogicalTurnId,
-    sourceId: string,
-    kind: AssistantMessageKind,
     text: string,
     createdAt: Date,
   ) => Effect.Effect<void, DeliveryError>;
   readonly recover: Effect.Effect<void, DeliveryError>;
+  readonly deliverOutageNotice: (
+    outageEpisodeId: OutageEpisodeId,
+    text: string,
+    createdAt: Date,
+  ) => Effect.Effect<void, DeliveryError>;
   readonly deliverControlMessage: (
     sourceId: string,
     text: string,
     createdAt: Date,
   ) => Effect.Effect<void, DeliveryError>;
+  readonly prepareTurnNotice: DeliveryJournal['prepareTurnNotice'];
 }
 
-const ERROR_PREVIEW_LIMIT = 300;
 const CONFIRMATION_POLLS = 20;
 
 const confirmationTimeout = (): MessagesDeliveryError =>
@@ -38,16 +40,6 @@ const confirmationTimeout = (): MessagesDeliveryError =>
     message: 'Messages delivery could not be confirmed',
     operation: 'confirm',
   });
-
-const compactError = (error: unknown): string => {
-  const message = error instanceof Error ? error.message : 'unknown Messages delivery failure';
-  return message
-    .replaceAll(/\b(?:Bearer\s+\S+|sk-[\w-]{8,}|ghp_[\w-]{8,})\b/giu, '[redacted]')
-    .replaceAll(/[\r\n\t]+/gu, ' ')
-    .replaceAll(/\s{2,}/gu, ' ')
-    .trim()
-    .slice(0, ERROR_PREVIEW_LIMIT);
-};
 
 const findWithPolling = Effect.fn('SpikeDelivery.confirm')(function* findWithPolling(
   transport: MessagesTransport,
@@ -95,14 +87,16 @@ const terminalizeChunk = (
   error: MessagesDeliveryError,
 ): Effect.Effect<never, JournalTransactionError | MessagesDeliveryError> =>
   journal
-    .markFailed(chunk.id, compactError(error), new Date())
+    .markFailed(chunk.id, safeErrorDiagnostic(error), new Date())
     .pipe(Effect.andThen(Effect.fail(error)));
 
 const deliverChunk = (
   journal: DeliveryJournal,
   transport: MessagesTransport,
   chunk: DeliveryChunk,
+  claimAttempt: DeliveryJournal['claimAttempt'] = journal.claimAttempt,
 ): Effect.Effect<void, DeliveryError> => {
+  let attemptStarted = chunk.attemptId !== null;
   const delivery = Effect.gen(function* deliverChunkEffect() {
     if (yield* reconcileExisting(journal, transport, chunk)) {
       return yield* Effect.void;
@@ -116,10 +110,14 @@ const deliverChunk = (
       return yield* confirmationTimeout();
     }
     const frontierRowId = yield* transport.frontier;
-    const attemptId = yield* journal.beginAttempt(chunk.id, frontierRowId, new Date());
+    const attemptId = yield* claimAttempt(chunk.id, frontierRowId, new Date());
+    if (attemptId === null) {
+      return yield* Effect.void;
+    }
+    attemptStarted = true;
     const sent = yield* Effect.result(transport.send(chunk.text));
     yield* Result.isFailure(sent)
-      ? journal.markAttemptUnknown(attemptId, compactError(sent.failure), new Date())
+      ? journal.markAttemptUnknown(attemptId, safeErrorDiagnostic(sent.failure), new Date())
       : journal.markSent(attemptId, chunk.id, new Date());
     const receipt = yield* findWithPolling(transport, frontierRowId, chunk.text);
     if (receipt !== null) {
@@ -131,19 +129,20 @@ const deliverChunk = (
     yield* journal.markAttemptUnknown(attemptId, 'confirmation timeout', new Date());
     return yield* confirmationTimeout();
   });
-  return delivery.pipe(
-    Effect.catchTag('MessagesDeliveryError', terminalizeChunk.bind(null, journal, chunk)),
-  );
+  const handleDeliveryError = (error: MessagesDeliveryError): Effect.Effect<never, DeliveryError> =>
+    attemptStarted ? terminalizeChunk(journal, chunk, error) : Effect.fail(error);
+  return delivery.pipe(Effect.catchTag('MessagesDeliveryError', handleDeliveryError));
 };
 
 const deliverPrepared = Effect.fn('SpikeDelivery.deliverPrepared')(function* deliverPrepared(
   journal: DeliveryJournal,
   transport: MessagesTransport,
   prepared: PreparedDelivery,
+  claimAttempt: DeliveryJournal['claimAttempt'] = journal.claimAttempt,
 ) {
   for (const chunk of prepared.chunks) {
     if (chunk.state !== 'Sent' && chunk.state !== 'Reconciled' && chunk.state !== 'Failed') {
-      yield* deliverChunk(journal, transport, chunk);
+      yield* deliverChunk(journal, transport, chunk, claimAttempt);
     }
   }
 });
@@ -152,25 +151,23 @@ const makeDeliveryService = (
   journal: DeliveryJournal,
   transport: MessagesTransport,
 ): DeliveryService => ({
-  deliverAssistantMessage: (
-    logicalTurnId,
-    sourceId,
-    kind,
-    text,
-    createdAt,
-  ): Effect.Effect<void, DeliveryError> =>
-    journal
-      .prepareAssistantMessage(logicalTurnId, sourceId, kind, text, createdAt)
-      .pipe(
-        Effect.flatMap(
-          (prepared): Effect.Effect<void, DeliveryError> =>
-            deliverPrepared(journal, transport, prepared),
-        ),
-      ),
   deliverControlMessage: (sourceId, text, createdAt): Effect.Effect<void, DeliveryError> =>
     journal
       .prepareControlMessage(sourceId, text, createdAt)
       .pipe(Effect.flatMap((prepared) => deliverPrepared(journal, transport, prepared))),
+  deliverFailureNotice: (logicalTurnId, text, createdAt): Effect.Effect<void, DeliveryError> =>
+    journal
+      .prepareFailureNotice(logicalTurnId, text, createdAt)
+      .pipe(Effect.flatMap((prepared) => deliverPrepared(journal, transport, prepared))),
+  deliverOutageNotice: (outageEpisodeId, text, createdAt): Effect.Effect<void, DeliveryError> =>
+    journal
+      .prepareOutageNotice(outageEpisodeId, text, createdAt)
+      .pipe(Effect.flatMap((prepared) => deliverPrepared(journal, transport, prepared))),
+  deliverPreparedTurnNotice: (prepared): Effect.Effect<void, DeliveryError> =>
+    deliverPrepared(journal, transport, prepared, (chunkId, frontierRowId, startedAt) =>
+      journal.claimTurnAttempt(prepared.identity, chunkId, frontierRowId, startedAt),
+    ),
+  prepareTurnNotice: journal.prepareTurnNotice,
   recover: Effect.gen(function* recoverDelivery() {
     const chunks = yield* journal.listRecoverable;
     for (const chunk of chunks) {
@@ -181,5 +178,5 @@ const makeDeliveryService = (
   }),
 });
 
-export { compactError, makeDeliveryService };
+export { makeDeliveryService };
 export type { DeliveryError, DeliveryService };

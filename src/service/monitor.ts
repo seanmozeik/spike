@@ -3,39 +3,42 @@ import { Effect } from 'effect';
 import type { ClassifiedOutput } from '../codex/output-classifier';
 import type { TurnEventHandlers } from '../codex/runtime-types';
 import { recoverTurn } from '../codex/turn-recovery';
-import type { CodexThreadId, CodexTurnId, LogicalTurnId } from '../domain/ids';
+import type { CodexThreadId, CodexTurnId } from '../domain/ids';
 import { CodexRuntimeError } from '../errors';
 import type { TurnIdentity } from '../scheduler/model';
 import { dispatch, type EngineContext } from './context';
 import { completeTurn, failTurn } from './turn-failure';
+import { deliverTurnNotice } from './turn-notice';
 
 const acknowledgementEffect = (
   context: EngineContext,
-  logicalTurnId: LogicalTurnId,
+  identity: TurnIdentity,
   turnId: CodexTurnId,
   text: string,
 ): Effect.Effect<void, unknown> => {
-  const delivered = context.options.delivery.deliverAssistantMessage(
-    logicalTurnId,
-    turnId,
-    'WorkAck',
-    text,
-    context.now(),
-  );
+  const delivered = deliverTurnNotice(context, identity, turnId, 'WorkAck', text);
   const recorded = Effect.promise(() =>
-    dispatch(context, { at: context.now(), kind: 'AcknowledgementEmitted', logicalTurnId }),
+    dispatch(context, {
+      at: context.now(),
+      kind: 'AcknowledgementEmitted',
+      logicalTurnId: identity.logicalTurnId,
+    }),
   );
   return delivered.pipe(Effect.andThen(recorded));
 };
 
 const compactionNoticeEffect = (
   context: EngineContext,
+  identity: TurnIdentity,
+  turnId: CodexTurnId,
   itemId: string,
 ): Effect.Effect<void, unknown> =>
-  context.options.delivery.deliverControlMessage(
-    `compaction:${itemId}`,
+  deliverTurnNotice(
+    context,
+    identity,
+    `compaction:${turnId}:${itemId}`,
+    'Compaction',
     'compacting...',
-    context.now(),
   );
 
 const resolvedOutput = (
@@ -67,16 +70,50 @@ const resolvedOutput = (
 const requireFinalAnswer = (
   output: ClassifiedOutput,
   turnId: CodexTurnId,
-): Effect.Effect<string, CodexRuntimeError> =>
-  output.finalAnswer === null
-    ? Effect.fail(
+): Effect.Effect<string, CodexRuntimeError> => {
+  switch (output.final.kind) {
+    case 'Ready': {
+      return Effect.succeed(output.final.text);
+    }
+    case 'Ambiguous': {
+      return Effect.fail(
+        new CodexRuntimeError({
+          cause: { candidateItemIds: output.final.candidateItemIds, turnId },
+          message: `Codex completed with multiple final answers: ${output.final.candidateItemIds.join(', ')}`,
+          operation: 'turn/output',
+        }),
+      );
+    }
+    case 'Missing': {
+      return Effect.fail(
         new CodexRuntimeError({
           cause: turnId,
           message: 'Codex completed without a final answer',
           operation: 'turn/output',
         }),
-      )
-    : Effect.succeed(output.finalAnswer);
+      );
+    }
+    case 'Pending': {
+      return Effect.fail(
+        new CodexRuntimeError({
+          cause: turnId,
+          message: 'Codex output was requested before turn completion',
+          operation: 'turn/output',
+        }),
+      );
+    }
+    default: {
+      const unexpected: never = output.final;
+      return Effect.fail(
+        new CodexRuntimeError({
+          cause: unexpected,
+          message: 'Codex returned an unrecognized final output state',
+          operation: 'turn/output',
+        }),
+      );
+    }
+  }
+};
 
 interface TurnNoticeTracker {
   readonly acknowledgementSeen: () => boolean;
@@ -94,7 +131,7 @@ const chainNotice = async (
 
 const makeTurnNoticeTracker = (
   context: EngineContext,
-  logicalTurnId: LogicalTurnId,
+  identity: TurnIdentity,
   turnId: CodexTurnId,
 ): TurnNoticeTracker => {
   let pending = Promise.resolve();
@@ -107,10 +144,10 @@ const makeTurnNoticeTracker = (
     handlers: {
       onAcknowledgement: (text): void => {
         acknowledgementSeen = true;
-        enqueue(acknowledgementEffect(context, logicalTurnId, turnId, text));
+        enqueue(acknowledgementEffect(context, identity, turnId, text));
       },
       onCompactionStarted: (itemId): void => {
-        enqueue(compactionNoticeEffect(context, itemId));
+        enqueue(compactionNoticeEffect(context, identity, turnId, itemId));
       },
     },
     wait: (): Promise<void> => pending,
@@ -119,26 +156,20 @@ const makeTurnNoticeTracker = (
 
 const deliverTurnOutput = (
   context: EngineContext,
-  logicalTurnId: LogicalTurnId,
+  identity: TurnIdentity,
   threadId: CodexThreadId,
   turnId: CodexTurnId,
   reconcile: boolean,
 ): Effect.Effect<void, unknown> =>
   Effect.gen(function* deliverOutput() {
-    const notices = makeTurnNoticeTracker(context, logicalTurnId, turnId);
+    const notices = makeTurnNoticeTracker(context, identity, turnId);
     const output = yield* resolvedOutput(context, threadId, turnId, notices.handlers, reconcile);
     if (!notices.acknowledgementSeen() && output.acknowledgement !== null) {
       notices.handlers.onAcknowledgement(output.acknowledgement);
     }
     yield* Effect.promise(notices.wait);
     const finalAnswer = yield* requireFinalAnswer(output, turnId);
-    yield* context.options.delivery.deliverAssistantMessage(
-      logicalTurnId,
-      turnId,
-      'Final',
-      finalAnswer,
-      context.now(),
-    );
+    yield* deliverTurnNotice(context, identity, turnId, 'Final', finalAnswer);
   });
 
 const runMonitor = async (
@@ -150,9 +181,7 @@ const runMonitor = async (
 ): Promise<void> => {
   try {
     try {
-      await Effect.runPromise(
-        deliverTurnOutput(context, identity.logicalTurnId, threadId, turnId, reconcile),
-      );
+      await Effect.runPromise(deliverTurnOutput(context, identity, threadId, turnId, reconcile));
     } catch (error) {
       if (!context.closing.value) {
         await Effect.runPromise(failTurn(context, identity, error));

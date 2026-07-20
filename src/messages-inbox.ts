@@ -7,6 +7,12 @@ import { ChatGuid, MessageGuid, MessagesRowId } from './domain/ids';
 import type { ObservedAttachment, ObservedMessage } from './domain/inbound';
 import { ConversationMismatchError, MessagesPermissionError, MessagesQueryError } from './errors';
 import { openValidatedMessagesDatabase, type MessagesDatabaseOptions } from './messages-database';
+import {
+  ATTACHMENT_QUERY,
+  FRONTIER_QUERY,
+  IDLE_FRONTIER_QUERY,
+  MESSAGE_QUERY,
+} from './messages-inbox-query';
 
 type MessagesInboxOptions = MessagesDatabaseOptions;
 
@@ -33,13 +39,18 @@ interface AttachmentRow {
 interface MessagesInboxHandle {
   readonly close: () => void;
   readonly frontier: Effect.Effect<MessagesRowId, MessagesPermissionError | MessagesQueryError>;
-  readonly observeAfter: (
+  readonly scanAfter: (
     cursor: MessagesRowId,
-  ) => Effect.Effect<readonly ObservedMessage[], MessagesPermissionError | MessagesQueryError>;
+  ) => Effect.Effect<InboxScan, MessagesPermissionError | MessagesQueryError>;
   readonly refresh: Effect.Effect<
     void,
     ConversationMismatchError | MessagesPermissionError | MessagesQueryError
   >;
+}
+
+interface InboxScan {
+  readonly frontier: MessagesRowId;
+  readonly messages: readonly ObservedMessage[];
 }
 
 interface TypedLength {
@@ -62,31 +73,6 @@ const ENCODED_LENGTH_BYTES = new Map<number, number>([
   [FOUR_BYTE_LENGTH, FOUR_BYTES],
   [EIGHT_BYTE_LENGTH, EIGHT_BYTES],
 ]);
-
-const ATTACHMENT_QUERY = `SELECT a.guid AS attachment_guid, a.filename, a.mime_type,
-  a.transfer_name, a.uti, a.total_bytes
-  FROM attachment a JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
-  WHERE maj.message_id = ? ORDER BY a.ROWID ASC`;
-const MESSAGE_QUERY = `SELECT m.ROWID AS rowid, m.guid AS message_guid, m.text,
-  m.attributedBody AS attributed_body, m.cache_has_attachments,
-  (m.date / 1000000.0) + 978307200000.0 AS unix_ms,
-  h.id AS handle_id, c.guid AS chat_guid
-  FROM message m
-  JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-  JOIN chat c ON c.ROWID = cmj.chat_id
-  JOIN handle h ON h.ROWID = m.handle_id
-  WHERE m.ROWID > ? AND c.guid = ? AND c.style = 45
-    AND m.is_from_me = 0 AND m.service = 'iMessage' AND lower(h.id) = lower(?)
-    AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
-  ORDER BY m.ROWID ASC`;
-const FRONTIER_QUERY = `SELECT COALESCE(MAX(m.ROWID), 0) AS rowid
-  FROM message m
-  JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-  JOIN chat c ON c.ROWID = cmj.chat_id
-  JOIN handle h ON h.ROWID = m.handle_id
-  WHERE c.guid = ? AND c.style = 45 AND m.is_from_me = 0 AND m.service = 'iMessage'
-    AND lower(h.id) = lower(?)
-    AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)`;
 
 const readTypedLength = (body: Uint8Array, plus: number): TypedLength => {
   const prefix = body[plus + 1] ?? 0;
@@ -161,10 +147,7 @@ const mapMessage = (
   row: MessageRow,
   attachmentQuery: Statement<AttachmentRow, [number]>,
 ): ObservedMessage => ({
-  attachments:
-    row.cache_has_attachments === 1
-      ? attachmentQuery.all(row.rowid).map((attachment) => attachmentFromRow(attachment))
-      : [],
+  attachments: attachmentQuery.all(row.rowid).map((attachment) => attachmentFromRow(attachment)),
   chatGuid: ChatGuid.make(row.chat_guid),
   handle: row.handle_id,
   isFromMe: false,
@@ -176,10 +159,9 @@ const mapMessage = (
 });
 
 interface InboxConnection {
-  readonly attachments: Statement<AttachmentRow, [number]>;
   readonly database: Database;
-  readonly frontier: Statement<{ rowid: number }, [string, string]>;
-  readonly messages: Statement<MessageRow, [number, string, string]>;
+  readonly frontier: Statement<{ rowid: number }, [number, string, string]>;
+  readonly scanAfter: (cursor: MessagesRowId, chatGuid: string, handle: string) => InboxScan;
 }
 
 interface InboxState {
@@ -187,12 +169,27 @@ interface InboxState {
   connection: InboxConnection;
 }
 
-const makeConnection = (database: Database): InboxConnection => ({
-  attachments: database.prepare<AttachmentRow, [number]>(ATTACHMENT_QUERY),
-  database,
-  frontier: database.prepare<{ rowid: number }, [string, string]>(FRONTIER_QUERY),
-  messages: database.prepare<MessageRow, [number, string, string]>(MESSAGE_QUERY),
-});
+const makeConnection = (database: Database): InboxConnection => {
+  const attachments = database.prepare<AttachmentRow, [number]>(ATTACHMENT_QUERY);
+  const idleFrontier = database.prepare<{ rowid: number }, [number, string]>(IDLE_FRONTIER_QUERY);
+  const messages = database.prepare<MessageRow, [number, string, string]>(MESSAGE_QUERY);
+  const scanAfter = database.transaction(
+    (cursor: MessagesRowId, chatGuid: string, handle: string): InboxScan => {
+      const observed = messages
+        .all(cursor, chatGuid, handle)
+        .map((row) => mapMessage(row, attachments));
+      const newest = observed.at(-1);
+      const frontier =
+        newest?.rowId ?? MessagesRowId.make(idleFrontier.get(cursor, chatGuid)?.rowid ?? cursor);
+      return { frontier, messages: observed };
+    },
+  );
+  return {
+    database,
+    frontier: database.prepare<{ rowid: number }, [number, string, string]>(FRONTIER_QUERY),
+    scanAfter,
+  };
+};
 
 const openDatabase = (options: MessagesInboxOptions): Database =>
   openValidatedMessagesDatabase(options);
@@ -224,15 +221,12 @@ const makeRefresh = (
 
 const makeInbox = (database: Database, options: MessagesInboxOptions): MessagesInboxHandle => {
   const state: InboxState = { closed: false, connection: makeConnection(database) };
-  const observeAfter = (
+  const scanAfter = (
     cursor: MessagesRowId,
-  ): Effect.Effect<readonly ObservedMessage[], MessagesPermissionError | MessagesQueryError> =>
+  ): Effect.Effect<InboxScan, MessagesPermissionError | MessagesQueryError> =>
     Effect.try({
-      catch: (cause) => accessError(options, 'observe-after', cause),
-      try: () =>
-        state.connection.messages
-          .all(cursor, options.chatGuid, options.handle)
-          .map((row) => mapMessage(row, state.connection.attachments)),
+      catch: (cause) => accessError(options, 'scan-after', cause),
+      try: () => state.connection.scanAfter(cursor, options.chatGuid, options.handle),
     });
   return {
     close: () => {
@@ -246,11 +240,11 @@ const makeInbox = (database: Database, options: MessagesInboxOptions): MessagesI
       catch: (cause) => accessError(options, 'frontier', cause),
       try: () =>
         MessagesRowId.make(
-          state.connection.frontier.get(options.chatGuid, options.handle)?.rowid ?? 0,
+          state.connection.frontier.get(0, options.chatGuid, options.handle)?.rowid ?? 0,
         ),
     }),
-    observeAfter,
     refresh: makeRefresh(state, options),
+    scanAfter,
   };
 };
 
@@ -284,4 +278,4 @@ const openMessagesInbox = Effect.fn('MessagesInbox.open')((options: MessagesInbo
 );
 
 export { decodeAttributedBody, openMessagesInbox };
-export type { MessagesInboxHandle, MessagesInboxOptions };
+export type { InboxScan, MessagesInboxHandle, MessagesInboxOptions };

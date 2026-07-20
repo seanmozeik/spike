@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * 1) Bundle `src/cli.ts` to minified `dist/<bin>`.
- * 2) Pack `artifacts/spike-{version}.tar.gz` for GitHub/Homebrew.
+ * 2) Pack the CLI runtime and public documentation for GitHub/Homebrew.
  * 3) SHA256 that tarball and patch `Formula/spike.rb` (`version` + `sha256`).
  *
  * Fast iteration (JS only, no tarball / formula):
@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import pkg from '../package.json' with { type: 'json' };
+import { updateFormula } from './release-formula';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const skipTarballAndFormula = process.argv.includes('--no-formula');
@@ -64,11 +65,12 @@ if (skipTarballAndFormula) {
 const archiveInner = `spike-${version}`;
 const stageRoot = path.join(root, 'artifacts', '.stage');
 const stageInner = path.join(stageRoot, archiveInner);
+const releaseEntries = ['dist', 'examples', 'LICENSE', 'package.json', 'README.md', 'SECURITY.md'];
 
 rmSync(stageRoot, { force: true, recursive: true });
-cpSync(distDir, path.join(stageInner, 'dist'), { recursive: true });
-cpSync(path.join(root, 'src'), path.join(stageInner, 'src'), { recursive: true });
-cpSync(path.join(root, 'package.json'), path.join(stageInner, 'package.json'));
+for (const entryName of releaseEntries) {
+  cpSync(path.join(root, entryName), path.join(stageInner, entryName), { recursive: true });
+}
 
 mkdirSync(path.join(root, 'artifacts'), { recursive: true });
 const tarName = `spike-${version}.tar.gz`;
@@ -90,12 +92,7 @@ const sha256 = new Bun.CryptoHasher('sha256')
   .digest('hex');
 
 const formulaPath = path.join(root, 'Formula', 'spike.rb');
-let rb = await Bun.file(formulaPath).text();
-rb = rb.replace(/^(?<prefix>\s*version\s+")[^"]+(?<suffix>")/mu, `$<prefix>${version}$<suffix>`);
-rb = rb.replace(
-  /^(?<prefix>\s*sha256\s+")[0-9a-fA-F]+(?<suffix>")/mu,
-  `$<prefix>${sha256}$<suffix>`,
-);
+const rb = updateFormula(await Bun.file(formulaPath).text(), { sha256, version });
 await Bun.write(formulaPath, rb);
 
 console.log(`Wrote ${tarPath}`);

@@ -24,6 +24,7 @@ export const ensureRuntimeLayout = Effect.fn('SpikeConfig.ensureRuntimeLayout')(
           paths.codexHome,
           paths.accounts,
           paths.state,
+          paths.attachments,
           paths.run,
           paths.logs,
         ];

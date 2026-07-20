@@ -14,6 +14,7 @@ import type { OnboardingPrompts } from '../src/onboarding/prompts';
 import { runOnboarding, type OnboardingServices } from '../src/onboarding/run';
 import type { ConversationCandidate, PersonalityAnswers } from '../src/onboarding/types';
 import { spikePaths, type SpikePaths } from '../src/paths';
+import { systemTimezone } from '../src/timezone';
 
 const roots: string[] = [];
 const conversation: ConversationCandidate = {
@@ -64,6 +65,7 @@ const fakePrompts = (events: string[]): OnboardingPrompts => ({
   },
   peerHandle: (): Promise<string> => Promise.resolve('Spike@iCloud.com'),
   personality: (): Promise<PersonalityAnswers> => Promise.resolve(personality),
+  preferredName: (): Promise<string> => Promise.resolve('Sean'),
   runTask: <A>(_title: string, task: (log: (message: string) => void) => Promise<A>): Promise<A> =>
     task((message) => {
       events.push(`log:${message}`);
@@ -154,11 +156,14 @@ it('installs and verifies a complete isolated onboarding flow', async () => {
     codexHome: paths.codexHome,
     handle: conversation.handle,
     likeAcknowledgements: false,
+    preferredName: 'Sean',
+    timezone: systemTimezone(),
     workingDirectory: '/tmp',
   });
   expect(readFileSync(paths.codexConfig, 'utf8')).toContain('model = "gpt-test"');
   expect(readFileSync(paths.codexConfig, 'utf8')).toContain('sandbox_mode = "workspace-write"');
   expect(readFileSync(paths.prompt, 'utf8')).toContain('trusted power tools');
+  expect(readFileSync(paths.prompt, 'utf8')).not.toContain('call them Sean');
   expect(readFileSync(path.join(paths.accounts, 'default', 'auth.json'), 'utf8')).toContain(
     'isolated',
   );
@@ -230,6 +235,10 @@ it('previews every configuration prompt without exposing live-system services', 
       events.push('personality');
       return prompts.personality();
     },
+    preferredName: () => {
+      events.push('name');
+      return prompts.preferredName();
+    },
     sandboxMode: () => {
       events.push('sandbox');
       return prompts.sandboxMode();
@@ -249,12 +258,15 @@ it('previews every configuration prompt without exposing live-system services', 
     'models:2',
     'approval',
     'sandbox',
+    'name',
     'context',
     'review',
     'finish:Preview complete. Nothing was changed.',
   ]);
   expect(reviewed).toContain('spike@icloud.com');
   expect(reviewed).toContain('gpt-test · high');
+  expect(reviewed).toContain('Name          Sean');
+  expect(reviewed).toContain(`Timezone      ${systemTimezone()}`);
 });
 
 it('retries the real conversation query after Full Disk Access is approved', async () => {
