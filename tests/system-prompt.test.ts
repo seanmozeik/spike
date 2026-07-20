@@ -70,7 +70,7 @@ describe('Spike system prompt', () => {
   });
 
   it.each([
-    ['off', 'Do not use emoji.'],
+    ['off', 'Never use emoji. Emoji are forbidden.'],
     ['on', 'Emoji are allowed when they fit naturally.'],
     ['after_user', 'Use emoji only after the user has used them.'],
   ] as const)('renders the %s emoji policy', (emoji, instruction) => {
@@ -95,7 +95,7 @@ describe('Spike system prompt', () => {
     ['off', 'Do not swear'],
     ['tasteful', 'Save it for the rare moment'],
     ['mirror', 'Match their level'],
-    ['filthy', 'Swearing is encouraged'],
+    ['filthy', 'Swearing is warmly encouraged'],
   ] as const)('renders the %s swearing policy', (swearing, instruction) => {
     expect(assembleSystemPrompt('', { ...personality, swearing })).toContain(instruction);
   });
