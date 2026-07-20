@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { type BigIntStats, closeSync, fstatSync, readSync } from 'node:fs';
+import path from 'node:path';
 
 import {
   AttachmentStagingPermissionError,
@@ -7,16 +8,21 @@ import {
   SafeStagingError,
 } from './errors';
 import { imageFormat } from './image-format';
-import type { AttachmentFailureCode, StagedImageAttachment } from './model';
+import type { AttachmentFailureCode, StagedAttachment } from './model';
 import { openAttachmentSource } from './source-access';
 import type { AttachmentStore } from './store';
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = Number('26214400');
+const DEFAULT_MAX_IMAGE_PIXELS = Number('40000000');
+const DEFAULT_FILE_EXTENSION = '.bin';
+const SAFE_EXTENSION = /^\.[a-z0-9]{1,16}$/u;
 
 interface AttachmentFileStagingOptions {
   readonly afterSourceStat?: (sourcePath: string) => void;
   readonly beforeSourceOpen?: (sourcePath: string) => void;
   readonly maxBytes?: number;
+  readonly mimeType?: null | string;
+  readonly sourceName?: null | string;
   readonly sourceRoot: string;
   readonly store: AttachmentStore;
 }
@@ -24,7 +30,7 @@ interface AttachmentFileStagingOptions {
 type StageResult =
   | { readonly code: AttachmentFailureCode; readonly kind: 'Rejected' }
   | { readonly kind: 'Retry' }
-  | ({ readonly kind: 'Staged' } & StagedImageAttachment & { readonly totalBytes: number });
+  | ({ readonly kind: 'Staged' } & StagedAttachment & { readonly totalBytes: number });
 
 type ReadResult = StageResult | { readonly bytes: Uint8Array; readonly kind: 'Read' };
 
@@ -100,10 +106,56 @@ const readSource = (
   }
 };
 
+const safeExtension = (sourceName: null | string | undefined): string => {
+  const extension = path.extname(sourceName ?? '').toLowerCase();
+  return SAFE_EXTENSION.test(extension) ? extension : DEFAULT_FILE_EXTENSION;
+};
+
+const convertedHeic = async (
+  bytes: Uint8Array,
+  maxBytes: number,
+): Promise<Extract<StageResult, { readonly kind: 'Rejected' }> | Uint8Array> => {
+  try {
+    const converted = await new Bun.Image(bytes, { maxPixels: DEFAULT_MAX_IMAGE_PIXELS })
+      .jpeg({ quality: 90 })
+      .bytes();
+    return converted.byteLength <= maxBytes ? converted : { code: 'oversize', kind: 'Rejected' };
+  } catch {
+    return { code: 'heic-unsupported', kind: 'Rejected' };
+  }
+};
+
+const stagedAttachment = (
+  bytes: Uint8Array,
+  extension: string,
+  mimeType: null | string,
+  store: AttachmentStore,
+): Extract<StageResult, { readonly kind: 'Staged' }> => {
+  const contentHash = createHash('sha256').update(bytes).digest('hex');
+  return {
+    contentHash,
+    kind: 'Staged',
+    mimeType,
+    path: store.persist(bytes, contentHash, extension),
+    totalBytes: bytes.byteLength,
+  };
+};
+
+const stageConvertedHeic = async (
+  bytes: Uint8Array,
+  maxBytes: number,
+  store: AttachmentStore,
+): Promise<StageResult> => {
+  const converted = await convertedHeic(bytes, maxBytes);
+  return converted instanceof Uint8Array
+    ? stagedAttachment(converted, '.jpg', 'image/jpeg', store)
+    : converted;
+};
+
 const stageAttachmentFile = (
   storedPath: string,
   options: AttachmentFileStagingOptions,
-): StageResult => {
+): Promise<StageResult> | StageResult => {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
     throw new SafeStagingError('attachment size limit is invalid');
@@ -113,17 +165,15 @@ const stageAttachmentFile = (
     return read;
   }
   const classification = imageFormat(read.bytes);
-  if (typeof classification === 'string') {
-    return { code: classification, kind: 'Rejected' };
+  if (classification === 'heic') {
+    return stageConvertedHeic(read.bytes, maxBytes, options.store);
   }
-  const contentHash = createHash('sha256').update(read.bytes).digest('hex');
-  return {
-    contentHash,
-    kind: 'Staged',
-    mimeType: classification.mimeType,
-    path: options.store.persist(read.bytes, contentHash, classification.extension),
-    totalBytes: read.bytes.byteLength,
-  };
+  const extension =
+    classification === null
+      ? safeExtension(options.sourceName ?? storedPath)
+      : classification.extension;
+  const mimeType = classification === null ? (options.mimeType ?? null) : classification.mimeType;
+  return stagedAttachment(read.bytes, extension, mimeType, options.store);
 };
 
 export { stageAttachmentFile };

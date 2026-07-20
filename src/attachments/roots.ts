@@ -5,9 +5,9 @@ interface AttachmentRoots {
   readonly attachmentStagingRoot: string;
 }
 
-const attachmentRoots = (messagesDatabase: string, stagingRoot: string): AttachmentRoots => ({
+const attachmentRoots = (messagesDatabase: string, workingDirectory: string): AttachmentRoots => ({
   attachmentSourceRoot: path.join(path.dirname(messagesDatabase), 'Attachments'),
-  attachmentStagingRoot: stagingRoot,
+  attachmentStagingRoot: path.join(workingDirectory, 'tmp', 'attachments'),
 });
 
 export { attachmentRoots };

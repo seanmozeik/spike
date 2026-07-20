@@ -148,7 +148,7 @@ const acquireEngine = Effect.fn('SpikeDaemon.acquireEngine')(function* acquireEn
     withConversationAvailability(transport, conversation),
   );
   return yield* makeSpikeEngine({
-    ...attachmentRoots(config.messagesDatabase, paths.attachments),
+    ...attachmentRoots(config.messagesDatabase, config.workingDirectory),
     chatGuid: config.chatGuid,
     conversation,
     database: journal.database,

@@ -1,7 +1,15 @@
-import { ATTACHMENTS_INBOUND_MESSAGE_INDEX } from './recovery-query';
+import {
+  ACCOUNT_OBSERVATIONS_LATEST_INDEX,
+  ACCOUNT_OBSERVATIONS_RETENTION_INDEX,
+  APPROVAL_PENDING_DELIVERED_INDEX,
+  APPROVAL_PENDING_REQUESTED_INDEX,
+  ATTACHMENTS_LEGACY_SAFE_INDEX,
+  FAILURES_RETENTION_INDEX,
+  OUTBOUND_RECOVERABLE_INDEX,
+} from './query-indexes';
 import { scheduleMigrationStatements } from './schedule-migration-statements';
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 
 const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -66,7 +74,7 @@ const migrationStatements = [
     payload_redacted_at TEXT
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS attachments_staged_path ON attachments(staged_path)`,
-  ATTACHMENTS_INBOUND_MESSAGE_INDEX,
+  ATTACHMENTS_LEGACY_SAFE_INDEX,
   `CREATE TABLE IF NOT EXISTS logical_turns (
     id TEXT PRIMARY KEY,
     generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE RESTRICT,
@@ -191,6 +199,8 @@ const migrationStatements = [
     reset_at TEXT,
     selected_at TEXT
   ) STRICT`,
+  ACCOUNT_OBSERVATIONS_LATEST_INDEX,
+  ACCOUNT_OBSERVATIONS_RETENTION_INDEX,
   `CREATE TABLE IF NOT EXISTS outage_episodes (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -209,6 +219,7 @@ const migrationStatements = [
     details_json TEXT,
     created_at TEXT NOT NULL
   ) STRICT`,
+  FAILURES_RETENTION_INDEX,
   `CREATE TABLE IF NOT EXISTS scheduler_state (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     generation_id TEXT NOT NULL REFERENCES generations(id) ON DELETE RESTRICT,
@@ -262,8 +273,8 @@ const migrationStatements = [
     payload_redacted_at TEXT,
     UNIQUE(connection_id, rpc_request_id_json)
   ) STRICT`,
-  `CREATE INDEX IF NOT EXISTS approval_pending_fifo
-    ON approval_requests(state, delivered_at, requested_at)`,
+  APPROVAL_PENDING_DELIVERED_INDEX,
+  APPROVAL_PENDING_REQUESTED_INDEX,
   `CREATE TABLE IF NOT EXISTS handled_approval_messages (
     inbound_message_id TEXT PRIMARY KEY REFERENCES inbound_messages(id) ON DELETE RESTRICT,
     approval_id TEXT REFERENCES approval_requests(id) ON DELETE RESTRICT,
@@ -271,6 +282,7 @@ const migrationStatements = [
     outcome TEXT NOT NULL CHECK(outcome IN ('Resolved','NoPending','Invalid')),
     handled_at TEXT NOT NULL
   ) STRICT`,
+  OUTBOUND_RECOVERABLE_INDEX,
   ...scheduleMigrationStatements,
 ] as const;
 

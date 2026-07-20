@@ -26,8 +26,11 @@ interface AttachmentStagingOptions {
 type AttachmentStagingRunOptions = Omit<AttachmentStagingOptions, 'stagingRoot'>;
 
 interface ObservedAttachmentRow {
+  readonly filename: string | null;
   readonly id: string;
+  readonly mime_type: string | null;
   readonly source_path: string | null;
+  readonly transfer_name: string | null;
 }
 
 const markRejected = (
@@ -66,12 +69,37 @@ const markStaged = (
   }
 };
 
+const transitionResult = (
+  database: Database,
+  options: AttachmentStagingRunOptions,
+  attachmentId: string,
+  result: StageResult,
+): boolean => {
+  if (result.kind === 'Retry') {
+    return false;
+  }
+  if (result.kind === 'Rejected') {
+    markRejected(database, attachmentId, result.code);
+    return true;
+  }
+  options.afterCopy?.(attachmentId);
+  markStaged(database, attachmentId, result);
+  return true;
+};
+
+const transitionAsyncAttachment = async (
+  database: Database,
+  options: AttachmentStagingRunOptions,
+  attachmentId: string,
+  result: Promise<StageResult>,
+): Promise<boolean> => transitionResult(database, options, attachmentId, await result);
+
 const transitionAttachment = (
   database: Database,
   options: AttachmentStagingRunOptions,
   store: AttachmentStore,
   attachment: ObservedAttachmentRow,
-): boolean => {
+): boolean | Promise<boolean> => {
   const result =
     attachment.source_path === null
       ? ({ code: 'missing-source', kind: 'Rejected' } as const)
@@ -83,19 +111,14 @@ const transitionAttachment = (
             ? {}
             : { beforeSourceOpen: options.beforeSourceOpen }),
           ...(options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes }),
+          mimeType: attachment.mime_type,
+          sourceName: attachment.transfer_name ?? attachment.filename,
           sourceRoot: options.sourceRoot,
           store,
         });
-  if (result.kind === 'Retry') {
-    return false;
-  }
-  if (result.kind === 'Rejected') {
-    markRejected(database, attachment.id, result.code);
-    return true;
-  }
-  options.afterCopy?.(attachment.id);
-  markStaged(database, attachment.id, result);
-  return true;
+  return result instanceof Promise
+    ? transitionAsyncAttachment(database, options, attachment.id, result)
+    : transitionResult(database, options, attachment.id, result);
 };
 
 const stagingFailure = (
@@ -120,47 +143,74 @@ const stagingFailure = (
   });
 };
 
+const observedAttachments = (database: Database): readonly ObservedAttachmentRow[] =>
+  database
+    .query<ObservedAttachmentRow, []>(
+      `SELECT attachment.id, attachment.filename, attachment.transfer_name,
+              attachment.mime_type, attachment.source_path
+       FROM attachments attachment
+       JOIN inbound_messages inbound ON inbound.id = attachment.inbound_message_id
+       WHERE attachment.state = 'Observed' AND inbound.source_kind = 'Messages'
+         AND inbound.payload_redacted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM input_batch_messages batch
+           WHERE batch.inbound_message_id = attachment.inbound_message_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM handled_control_messages control
+           WHERE control.inbound_message_id = attachment.inbound_message_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM handled_approval_messages approval
+           WHERE approval.inbound_message_id = attachment.inbound_message_id
+         )
+       ORDER BY attachment.created_at, attachment.ordinal, attachment.id`,
+    )
+    .all();
+
+const stageObservedAttachment = (
+  database: Database,
+  options: AttachmentStagingRunOptions,
+  store: AttachmentStore,
+  attachment: ObservedAttachmentRow,
+): Effect.Effect<boolean, AttachmentStagingPermissionError | JournalTransactionError> =>
+  Effect.try({
+    catch: stagingFailure,
+    try: () => transitionAttachment(database, options, store, attachment),
+  }).pipe(
+    Effect.flatMap((transition) =>
+      transition instanceof Promise
+        ? Effect.tryPromise({ catch: stagingFailure, try: () => transition })
+        : Effect.succeed(transition),
+    ),
+  );
+
 const makeStagePendingAttachments = (
   database: Database,
   options: AttachmentStagingRunOptions,
   store: AttachmentStore,
 ): Effect.Effect<number, AttachmentStagingPermissionError | JournalTransactionError> =>
-  Effect.try({
-    catch: stagingFailure,
-    try: () => {
-      let transitioned = auditStagedAttachmentReferences(database, store);
-      transitioned += reconcileClaimedObservedAttachments(database);
-      const observed = database
-        .query<ObservedAttachmentRow, []>(
-          `SELECT attachment.id, attachment.source_path
-               FROM attachments attachment
-               JOIN inbound_messages inbound ON inbound.id = attachment.inbound_message_id
-                   WHERE attachment.state = 'Observed'
-                     AND inbound.source_kind = 'Messages'
-                     AND inbound.payload_redacted_at IS NULL
-                 AND NOT EXISTS (
-                   SELECT 1 FROM input_batch_messages batch
-                   WHERE batch.inbound_message_id = attachment.inbound_message_id
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM handled_control_messages control
-                   WHERE control.inbound_message_id = attachment.inbound_message_id
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM handled_approval_messages approval
-                   WHERE approval.inbound_message_id = attachment.inbound_message_id
-                 )
-               ORDER BY attachment.created_at, attachment.ordinal, attachment.id`,
-        )
-        .all();
-      for (const attachment of observed) {
-        if (transitionAttachment(database, options, store, attachment)) {
-          transitioned += 1;
-        }
+  Effect.gen(function* stagePendingAttachments() {
+    let transitioned = yield* Effect.try({
+      catch: stagingFailure,
+      try: () =>
+        auditStagedAttachmentReferences(database, store) +
+        reconcileClaimedObservedAttachments(database),
+    });
+    const observed = yield* Effect.try({
+      catch: stagingFailure,
+      try: () => observedAttachments(database),
+    });
+    for (const attachment of observed) {
+      if (yield* stageObservedAttachment(database, options, store, attachment)) {
+        transitioned += 1;
       }
-      store.sweep(referencedStagedPaths(database));
-      return transitioned;
-    },
+    }
+    yield* Effect.try({
+      catch: stagingFailure,
+      try: () => store.sweep(referencedStagedPaths(database)),
+    });
+    return transitioned;
   });
 
 export { makeStagePendingAttachments };

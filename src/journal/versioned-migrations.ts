@@ -6,6 +6,7 @@ import {
   ensureInputBatchIdentityIndexes,
   migrateInputBatchIdentity,
 } from './input-batch-migration';
+import { HOT_QUERY_INDEXES } from './query-indexes';
 import { ATTACHMENTS_INBOUND_MESSAGE_INDEX } from './recovery-query';
 
 const DELIVERY_FRONTIER_VERSION = 5;
@@ -20,6 +21,7 @@ const ATTACHMENT_STAGING_VERSION = 15;
 const RECOVERY_QUERY_INDEX_VERSION = 16;
 const DURABLE_SCHEDULES_VERSION = 17;
 const TERMINAL_TURN_ATTEMPT_REPAIR_VERSION = 18;
+const HOT_QUERY_INDEX_VERSION = 19;
 
 const needsDurableScheduleInboundRebuild = (previousVersion: number): boolean =>
   previousVersion > 0 && previousVersion < DURABLE_SCHEDULES_VERSION;
@@ -253,6 +255,18 @@ const repairStaleTerminalTurnAttempts = (database: Database, previousVersion: nu
   }
 };
 
+const migrateHotQueryIndexes = (database: Database, previousVersion: number): void => {
+  if (previousVersion >= HOT_QUERY_INDEX_VERSION) {
+    return;
+  }
+  database.run('DROP INDEX IF EXISTS attachments_inbound_message');
+  database.run('DROP INDEX IF EXISTS approval_pending_fifo');
+  database.run('DROP INDEX IF EXISTS schedules_due');
+  for (const statement of HOT_QUERY_INDEXES) {
+    database.run(statement);
+  }
+};
+
 const applyVersionedMigrations = (database: Database, previousVersion: number): void => {
   migrateInitialSchema(database, previousVersion);
   migrateSchedulerSchema(database, previousVersion);
@@ -264,6 +278,7 @@ const applyVersionedMigrations = (database: Database, previousVersion: number): 
   migrateRecoveryQueryIndexes(database, previousVersion);
   migrateDurableSchedules(database, previousVersion);
   repairStaleTerminalTurnAttempts(database, previousVersion);
+  migrateHotQueryIndexes(database, previousVersion);
 };
 
 export { applyVersionedMigrations, needsDurableScheduleInboundRebuild };

@@ -18,40 +18,28 @@ import {
 import path from 'node:path';
 
 import { fileErrorCode, SafeStagingError } from './errors';
-import type { StagedImageAttachment } from './model';
 
 const OWNER_ONLY_DIRECTORY_MODE = 0o700;
 const OWNER_ONLY_FILE_MODE = 0o600;
 const FILE_MODE_MODULUS = 0x10_00n;
 const OWNER_ONLY_FILE_MODE_BIGINT = 0o600n;
 const SINGLE_LINK = 1n;
-const CAS_NAME = /^[a-f0-9]{64}\.(?:gif|jpg|png|webp)$/u;
+const CAS_NAME = /^[a-f0-9]{64}\.[a-z0-9]{1,16}$/u;
+const SAFE_EXTENSION = /^\.[a-z0-9]{1,16}$/u;
 const TEMPORARY_NAME = /^\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/u;
 
 interface AttachmentStore {
   readonly audit: (reference: AttachmentAuditReference) => boolean;
-  readonly persist: (
-    bytes: Uint8Array,
-    hash: string,
-    extension: '.gif' | '.jpg' | '.png' | '.webp',
-  ) => string;
+  readonly persist: (bytes: Uint8Array, hash: string, extension: string) => string;
   readonly remove: (stagedPath: string) => void;
   readonly sweep: (referencedPaths: readonly string[]) => number;
 }
 
 interface AttachmentAuditReference {
   readonly contentHash: string;
-  readonly mimeType: StagedImageAttachment['mimeType'];
   readonly path: string;
   readonly totalBytes: number;
 }
-
-const MIME_EXTENSION = {
-  'image/gif': '.gif',
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-  'image/webp': '.webp',
-} as const satisfies Record<StagedImageAttachment['mimeType'], string>;
 
 const syncPath = (target: string): void => {
   const descriptor = openSync(target, constants.O_RDONLY + constants.O_NOFOLLOW);
@@ -118,8 +106,13 @@ const auditPath = (root: string, reference: AttachmentAuditReference): null | st
     return null;
   }
   const candidate = path.resolve(reference.path);
-  const expected = path.join(root, `${reference.contentHash}${MIME_EXTENSION[reference.mimeType]}`);
-  return reference.path === candidate && candidate === expected ? candidate : null;
+  const basename = path.basename(candidate);
+  return reference.path === candidate &&
+    path.dirname(candidate) === root &&
+    CAS_NAME.test(basename) &&
+    basename.startsWith(`${reference.contentHash}.`)
+    ? candidate
+    : null;
 };
 
 const privateFile = (stat: BigIntStats): boolean =>
@@ -168,12 +161,10 @@ const audit = (root: string, reference: AttachmentAuditReference): boolean => {
   return valid;
 };
 
-const persist = (
-  root: string,
-  bytes: Uint8Array,
-  hash: string,
-  extension: '.gif' | '.jpg' | '.png' | '.webp',
-): string => {
+const persist = (root: string, bytes: Uint8Array, hash: string, extension: string): string => {
+  if (!SAFE_EXTENSION.test(extension)) {
+    throw new SafeStagingError('attachment extension is invalid');
+  }
   ensureRoot(root);
   const destination = directChild(root, path.join(root, `${hash}${extension}`));
   if (verifyExisting(destination, hash)) {

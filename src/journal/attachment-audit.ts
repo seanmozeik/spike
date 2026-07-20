@@ -3,37 +3,21 @@ import type { Database } from 'bun:sqlite';
 import { Effect } from 'effect';
 
 import { SafeStagingError } from '../attachments/errors';
-import type { StagedImageAttachment } from '../attachments/model';
 import type { AttachmentAuditReference, AttachmentStore } from '../attachments/store';
 import { JournalTransactionError } from '../errors';
 
 interface AttachmentReferenceRow {
   readonly content_hash: null | string;
   readonly id: string;
-  readonly mime_type: null | string;
   readonly staged_path: null | string;
   readonly state: 'Assigned' | 'Staged';
   readonly total_bytes: null | number;
 }
 
-const isStagedMimeType = (value: null | string): value is StagedImageAttachment['mimeType'] =>
-  value === 'image/gif' ||
-  value === 'image/jpeg' ||
-  value === 'image/png' ||
-  value === 'image/webp';
-
 const auditReference = (row: AttachmentReferenceRow): AttachmentAuditReference | null =>
-  row.content_hash === null ||
-  !isStagedMimeType(row.mime_type) ||
-  row.staged_path === null ||
-  row.total_bytes === null
+  row.content_hash === null || row.staged_path === null || row.total_bytes === null
     ? null
-    : {
-        contentHash: row.content_hash,
-        mimeType: row.mime_type,
-        path: row.staged_path,
-        totalBytes: row.total_bytes,
-      };
+    : { contentHash: row.content_hash, path: row.staged_path, totalBytes: row.total_bytes };
 
 const failIntegrityAudit = (database: Database, row: AttachmentReferenceRow): void => {
   const updated = database.run(
@@ -52,7 +36,7 @@ const auditStagedAttachmentReferences = (database: Database, store: AttachmentSt
   database.transaction((): number => {
     const rows = database
       .query<AttachmentReferenceRow, []>(
-        `SELECT id, state, staged_path, content_hash, total_bytes, mime_type
+        `SELECT id, state, staged_path, content_hash, total_bytes
          FROM attachments WHERE state IN ('Staged', 'Assigned') ORDER BY id`,
       )
       .all();

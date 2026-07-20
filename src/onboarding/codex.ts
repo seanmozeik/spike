@@ -98,6 +98,23 @@ const validateCodexConfiguration = (codexExecutable: string, codexHome: string):
 
 const tomlString = (value: string): string => JSON.stringify(value);
 
+const PRIVACY_CONFIG = [
+  '[analytics]',
+  'enabled = false',
+  '',
+  '[feedback]',
+  'enabled = false',
+  '',
+  '[history]',
+  'persistence = "none"',
+  '',
+  '[otel]',
+  'exporter = "none"',
+  'metrics_exporter = "none"',
+  'trace_exporter = "none"',
+  'log_user_prompt = false',
+].join('\n');
+
 const applyPolicy = (config: string, policy: string): string => {
   let insideTable = false;
   const preserved = config.split('\n').filter((line) => {
@@ -119,7 +136,7 @@ const renderCodexConfig = async (
     return applyPolicy(await readFile(setup.configPath, 'utf8'), policy);
   }
   if (setup.kind === 'skip') {
-    return `${policy}\n`;
+    return `${policy}\n${PRIVACY_CONFIG}\n`;
   }
   const lines = [
     `model = ${tomlString(setup.model)}`,
@@ -128,7 +145,7 @@ const renderCodexConfig = async (
     setup.serviceTier === null ? null : `service_tier = ${tomlString(setup.serviceTier)}`,
     policy,
   ];
-  return `${lines.filter((line): line is string => line !== null).join('\n')}\n`;
+  return `${lines.filter((line): line is string => line !== null).join('\n')}\n${PRIVACY_CONFIG}\n`;
 };
 
 const authenticateCodex = async (

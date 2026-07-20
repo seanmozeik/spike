@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { attachmentRoots } from '../src/attachments/roots';
 import { spikePaths } from '../src/paths';
 
 describe('spike paths', () => {
@@ -22,5 +23,14 @@ describe('spike paths', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it('stages model-visible attachments inside the configured working directory', () => {
+    expect(
+      attachmentRoots('/Users/test/Library/Messages/chat.db', '/Users/test/spike-work'),
+    ).toEqual({
+      attachmentSourceRoot: '/Users/test/Library/Messages/Attachments',
+      attachmentStagingRoot: '/Users/test/spike-work/tmp/attachments',
+    });
   });
 });

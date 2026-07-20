@@ -1,9 +1,11 @@
-import type { AttachmentFailureCode, StagedImageAttachment } from './model';
+import type { StagedImageAttachment } from './model';
 
 interface ImageFormat {
   readonly extension: '.gif' | '.jpg' | '.png' | '.webp';
   readonly mimeType: StagedImageAttachment['mimeType'];
 }
+
+type AttachmentImageFormat = 'heic' | ImageFormat | null;
 
 const JPEG_SIGNATURE = Buffer.from('FFD8FF', 'hex');
 const PNG_SIGNATURE = Buffer.from('89504E470D0A1A0A', 'hex');
@@ -20,7 +22,7 @@ const HEIC_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1']);
 const startsWithAt = (bytes: Uint8Array, prefix: Uint8Array, offset = 0): boolean =>
   prefix.every((value, index) => bytes[offset + index] === value);
 
-const imageFormat = (bytes: Uint8Array): AttachmentFailureCode | ImageFormat => {
+const imageFormat = (bytes: Uint8Array): AttachmentImageFormat => {
   if (startsWithAt(bytes, JPEG_SIGNATURE)) {
     return { extension: '.jpg', mimeType: 'image/jpeg' };
   }
@@ -38,10 +40,10 @@ const imageFormat = (bytes: Uint8Array): AttachmentFailureCode | ImageFormat => 
       bytes.subarray(BRAND_OFFSET, BRAND_OFFSET + FILE_TYPE_SIGNATURE.length),
     ).toString('ascii');
     if (HEIC_BRANDS.has(brand)) {
-      return 'heic-unsupported';
+      return 'heic';
     }
   }
-  return 'unsupported-type';
+  return null;
 };
 
 export { imageFormat };

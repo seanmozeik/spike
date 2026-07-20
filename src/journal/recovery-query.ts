@@ -1,8 +1,5 @@
 import { attachmentInputTextSql } from './attachment-input';
 
-const ATTACHMENTS_INBOUND_MESSAGE_INDEX = `CREATE INDEX IF NOT EXISTS attachments_inbound_message
-  ON attachments(inbound_message_id)`;
-
 const PENDING_INBOUND_QUERY = `SELECT im.id, im.text, im.observed_at,
        MAX(CASE WHEN a.state = 'Observed' THEN 1 ELSE 0 END) AS has_observed_attachment,
        ${attachmentInputTextSql} AS attachment_text
@@ -22,4 +19,5 @@ AND NOT EXISTS (
 GROUP BY im.id, im.text, im.observed_at, im.messages_rowid
 ORDER BY im.messages_rowid`;
 
-export { ATTACHMENTS_INBOUND_MESSAGE_INDEX, PENDING_INBOUND_QUERY };
+export { ATTACHMENTS_INBOUND_MESSAGE_INDEX } from './query-indexes';
+export { PENDING_INBOUND_QUERY };

@@ -1,3 +1,5 @@
+import { SCHEDULES_DUE_INDEX } from './query-indexes';
+
 const scheduleMigrationStatements = [
   `CREATE TABLE IF NOT EXISTS schedules (
     id TEXT PRIMARY KEY,
@@ -19,7 +21,7 @@ const scheduleMigrationStatements = [
       OR (kind = 'Recurring' AND one_shot_at IS NOT NULL AND rrule IS NOT NULL)
     )
   ) STRICT`,
-  `CREATE INDEX IF NOT EXISTS schedules_due ON schedules(state, next_due_at)`,
+  SCHEDULES_DUE_INDEX,
   `CREATE TABLE IF NOT EXISTS scheduled_runs (
     id TEXT PRIMARY KEY,
     schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE RESTRICT,

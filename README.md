@@ -102,6 +102,8 @@ The configured peer is trusted input. Spike accepts only inbound iMessages from 
 
 Other direct messages, group chats, SMS messages, and outbound messages do not enter the scheduler or Codex context. This boundary does not make malicious instructions from the configured peer safe; it defines who is allowed to instruct the agent.
 
+Incoming attachments are copied to `<working_directory>/tmp/attachments` with owner-only permissions before Codex sees them. JPEG, PNG, GIF, and WebP files are submitted as image inputs. Spike converts HEIC images to JPEG; PDFs, audio, and other files are included in the prompt by their absolute staged path. Each attachment is limited to 25 MiB, including the converted HEIC output.
+
 ## Configuration and examples
 
 Spike's own configuration lives at `~/.config/spike/config.toml`. Codex model, provider, MCP, hook, feature, approval, and sandbox settings belong under `~/.config/spike/codex-home/`.
@@ -143,6 +145,8 @@ The default home is `~/.config/spike`:
 | `state/spike.db`  | durable cursor, scheduler, approval, delivery, and recovery journal |
 | `logs/daemon.log` | bounded operator diagnostics                                        |
 | `run/spike.sock`  | owner-only local control socket                                     |
+
+Staged message attachments live under `<working_directory>/tmp/attachments`, outside the Spike home, so they remain reachable from the Codex working directory during recovery.
 
 The LaunchAgent is written to `~/Library/LaunchAgents/com.mozeik.spike.plist`. Runtime directories and sensitive files are owner-only. Eligible terminal payloads are redacted after 30 days; unresolved work remains until it is safe to reconcile or redact. Logs and the journal are local but can still contain sensitive operational context, so do not publish them.
 

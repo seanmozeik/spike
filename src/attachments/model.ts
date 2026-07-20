@@ -4,6 +4,12 @@ interface StagedImageAttachment {
   readonly path: string;
 }
 
+interface StagedAttachment {
+  readonly contentHash: string;
+  readonly mimeType: null | string;
+  readonly path: string;
+}
+
 type AttachmentFailureCode =
   | 'device-file'
   | 'heic-unsupported'
@@ -15,4 +21,4 @@ type AttachmentFailureCode =
   | 'symlink'
   | 'unsupported-type';
 
-export type { AttachmentFailureCode, StagedImageAttachment };
+export type { AttachmentFailureCode, StagedAttachment, StagedImageAttachment };

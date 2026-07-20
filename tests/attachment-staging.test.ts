@@ -116,19 +116,24 @@ const seedAttachment = (
     readonly guid?: string;
     readonly id: string;
     readonly inboundId: string;
+    readonly mimeType?: null | string;
     readonly ordinal?: number;
     readonly sourcePath: string | null;
+    readonly transferName?: null | string;
   },
 ): void => {
   database.run(
     `INSERT INTO attachments(
-       id, inbound_message_id, attachment_guid, state, filename, source_path, ordinal, created_at
-     ) VALUES (?, ?, ?, 'Observed', ?, ?, ?, ?)`,
+       id, inbound_message_id, attachment_guid, state, filename, transfer_name, mime_type,
+       source_path, ordinal, created_at
+     ) VALUES (?, ?, ?, 'Observed', ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.inboundId,
       input.guid ?? `guid-${input.id}`,
       input.sourcePath,
+      input.transferName ?? input.sourcePath,
+      input.mimeType ?? null,
       input.sourcePath,
       input.ordinal ?? 0,
       CREATED_AT,
@@ -140,6 +145,10 @@ const PNG = Buffer.from('89504E470D0A1A0A', 'hex');
 const JPEG = Buffer.from('FFD8FFD9', 'hex');
 const GIF = new TextEncoder().encode('GIF89a');
 const WEBP = Buffer.from('524946460000000057454250', 'hex');
+const VALID_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 
 it.effect('deduplicates the same Messages GUID across ingestion retries', () =>
   Effect.gen(function* guidRetry() {
@@ -377,7 +386,118 @@ it.effect('sweeps only strict temporary and unreferenced CAS names', () =>
   }),
 );
 
-it.effect('rejects traversal, symlinks, non-files, oversize data, HEIC, PDF, and documents', () =>
+it.effect('stages generic files and exposes their durable absolute paths to the model', () =>
+  Effect.gen(function* genericFiles() {
+    const fixture = yield* makeFixture();
+    seedInbound(fixture.database, 'inbound', 1, 'inspect these files');
+    const files = [
+      ['pdf', 'brief.PDF', 'application/pdf', new TextEncoder().encode('%PDF-1.7')],
+      ['audio', 'voice.m4a', 'audio/mp4', Buffer.from('00000018667479704d344120', 'hex')],
+      ['document', 'notes.docx', null, Buffer.from('504B0304', 'hex')],
+    ] as const;
+    for (const [ordinal, [id, name, mimeType, bytes]] of files.entries()) {
+      writeFileSync(path.join(fixture.messagesRoot, name), bytes);
+      seedAttachment(fixture.database, {
+        id,
+        inboundId: 'inbound',
+        mimeType,
+        ordinal,
+        sourcePath: name,
+        transferName: name,
+      });
+    }
+
+    expect(yield* stagePending(fixture)).toBe(files.length);
+    const rows = fixture.database
+      .query<{ mime_type: null | string; staged_path: string; total_bytes: number }, []>(
+        'SELECT mime_type, staged_path, total_bytes FROM attachments ORDER BY ordinal',
+      )
+      .all();
+    expect(rows.map(({ staged_path }) => path.extname(staged_path))).toStrictEqual([
+      '.pdf',
+      '.m4a',
+      '.docx',
+    ]);
+    expect(rows.map(({ mime_type }) => mime_type)).toStrictEqual([
+      'application/pdf',
+      'audio/mp4',
+      null,
+    ]);
+    for (const { staged_path: stagedPath } of rows) {
+      expect(path.isAbsolute(stagedPath)).toBe(true);
+      expect(path.dirname(stagedPath)).toBe(fixture.stagingRoot);
+      expect(lstatSync(stagedPath).mode % 0o1000).toBe(0o600);
+    }
+    expect(yield* stagePending(fixture)).toBe(0);
+    const { messages } = yield* makeListPendingInbound(fixture.database)(
+      MessagesRowId.make(0),
+      MessagesRowId.make(1),
+    );
+    expect(messages[0]?.attachments).toStrictEqual([]);
+    expect(messages[0]?.text).toBe(
+      [
+        'inspect these files',
+        `[Attachment available at ${rows[0]?.staged_path} (application/pdf)]`,
+        `[Attachment available at ${rows[1]?.staged_path} (audio/mp4)]`,
+        `[Attachment available at ${rows[2]?.staged_path}]`,
+      ].join('\n'),
+    );
+    const [pending] = messages;
+    if (pending === undefined) {
+      throw new Error('expected pending generic attachment message');
+    }
+    const scheduler = makeSchedulerJournal(fixture.database);
+    const state = yield* scheduler.loadOrCreate(new Date(CREATED_AT));
+    yield* scheduler.commitTransition(
+      { actions: [], state: { ...state, pool: [pending] } },
+      new Date(CREATED_AT),
+    );
+    expect((yield* scheduler.loadOrCreate(new Date(CREATED_AT))).pool[0]?.text).toBe(pending.text);
+    fixture.close();
+  }),
+);
+
+it.effect('converts HEIC images to bounded JPEG local-image inputs', () =>
+  Effect.gen(function* heicConversion() {
+    const fixture = yield* makeFixture();
+    seedInbound(fixture.database, 'inbound', 1, 'inspect this photo');
+    const heic = yield* Effect.promise(() =>
+      new Bun.Image(VALID_PNG, { maxPixels: 10 }).heic({ quality: 80 }).bytes(),
+    );
+    writeFileSync(path.join(fixture.messagesRoot, 'photo.heic'), heic);
+    seedAttachment(fixture.database, {
+      id: 'heic',
+      inboundId: 'inbound',
+      mimeType: 'image/heic',
+      sourcePath: 'photo.heic',
+    });
+
+    expect(yield* stagePending(fixture)).toBe(1);
+    const row = fixture.database
+      .query<
+        { content_hash: string; mime_type: string; staged_path: string; total_bytes: number },
+        []
+      >('SELECT content_hash, mime_type, staged_path, total_bytes FROM attachments')
+      .get();
+    expect(row?.mime_type).toBe('image/jpeg');
+    expect(row?.staged_path).toMatch(/[a-f0-9]{64}\.jpg$/u);
+    expect(readFileSync(row?.staged_path ?? '').subarray(0, 3)).toStrictEqual(
+      Buffer.from('FFD8FF', 'hex'),
+    );
+    expect(row?.total_bytes).toBe(lstatSync(row?.staged_path ?? '').size);
+    const { messages } = yield* makeListPendingInbound(fixture.database)(
+      MessagesRowId.make(0),
+      MessagesRowId.make(1),
+    );
+    expect(messages[0]?.text).toBe('inspect this photo\n[Image attachment (image/jpeg)]');
+    expect(messages[0]?.attachments).toStrictEqual([
+      { contentHash: row?.content_hash, mimeType: 'image/jpeg', path: row?.staged_path },
+    ]);
+    fixture.close();
+  }),
+);
+
+it.effect('rejects traversal, symlinks, non-files, oversize data, and invalid HEIC', () =>
   Effect.gen(function* rejectedInputs() {
     const fixture = yield* makeFixture();
     seedInbound(fixture.database, 'inbound', 1, null);
@@ -393,19 +513,12 @@ it.effect('rejects traversal, symlinks, non-files, oversize data, HEIC, PDF, and
       path.join(fixture.messagesRoot, 'photo.heic'),
       new TextEncoder().encode('\0\0\0\0ftypheic'),
     );
-    writeFileSync(
-      path.join(fixture.messagesRoot, 'file.pdf'),
-      new TextEncoder().encode('%PDF-1.7'),
-    );
-    writeFileSync(path.join(fixture.messagesRoot, 'file.docx'), Buffer.from('504B0304', 'hex'));
     const cases = [
       ['traversal', '../outside.png', 'outside-messages-root'],
       ['symlink', 'link.png', 'symlink'],
       ['directory', 'directory', 'device-file'],
       ['oversize', 'large.bin', 'oversize'],
       ['heic', 'photo.heic', 'heic-unsupported'],
-      ['pdf', 'file.pdf', 'unsupported-type'],
-      ['document', 'file.docx', 'unsupported-type'],
       ['missing', null, 'missing-source'],
     ] as const;
     for (const [ordinal, [id, sourcePath]] of cases.entries()) {

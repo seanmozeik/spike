@@ -157,7 +157,7 @@ const preferredNamePrompt = async (): Promise<string> =>
   unwrap(
     await clack.text({
       message: 'What would you like Spike to call you?',
-      placeholder: 'Sean',
+      placeholder: 'John Appleseed',
       validate: (value) =>
         (value ?? '').trim().length === 0 ? 'Enter the name Spike should use' : undefined,
     }),

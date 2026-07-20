@@ -120,13 +120,46 @@ it('overrides policy in a custom Codex config without duplicate TOML keys', asyn
     sandbox_mode: 'read-only',
   });
   expect(rendered.match(/approval_policy/gu)).toHaveLength(1);
+  expect(rendered).not.toContain('[analytics]');
 });
 
-it('renders the interactive approval policy selected during onboarding', async () => {
+it('renders policy and privacy defaults for generated Codex configs', async () => {
   const rendered = await renderCodexConfig({ kind: 'skip' }, 'on-request', 'workspace-write');
   expect(Bun.TOML.parse(rendered)).toMatchObject({
+    analytics: { enabled: false },
     approval_policy: 'on-request',
+    feedback: { enabled: false },
+    history: { persistence: 'none' },
+    otel: {
+      exporter: 'none',
+      log_user_prompt: false,
+      metrics_exporter: 'none',
+      trace_exporter: 'none',
+    },
     sandbox_mode: 'workspace-write',
+  });
+  expect(rendered).not.toContain('responses_websockets');
+});
+
+it('keeps privacy defaults alongside generated OpenAI model settings', async () => {
+  const rendered = await renderCodexConfig(
+    {
+      kind: 'openai',
+      model: 'gpt-test',
+      personality: 'pragmatic',
+      reasoning: 'high',
+      serviceTier: 'fast',
+    },
+    'never',
+    'danger-full-access',
+  );
+  expect(Bun.TOML.parse(rendered)).toMatchObject({
+    analytics: { enabled: false },
+    feedback: { enabled: false },
+    history: { persistence: 'none' },
+    model: 'gpt-test',
+    otel: { exporter: 'none', log_user_prompt: false },
+    service_tier: 'fast',
   });
 });
 

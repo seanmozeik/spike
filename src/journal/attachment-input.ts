@@ -13,8 +13,12 @@ const attachmentInputTextSql = `GROUP_CONCAT(
     WHEN a.state = 'Failed' AND a.failure_code = 'legacy-claimed' THEN
       '[Attachment: ' || COALESCE(a.filename, a.transfer_name, a.attachment_guid) ||
       CASE WHEN a.mime_type IS NULL THEN '' ELSE ' (' || a.mime_type || ')' END || ']'
-    WHEN a.state IN ('Staged', 'Assigned') THEN
+    WHEN a.state IN ('Staged', 'Assigned') AND
+         a.mime_type IN ('image/jpeg', 'image/png', 'image/gif', 'image/webp') THEN
       '[Image attachment (' || COALESCE(a.mime_type, 'unknown') || ')]'
+    WHEN a.state IN ('Staged', 'Assigned') THEN
+      '[Attachment available at ' || a.staged_path ||
+      CASE WHEN a.mime_type IS NULL THEN '' ELSE ' (' || a.mime_type || ')' END || ']'
     WHEN a.state = 'Failed' THEN
       '[Attachment rejected: ' || COALESCE(a.failure_code, 'unsupported-type') || ']'
     ELSE NULL

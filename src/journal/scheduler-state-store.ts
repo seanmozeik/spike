@@ -11,7 +11,11 @@ import {
 import { SCHEDULE_CONFIGURATION_VERSION } from '../schedule/configuration';
 import type { PooledMessage, SchedulerState } from '../scheduler/model';
 import { poolDeadline } from '../scheduler/transition';
-import { readStagedImages } from './attachment-input';
+import {
+  attachmentInputTextSql,
+  readStagedImages,
+  renderPersistedInputText,
+} from './attachment-input';
 import { insertCurrentGeneration } from './scheduler-generation';
 
 interface SchedulerRow {
@@ -25,6 +29,7 @@ interface SchedulerRow {
 }
 
 interface PoolRow {
+  readonly attachment_text: null | string;
   readonly id: string;
   readonly observed_at: string;
   readonly text: null | string;
@@ -82,9 +87,11 @@ const writeSchedulerState = (
 const readPool = (database: Database): readonly PooledMessage[] =>
   database
     .query<PoolRow, []>(
-      `SELECT im.id, im.text, im.observed_at
+      `SELECT im.id, im.text, im.observed_at, ${attachmentInputTextSql} AS attachment_text
        FROM scheduler_pool_messages spm
        JOIN inbound_messages im ON im.id = spm.inbound_message_id
+       LEFT JOIN attachments a ON a.inbound_message_id = im.id
+       GROUP BY im.id, im.text, im.observed_at, spm.ordinal
        ORDER BY spm.ordinal`,
     )
     .all()
@@ -92,7 +99,7 @@ const readPool = (database: Database): readonly PooledMessage[] =>
       attachments: readStagedImages(database, row.id),
       id: InboundMessageId.make(row.id),
       receivedAt: new Date(row.observed_at),
-      text: row.text ?? '',
+      text: renderPersistedInputText({ attachmentText: row.attachment_text, text: row.text }),
     }));
 
 const readSchedulerState = (database: Database, generationId: GenerationId): SchedulerState => {
