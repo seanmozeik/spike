@@ -1,6 +1,6 @@
 # Security and privacy
 
-Spike deliberately connects a highly capable local agent to iMessage. Its security model is a narrow identity boundary around a powerful configured user, not a sandboxed chatbot for untrusted strangers.
+Spike deliberately connects a highly capable local agent to iMessage. Its security model is a narrow identity boundary around a powerful configured user. Do not allow strangers to connect to it.
 
 ## Trust model
 
@@ -36,4 +36,4 @@ Spike itself is local. Codex and any configured provider, MCP server, hook, or c
 
 Open a [minimal security report](https://github.com/seanmozeik/spike/issues/new) with the affected version, macOS version, installation channel, and a request for a private follow-up channel. Do not put the reproduction, live secrets, personal message contents, credentials, or private paths in the public issue.
 
-Only the latest published Spike release is supported for security fixes. This project is not affiliated with or endorsed by Apple, OpenAI, Nintendo, or any other third party.
+Only the latest published Spike release is supported for security fixes. This project is not affiliated with or endorsed by Apple, OpenAI, or any other third party.

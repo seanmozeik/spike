@@ -1,20 +1,21 @@
 # Spike
 
-Spike runs one Codex conversation from one direct iMessage chat on your Mac. The configured peer can be your own address or a separate Apple ID you control.
+Spike is an open-source take on the Interaction Company's Poke - the always-on iMessage agent with a personality. It's powered by the Codex App Server.
+Spike runs one Codex conversation from one direct chat on your Mac. The configured peer can be your own address or a separate Apple ID you control.
 
-Spike is a local power tool, not a hosted bot. It can give Codex access to your files, local commands, credentials, MCP servers, and hooks. Read [Security and privacy](SECURITY.md) before installing it.
+Spike is a local power tool: it has all the power, features and security of the Codex harness, and can access to your files, run local commands, configure credentials, call MCP servers, and use hooks. Read [Security and privacy](SECURITY.md) before installing it.
 
 ## Supported release
 
-The packaged `0.0.1` release targets Apple Silicon on macOS 26 or newer. Intel Macs and older macOS releases are not supported by the current archive because it contains an arm64 native helper. Spike also requires:
+The packaged release targets Apple Silicon on macOS 26 or newer. Intel Macs and older macOS releases are not supported by the current archive because it contains an arm64 native helper. Spike also requires:
 
 - [Bun](https://bun.com/docs/installation) 1.3 or newer;
 - the [Codex CLI](https://developers.openai.com/codex/cli);
 - Messages signed in to iMessage;
-- one direct, one-participant iMessage conversation; and
+- one direct, single-participant iMessage conversation; and
 - Xcode Command Line Tools when building from source.
 
-Spike is not affiliated with or endorsed by Apple, OpenAI, Nintendo, or any other third party.
+Spike is not affiliated with or endorsed by Apple, OpenAI, or any other third party.
 
 ## Permissions to understand first
 
@@ -24,49 +25,27 @@ Spike does not request these permissions until onboarding is applied, but a work
 - **Automation → Messages** for that Bun executable, so it can send replies; and
 - optional **Accessibility** access for `spike-like`, if Like acknowledgements are enabled.
 
-macOS grants privacy permissions to a particular executable. Homebrew or Bun upgrades can replace that executable and require a renewed grant. `spike doctor` reports missing access without changing it.
+macOS grants privacy permissions to a particular executable. Homebrew or Bun upgrades can replace that executable and require a renewed grant. `spike doctor` reports missing access without changing it. When Bun itself is updated, it will need those permissions to be re-granted.
 
 ## Install a published release
 
-The release archive and Homebrew formula use the same version, executable name, and checksum. The formula is the supported default:
+The current supported install method is via Bun:
 
-```nu
-brew tap seanmozeik/spike https://github.com/seanmozeik/spike.git
-brew install seanmozeik/spike/spike
-spike --version
+```bash
+bun install -g @seanmozeik/spike
 ```
-
-To inspect the matching archive instead of installing the formula:
-
-```nu
-let version = "0.0.1"
-let archive = $"spike-($version).tar.gz"
-curl -fL -o $archive $"https://github.com/seanmozeik/spike/releases/download/v($version)/($archive)"
-tar -xzf $archive
-^$"./spike-($version)/dist/spike" --version
-```
-
-The package metadata names `@seanmozeik/spike`, but registry installation is not a supported channel until that package is published. Do not install similarly named packages.
 
 ## Configure and start
 
-Preview every onboarding prompt without preflight, permission prompts, authentication, filesystem writes, LaunchAgent changes, or Messages access:
-
-```nu
-spike init --preview
-```
-
 Apply a new installation:
 
-```nu
+```bash
 spike init
 ```
 
 Onboarding selects the direct conversation, working directory, response style, model, reasoning settings, service tier, approval policy, sandbox, and optional personal context. OpenAI authentication uses device login inside Spike's isolated Codex home. Spike does not copy your normal Codex authentication or configuration.
 
 Nothing is installed before the review screen is confirmed. Apply writes the configuration, installs the user LaunchAgent, runs diagnostics, and waits for a real round trip in the configured conversation. A failed first installation removes the state it created.
-
-`spike init` is for a new installation. It is not a repair or reconfiguration command.
 
 ## Operate Spike
 
@@ -92,9 +71,9 @@ spike status
 
 ## Approval and sandbox choices
 
-For unattended use, onboarding offers `approval_policy = "never"` with `sandbox_mode = "danger-full-access"`. That combination is powerful: Codex can act without asking again inside the trust boundary described below.
+For unattended use, onboarding offers `approval_policy = "never"` with `sandbox_mode = "danger-full-access"`. That combination is powerful: Codex can act without asking again inside the trust boundary described below. This mode is recommended to be combined with hooks to prevent accidents from happening.
 
-Choose `on-request` to route supported Codex permission requests to iMessage. Spike persists one request at a time. Reply with exactly `/yes` or `/no`; extra prose is rejected, requests expire after ten minutes, and a failed delivery or Codex connection fails closed. Approval does not create a session-wide grant.
+Choose `on-request` to route supported Codex permission requests to iMessage. Spike persists one request at a time. Reply with exactly `/yes` or `/no`; extra prose is rejected, requests expire after ten minutes, and a failed delivery or Codex connection fails closed.
 
 ## Conversation trust boundary
 
@@ -122,8 +101,6 @@ Provider secrets stay in the provider's named environment variable or its own au
 Upgrade through the same channel used to install Spike, then rewrite the LaunchAgent so it points at the new release:
 
 ```nu
-brew update
-brew upgrade seanmozeik/spike/spike
 spike restart
 spike doctor
 ```
@@ -155,12 +132,13 @@ Spike uses its journal to recover persisted work after daemon or app-server rest
 ## Known limits
 
 - Spike runs as a user LaunchAgent. It is unavailable before login and while the Mac is off or asleep.
-- A locked session can interrupt Messages or Accessibility automation. Like acknowledgement degrades independently and does not block the final text reply.
+- A locked session interrupts Accessibility automation. Like acknowledgement degrades independently and does not block text replies.
 - Spike depends on the installed Codex app-server protocol. Upgrade Codex deliberately and run `spike doctor` plus a bounded self-chat check afterward.
-- Provider authentication and rate limits remain external constraints. Spike reports account state, but it cannot create capacity or run in the cloud while the Mac is unavailable.
-- This release has no GUI, remote administration surface, arbitrary multi-user routing, or guarantee that every third-party MCP server or hook is safe.
+- Provider authentication and rate limits remain external constraints.
 
 ## Development and release
+
+Spike is written entirely in Effect v4 typescript.
 
 ```nu
 bun install
@@ -175,7 +153,5 @@ Create the versioned archive and update its formula checksum with:
 ```nu
 bun run build
 ```
-
-The public repository is a sanitized source snapshot. Building and testing require no private credentials, account snapshots, Messages database, logs, Vault, Shim, or personal configuration.
 
 Spike is licensed under the [MIT License](LICENSE).
