@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { Effect, Result } from 'effect';
 
 import { recordUnavailableAccount } from '../codex/account-observation';
-import { compactError } from '../delivery/service';
 import { GenerationId, LogicalTurnId as LogicalTurnIdSchema } from '../domain/ids';
+import { safeErrorDiagnostic } from '../error-message';
 import { isGenerationBroken } from '../errors';
 import type { SchedulerState, TurnIdentity } from '../scheduler/model';
 import { ownsActiveTurn } from '../scheduler/ownership';
@@ -53,7 +53,7 @@ const deliverFailure = (
     const delivered = yield* Effect.result(
       context.options.delivery.deliverFailureNotice(
         obligation.identity.logicalTurnId,
-        `Spike hit an error: ${compactError(obligation.error)}`,
+        `Spike hit an error: ${safeErrorDiagnostic(obligation.error)}`,
         context.now(),
       ),
     );

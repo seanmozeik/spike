@@ -12,7 +12,7 @@ import { MessagesDeliveryError } from '../src/delivery/error';
 import { makeDeliveryJournal } from '../src/delivery/journal';
 import { textsMatch, type MessagesTransport } from '../src/delivery/messages-transport';
 import type { DeliveryJournal, PreparedTurnNotice, TurnNoticeKind } from '../src/delivery/model';
-import { compactError, makeDeliveryService, type DeliveryService } from '../src/delivery/service';
+import { makeDeliveryService, type DeliveryService } from '../src/delivery/service';
 import { GenerationId, InboundMessageId, LogicalTurnId } from '../src/domain/ids';
 import { makeSchedulerJournal } from '../src/journal/scheduler-journal';
 import type { TurnIdentity } from '../src/scheduler/model';
@@ -27,12 +27,6 @@ afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { force: true, recursive: true });
   }
-});
-
-it('redacts credential-like values and collapses multiline errors', () => {
-  expect(compactError(new Error('Bearer secret-token\nsk-abcdefghijk failed'))).toBe(
-    '[redacted] [redacted] failed',
-  );
 });
 
 it('reconciles a long outgoing message from a control-prefixed attributed-body fragment', () => {

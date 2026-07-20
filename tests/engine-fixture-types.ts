@@ -8,6 +8,7 @@ import type { ConversationPolicy } from '../src/conversation-policy';
 import type { JournalHandle } from '../src/database';
 import type { ObservedMessage } from '../src/domain/inbound';
 import type { LikeAcknowledgement } from '../src/like/adapter';
+import type { FailureLog } from '../src/logging/failure-log';
 import type { MessagesInboxHandle } from '../src/messages-inbox';
 import type { OpenMessagesWatcher } from '../src/messages-watcher';
 import type { SpikeEngine } from '../src/service/engine';
@@ -44,6 +45,7 @@ interface EngineFixtureOptions {
   readonly behavior?: TurnBehavior;
   readonly conversationProbe?: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs?: number;
+  readonly failureLog?: FailureLog;
   readonly idleFrontier?: number;
   readonly inbox?: MessagesInboxHandle;
   readonly inboxScanFailures?: number;

@@ -6,6 +6,7 @@ import { TestClock } from 'effect/testing';
 import { expect, vi } from 'vitest';
 
 import type { CodexServerRequest } from '../src/codex/server-request-registry';
+import { makeFailureLog } from '../src/logging/failure-log';
 import { CHAT_GUID, inbound, makeEngineFixture, type EngineFixture } from './engine-fixture';
 import { makeWatcherHarness } from './messages-watcher-harness';
 
@@ -158,7 +159,13 @@ it.effect('queues one follow-up pass when the inbox becomes dirty during a scan'
 
 it.effect('retries a failed inbox scan without another filesystem event', () =>
   Effect.gen(function* retryFailedScan() {
+    const failureLogs: string[] = [];
     const fixture = yield* makeEngineFixture({
+      failureLog: makeFailureLog({
+        write: (line) => {
+          failureLogs.push(line);
+        },
+      }),
       inboxScanFailures: 1,
       phaseRetryMs: 10,
       preexisting: [inbound(1, 'retry after scan failure')],
@@ -177,6 +184,9 @@ it.effect('retries a failed inbox scan without another filesystem event', () =>
       expect(fixture.inboxScans).toBe(1);
     });
     expect(fixture.inputs).toStrictEqual([]);
+    expect(failureLogs).toStrictEqual([
+      '2026-07-14T12:00:00.000Z [error] engine MessagesQueryError: scripted inbox scan failure',
+    ]);
 
     yield* TestClock.adjust('10 millis');
     yield* waitFor(() => {

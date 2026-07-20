@@ -7,8 +7,9 @@ import type { ApprovalManager } from '../approval/manager';
 import type { AttachmentStagingPolicy } from '../attachments/staging-policy';
 import type { CodexRuntime } from '../codex/runtime';
 import type { ConversationPolicy } from '../conversation-policy';
-import { compactError, type DeliveryService } from '../delivery/service';
+import type { DeliveryService } from '../delivery/service';
 import type { ChatGuid, MessagesRowId } from '../domain/ids';
+import { safeErrorDiagnostic, safeErrorTag } from '../error-message';
 import {
   SpikeRuntimeError,
   type WaitingForAuthentication,
@@ -18,6 +19,7 @@ import type { CodexJournal } from '../journal/codex-journal';
 import type { SchedulerJournal } from '../journal/scheduler-journal';
 import type { Journal } from '../journal/service';
 import type { LikeAcknowledgement } from '../like/adapter';
+import type { FailureLog } from '../logging/failure-log';
 import type { MessagesInboxHandle } from '../messages-inbox';
 import type { OpenMessagesWatcher } from '../messages-watcher';
 import type { ScheduleJournal } from '../schedule/journal';
@@ -37,6 +39,7 @@ interface SpikeEngineOptions {
   readonly conversation: ConversationPolicy;
   readonly database: Database;
   readonly delivery: DeliveryService;
+  readonly failureLog?: FailureLog;
   readonly handle: string;
   readonly inbox: MessagesInboxHandle;
   readonly like: LikeAcknowledgement;
@@ -65,6 +68,7 @@ interface EngineContext {
   readonly conversationReady: { value: boolean };
   readonly controllerReady: PromiseWithResolvers<SchedulerController>;
   readonly journal: Journal;
+  readonly failureLog: FailureLog;
   readonly loopDiagnostics: EventLoopCounters;
   readonly lastAccountObservationAt: { value: Date };
   readonly lastRedactionAt: { value: Date };
@@ -84,24 +88,29 @@ interface EngineContext {
   readonly wakes: EngineWakeHub;
 }
 
-const statusError = (cause: unknown): SpikeRuntimeError =>
-  new SpikeRuntimeError({ cause, message: compactError(cause), operation: 'status/render' });
+interface FailureReportContext {
+  readonly failureLog: FailureLog;
+  readonly now: () => Date;
+  readonly options: { readonly database: Database };
+}
 
-const report = (context: EngineContext, error: unknown): void => {
+const statusError = (cause: unknown): SpikeRuntimeError =>
+  new SpikeRuntimeError({ cause, message: safeErrorDiagnostic(cause), operation: 'status/render' });
+
+const report = (context: FailureReportContext, error: unknown): void => {
+  const at = context.now();
+  const message = safeErrorDiagnostic(error);
+  const tag = safeErrorTag(error);
   try {
     context.options.database.run(
       `INSERT INTO failures(correlation_id, operation, error_tag, message, details_json, created_at)
        VALUES (?, 'engine', ?, ?, NULL, ?)`,
-      [
-        randomUUID(),
-        error instanceof Error ? error.name : 'UnknownError',
-        compactError(error),
-        context.now().toISOString(),
-      ],
+      [randomUUID(), tag, message, at.toISOString()],
     );
   } catch {
-    // The primary failure remains available through stderr/app-server logs.
+    // The diagnostic sink below still receives the primary failure.
   }
+  context.failureLog.report({ at, errorTag: tag, message, operation: 'engine' });
 };
 
 const controlReplyText = (
@@ -119,7 +128,7 @@ const controlReplyText = (
       return rendered.success;
     }
     report(context, rendered.failure);
-    return `Spike hit an error: ${compactError(rendered.failure)}`;
+    return `Spike hit an error: ${safeErrorDiagnostic(rendered.failure)}`;
   });
 };
 

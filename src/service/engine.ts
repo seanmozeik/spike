@@ -6,6 +6,7 @@ import { makeAttachmentDiagnostic } from '../journal/attachment-diagnostic';
 import { makeCodexJournal } from '../journal/codex-journal';
 import { makeSchedulerJournal } from '../journal/scheduler-journal';
 import { makeJournal } from '../journal/service';
+import { makeFailureLog } from '../logging/failure-log';
 import type { MessagesWatcher, MessagesWatcherDiagnostics } from '../messages-watcher';
 import { makeScheduleJournal } from '../schedule/journal';
 import { systemScheduleRequestScheduler } from '../schedule/pending-tool-calls';
@@ -97,6 +98,7 @@ const makeContext = (
     codexJournal: makeCodexJournal(options.database),
     controllerReady: Promise.withResolvers<SchedulerController>(),
     conversationReady: { value: false },
+    failureLog: options.failureLog ?? makeFailureLog(),
     journal,
     lastAccountObservationAt: { value: new Date(0) },
     lastRedactionAt: { value: now() },
@@ -141,7 +143,6 @@ const openEngineWatcher = (
     onError: (error) => {
       mark(context.loopDiagnostics.watcherFailures, context.now());
       report(context, error);
-      process.stderr.write(`Messages watcher failed: ${error.message}\n`);
     },
     onEvent: (event) => {
       mark(context.loopDiagnostics.filesystemEvents, context.now());

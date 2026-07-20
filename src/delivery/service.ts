@@ -1,6 +1,7 @@
 import { Effect, Result } from 'effect';
 
 import type { DeliveryAttemptId, LogicalTurnId, OutageEpisodeId } from '../domain/ids';
+import { safeErrorDiagnostic } from '../error-message';
 import type { JournalTransactionError } from '../errors';
 import { MessagesDeliveryError } from './error';
 import type { DeliveryReceipt, MessagesTransport } from './messages-transport';
@@ -31,7 +32,6 @@ interface DeliveryService {
   readonly prepareTurnNotice: DeliveryJournal['prepareTurnNotice'];
 }
 
-const ERROR_PREVIEW_LIMIT = 300;
 const CONFIRMATION_POLLS = 20;
 
 const confirmationTimeout = (): MessagesDeliveryError =>
@@ -40,16 +40,6 @@ const confirmationTimeout = (): MessagesDeliveryError =>
     message: 'Messages delivery could not be confirmed',
     operation: 'confirm',
   });
-
-const compactError = (error: unknown): string => {
-  const message = error instanceof Error ? error.message : 'unknown Messages delivery failure';
-  return message
-    .replaceAll(/\b(?:Bearer\s+\S+|sk-[\w-]{8,}|ghp_[\w-]{8,})\b/giu, '[redacted]')
-    .replaceAll(/[\r\n\t]+/gu, ' ')
-    .replaceAll(/\s{2,}/gu, ' ')
-    .trim()
-    .slice(0, ERROR_PREVIEW_LIMIT);
-};
 
 const findWithPolling = Effect.fn('SpikeDelivery.confirm')(function* findWithPolling(
   transport: MessagesTransport,
@@ -97,7 +87,7 @@ const terminalizeChunk = (
   error: MessagesDeliveryError,
 ): Effect.Effect<never, JournalTransactionError | MessagesDeliveryError> =>
   journal
-    .markFailed(chunk.id, compactError(error), new Date())
+    .markFailed(chunk.id, safeErrorDiagnostic(error), new Date())
     .pipe(Effect.andThen(Effect.fail(error)));
 
 const deliverChunk = (
@@ -127,7 +117,7 @@ const deliverChunk = (
     attemptStarted = true;
     const sent = yield* Effect.result(transport.send(chunk.text));
     yield* Result.isFailure(sent)
-      ? journal.markAttemptUnknown(attemptId, compactError(sent.failure), new Date())
+      ? journal.markAttemptUnknown(attemptId, safeErrorDiagnostic(sent.failure), new Date())
       : journal.markSent(attemptId, chunk.id, new Date());
     const receipt = yield* findWithPolling(transport, frontierRowId, chunk.text);
     if (receipt !== null) {
@@ -188,5 +178,5 @@ const makeDeliveryService = (
   }),
 });
 
-export { compactError, makeDeliveryService };
+export { makeDeliveryService };
 export type { DeliveryError, DeliveryService };

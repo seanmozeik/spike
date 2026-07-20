@@ -19,6 +19,7 @@ import { ChatGuid, MessageGuid, MessagesRowId } from '../src/domain/ids';
 import type { ObservedMessage } from '../src/domain/inbound';
 import { makeConversationDiagnostic } from '../src/journal/conversation-diagnostic';
 import type { LikeAcknowledgement } from '../src/like/adapter';
+import { makeFailureLog, type FailureLog } from '../src/logging/failure-log';
 import type { MessagesInboxHandle } from '../src/messages-inbox';
 import type { OpenMessagesWatcher } from '../src/messages-watcher';
 import { makeSpikeEngine, type SpikeEngine } from '../src/service/engine';
@@ -117,6 +118,7 @@ interface MakeFixtureOptions {
   readonly behavior: TurnBehavior;
   readonly conversationProbe: () => Effect.Effect<void, unknown>;
   readonly conversationValidationIntervalMs: number | undefined;
+  readonly failureLog: FailureLog;
   readonly idleFrontier: number | undefined;
   readonly inbox: MessagesInboxHandle | undefined;
   readonly inboxScanFailures: number;
@@ -186,8 +188,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture(
 ) {
   const root = mkdtempSync(path.join(tmpdir(), 'spike-engine-'));
   const attachmentOptions = prepareAttachmentOptions(root);
-  const databasePath = path.join(root, 'spike.db');
-  const handle = yield* openFixtureJournal(databasePath, options.beforeOpen);
+  const handle = yield* openFixtureJournal(path.join(root, 'spike.db'), options.beforeOpen);
   const likes: string[] = [],
     sent: string[] = [];
   const queue: ObservedMessage[] = [...(options.preexisting ?? [])];
@@ -214,6 +215,7 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture(
     conversation,
     database: handle.database,
     delivery: makeTestDelivery(handle, sent, options.behavior, conversation),
+    failureLog: options.failureLog,
     handle: '+15555550199',
     inbox: options.inbox ?? makeInbox(queue, options.idleFrontier, scanTrace),
     like: options.like ?? makeLike(likes),
@@ -232,12 +234,15 @@ const makeFixture = Effect.fn('Test.makeEngineFixture')(function* makeFixture(
   return buildFixture({ conversation, engine, handle, likes, queue, root, scanTrace, sent, trace });
 });
 
+const silentFailureLog = (): FailureLog => makeFailureLog({ write: (): void => undefined });
+
 const makeEngineFixture = (options: EngineFixtureOptions = {}): ReturnType<typeof makeFixture> =>
   makeFixture({
     beforeOpen: options.beforeOpen,
     behavior: options.behavior ?? {},
     conversationProbe: options.conversationProbe ?? ((): Effect.Effect<void> => Effect.void),
     conversationValidationIntervalMs: options.conversationValidationIntervalMs,
+    failureLog: options.failureLog ?? silentFailureLog(),
     idleFrontier: options.idleFrontier,
     inbox: options.inbox,
     inboxScanFailures: options.inboxScanFailures ?? 0,
@@ -263,6 +268,7 @@ const makeMigratedEngineFixture = (
     behavior,
     conversationProbe: (): Effect.Effect<void> => Effect.void,
     conversationValidationIntervalMs: undefined,
+    failureLog: silentFailureLog(),
     idleFrontier: undefined,
     inbox: undefined,
     inboxScanFailures: 0,

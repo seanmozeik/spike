@@ -1,5 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 
+import { plainLogText } from '../logging/plain-text';
+
 type CodexLogMode = 'quiet' | 'verbose';
 
 type RepetitiveCodexFlow = 'model-refresh-timeout' | 'responses-websocket-unavailable';
@@ -26,28 +28,11 @@ interface RepetitionGroup {
 }
 
 const SUMMARY_INTERVAL = 25;
-const ANSI_CSI = '\u{1B}[';
+const MAX_REPETITION_GROUPS = 32;
 const RUST_LOG_LINE =
   /^\S+\s+(?<level>TRACE|DEBUG|INFO|WARN|ERROR)\s+(?<module>\S+):\s+(?<message>.*)$/u;
 const STATE_TRANSITION =
   /\b(?:exited|initialized|restarted|shutting down|started|starting|stopped|stopping)\b/iu;
-
-const stripAnsi = (line: string): string => {
-  const output: string[] = [];
-  let remaining = line;
-  let start = remaining.indexOf(ANSI_CSI);
-  while (start !== -1) {
-    const end = remaining.indexOf('m', start + ANSI_CSI.length);
-    if (end === -1) {
-      break;
-    }
-    output.push(remaining.slice(0, start));
-    remaining = remaining.slice(end + 1);
-    start = remaining.indexOf(ANSI_CSI);
-  }
-  output.push(remaining);
-  return output.join('');
-};
 
 const isLogLevel = (value: string | undefined): value is ParsedRustLogLine['level'] =>
   value === 'TRACE' ||
@@ -57,7 +42,7 @@ const isLogLevel = (value: string | undefined): value is ParsedRustLogLine['leve
   value === 'ERROR';
 
 const parseRustLogLine = (line: string): ParsedRustLogLine | null => {
-  const groups = RUST_LOG_LINE.exec(stripAnsi(line))?.groups;
+  const groups = RUST_LOG_LINE.exec(line)?.groups;
   const level = groups?.['level'];
   const module = groups?.['module'];
   const message = groups?.['message'];
@@ -90,6 +75,18 @@ const repeatSummary = (flow: RepetitiveCodexFlow, count: number): string =>
 
 const repetitionKey = (flow: RepetitiveCodexFlow, message: string): string => `${flow}:${message}`;
 
+const evictOldestRepetition = (groups: Map<string, RepetitionGroup>): readonly string[] => {
+  const oldestKey = groups.keys().next().value;
+  if (oldestKey === undefined) {
+    return [];
+  }
+  const oldest = groups.get(oldestKey);
+  groups.delete(oldestKey);
+  return oldest === undefined || oldest.count === 0
+    ? []
+    : [repeatSummary(oldest.flow, oldest.count)];
+};
+
 const flushSummaries = (groups: Map<string, RepetitionGroup>): readonly string[] => {
   const summaries: string[] = [];
   for (const group of groups.values()) {
@@ -101,48 +98,53 @@ const flushSummaries = (groups: Map<string, RepetitionGroup>): readonly string[]
   return summaries;
 };
 
+const recordRepetition = (
+  groups: Map<string, RepetitionGroup>,
+  flow: RepetitiveCodexFlow,
+  message: string,
+  firstLine: string,
+): readonly string[] => {
+  const key = repetitionKey(flow, message);
+  const group = groups.get(key);
+  if (group === undefined) {
+    const summaries = groups.size >= MAX_REPETITION_GROUPS ? evictOldestRepetition(groups) : [];
+    groups.set(key, { count: 0, flow });
+    return [...summaries, firstLine];
+  }
+  const count = group.count + 1;
+  groups.delete(key);
+  groups.set(key, { count, flow });
+  if (count < SUMMARY_INTERVAL) {
+    return [];
+  }
+  groups.set(key, { count: 0, flow });
+  return [repeatSummary(flow, count)];
+};
+
 const makeCodexStderrPolicy = (mode: CodexLogMode): CodexStderrPolicy => {
   if (mode === 'verbose') {
-    return { accept: (line) => [line], flush: () => [] };
+    return { accept: (line) => [plainLogText(line)], flush: () => [] };
   }
 
   const repetitions = new Map<string, RepetitionGroup>();
-  const recordRepetition = (
-    flow: RepetitiveCodexFlow,
-    message: string,
-  ): readonly string[] | null => {
-    const key = repetitionKey(flow, message);
-    const group = repetitions.get(key);
-    if (group === undefined) {
-      repetitions.set(key, { count: 0, flow });
-      return null;
-    }
-    group.count += 1;
-    if (group.count < SUMMARY_INTERVAL) {
-      return [];
-    }
-    const summary = repeatSummary(flow, group.count);
-    group.count = 0;
-    return [summary];
-  };
-
   return {
     accept: (line) => {
-      const parsed = parseRustLogLine(line);
+      const normalized = plainLogText(line);
+      const parsed = parseRustLogLine(normalized);
       if (parsed === null) {
-        return [line];
+        return [normalized];
       }
       if (parsed.level === 'TRACE' || parsed.level === 'DEBUG') {
         return [];
       }
       const flow = repetitiveFlow(parsed);
       if (flow !== null) {
-        return recordRepetition(flow, parsed.message) ?? [line];
+        return recordRepetition(repetitions, flow, parsed.message, normalized);
       }
       if (parsed.level === 'INFO' && !STATE_TRANSITION.test(parsed.message)) {
         return [];
       }
-      return [line];
+      return [normalized];
     },
     flush: () => flushSummaries(repetitions),
   };
@@ -150,10 +152,12 @@ const makeCodexStderrPolicy = (mode: CodexLogMode): CodexStderrPolicy => {
 
 const appendDiagnostic = async (path: string, line: string): Promise<void> => {
   try {
-    await appendFile(path, `${line}\n`, 'utf8');
+    await appendFile(path, `${plainLogText(line)}\n`, 'utf8');
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`[error] Spike could not persist Codex stderr: ${detail}\n${line}\n`);
+    process.stderr.write(
+      `[error] Spike could not persist Codex stderr: ${detail}\n${plainLogText(line)}\n`,
+    );
   }
 };
 

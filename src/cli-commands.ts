@@ -75,11 +75,11 @@ interface OperationCommandSet {
 
 type SpikeCliApp = Command.Command<'spike', Record<string, never>, Record<string, never>, unknown>;
 
-const command = (
+const command = <A>(
   name: string,
   description: string,
-  run: () => Promise<unknown>,
-  human: (value: unknown) => string = (value) => JSON.stringify(value),
+  run: () => Promise<A>,
+  human: (value: A) => string = (value) => JSON.stringify(value),
 ): OperationCommand =>
   Command.make(name, outputMode, ({ agent, json }) => {
     const mode = toMode(agent, json);
@@ -161,7 +161,7 @@ const makeOperationCommands = (handlers: OperationHandlers): OperationCommandSet
     handlers.doctor,
     (value) => (isDoctorReport(value) ? formatDoctor(value) : JSON.stringify(value)),
   ),
-  logsCommand: command('logs', 'Read the daemon log', handlers.logs),
+  logsCommand: command('logs', 'Read the daemon log', handlers.logs, (value) => value.text),
   restartCommand: command('restart', 'Restart the Spike LaunchAgent', handlers.restart),
   startCommand: command('start', 'Install and start the Spike LaunchAgent', handlers.start),
   statusCommand: command('status', 'Show compact service status', handlers.status, (value) =>

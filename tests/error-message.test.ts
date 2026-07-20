@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 
-import { errorMessageChain } from '../src/error-message';
+import { errorMessageChain, safeErrorDiagnostic, safeErrorTag } from '../src/error-message';
+import { WaitingForCapacity } from '../src/errors';
 
 const repeatedErrorChain = (
   remaining: number,
@@ -50,6 +51,52 @@ it('deduplicates repeated wrapper messages and stops cyclic causes', () => {
 
 it('formats non-error defects without throwing', () => {
   expect(errorMessageChain({ reason: 'fixture' })).toBe('[object Object]');
+});
+
+it('does not promote opaque cause metadata into a nested diagnostic', () => {
+  expect(errorMessageChain(new Error('turn failed', { cause: 'turn-1' }))).toBe('turn failed');
+  expect(errorMessageChain(new Error('turn failed', { cause: { turnId: 'turn-1' } }))).toBe(
+    'turn failed',
+  );
+});
+
+it('retains the classification of message-less tagged causes', () => {
+  const error = new Error('engine phase failed', {
+    cause: new WaitingForCapacity({ resetAt: null }),
+  });
+
+  expect(errorMessageChain(error)).toBe('engine phase failed: WaitingForCapacity');
+});
+
+it('does not throw when nested cause prototype inspection is hostile', () => {
+  const hostileCause = new Proxy(
+    {},
+    {
+      getPrototypeOf: (): never => {
+        throw new Error('prototype inspection denied');
+      },
+    },
+  );
+  const error = new Error('engine phase failed', { cause: hostileCause });
+
+  expect(safeErrorDiagnostic(error)).toBe('engine phase failed');
+});
+
+it('strips terminal formatting, redacts secrets, and bounds error tags', () => {
+  const tag = safeErrorTag({ _tag: `\u{1B}[31mBearer secret-token\n${'x'.repeat(100)}\u{1B}[0m` });
+
+  expect(tag).toBe(`[redacted] ${'x'.repeat(69)}`);
+  expect(tag).toHaveLength(80);
+});
+
+it('strips terminal formatting, redacts secrets, normalizes whitespace, and bounds diagnostics', () => {
+  const error = new Error(
+    `\u{1B}[31mBearer secret-token\nsk-abcdefghijk ghp_abcdefghijk ${'x'.repeat(400)}\u{1B}[0m`,
+  );
+  const diagnostic = safeErrorDiagnostic(error);
+
+  expect(diagnostic).toBe(`[redacted] [redacted] [redacted] ${'x'.repeat(267)}`);
+  expect(diagnostic).toHaveLength(300);
 });
 
 it('bounds traversed causes even when every wrapper repeats the same message', () => {

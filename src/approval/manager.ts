@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Effect, Result } from 'effect';
 
 import type { CodexServerRequest, JsonRpcId } from '../codex/server-request-registry';
-import { compactError } from '../delivery/service';
+import { safeErrorDiagnostic } from '../error-message';
 import { approvalOutcome, approvalPrompt } from './format';
 import { makeApprovalJournal, type ApprovalRecord, type CommandResolution } from './journal';
 import { subscribeRuntime } from './manager-subscriptions';
@@ -66,7 +66,7 @@ const respond = Effect.fn('SpikeApproval.respond')(function* respond(
   }
   yield* context.journal.markResponseFailed(
     record.id,
-    compactError(response.failure),
+    safeErrorDiagnostic(response.failure),
     context.options.now(),
   );
   return false;
@@ -94,7 +94,7 @@ const deliverNext = Effect.fn('SpikeApproval.deliverNext')(function* deliverNext
   }
   const expired = yield* context.journal.markDeliveryFailed(
     next.id,
-    compactError(delivered.failure),
+    safeErrorDiagnostic(delivered.failure),
     context.options.now(),
   );
   if (expired !== null) {

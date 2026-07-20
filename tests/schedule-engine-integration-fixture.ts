@@ -17,6 +17,7 @@ import { ChatGuid, CodexTurnId, MessageGuid, MessagesRowId } from '../src/domain
 import type { ObservedMessage } from '../src/domain/inbound';
 import { makeConversationDiagnostic } from '../src/journal/conversation-diagnostic';
 import type { LikeAcknowledgement } from '../src/like/adapter';
+import { makeFailureLog } from '../src/logging/failure-log';
 import { makeSpikeEngine, type SpikeEngine } from '../src/service/engine';
 import { prepareAttachmentOptions } from './engine-attachment-fixture';
 import { makeInbox } from './engine-inbox-fixture';
@@ -138,6 +139,7 @@ const makeIntegrationEngine = (
     conversation,
     database: handle.database,
     delivery,
+    failureLog: makeFailureLog({ write: (): void => undefined }),
     handle: HANDLE,
     inbox: scans.inbox,
     like: makeLike(),

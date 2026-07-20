@@ -15,6 +15,7 @@ import { ensureRuntimeLayout } from './config-files';
 import { requestControl } from './control-socket';
 import { SpikeRuntimeError } from './errors';
 import { guiDomain, launchAgentLabel, writeLaunchAgent } from './launchd';
+import { formatLogTail } from './logging/plain-text';
 import { liveOperatorCommands } from './operator/commands';
 import {
   classifyServiceInspection,
@@ -184,14 +185,18 @@ const readLogs = async (): Promise<LogResult> => {
       const stats = await handle.stat();
       const { size } = stats;
       const length = Math.min(size, LOG_TAIL_BYTES);
+      const offset = Math.max(0, size - length);
       const buffer = Buffer.alloc(length);
-      await handle.read(buffer, 0, length, Math.max(0, size - length));
+      await handle.read(buffer, 0, length, offset);
       contents = buffer.toString('utf8');
+      return {
+        ok: true,
+        path: paths.daemonLog,
+        text: formatLogTail(contents, { maxLines: LOG_TAIL_LINES, startsMidLine: offset > 0 }),
+      };
     } finally {
       await handle.close();
     }
-    const lines = contents.trimEnd().split('\n');
-    return { ok: true, path: paths.daemonLog, text: lines.slice(-LOG_TAIL_LINES).join('\n') };
   } catch {
     return { ok: true, path: paths.daemonLog, text: '' };
   }

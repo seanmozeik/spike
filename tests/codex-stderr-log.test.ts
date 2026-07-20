@@ -8,6 +8,13 @@ const logLine = (
   message: string,
 ): string => `2026-07-19T10:00:00.000000Z ${level} ${module}: ${message}`;
 
+const coloredLogLine = (
+  level: 'DEBUG' | 'ERROR' | 'INFO' | 'TRACE' | 'WARN',
+  module: string,
+  message: string,
+): string =>
+  `\u{1B}[2m2026-07-19T10:00:00.000000Z\u{1B}[0m \u{1B}[31m${level}\u{1B}[0m \u{1B}[2m${module}\u{1B}[0m\u{1B}[2m:\u{1B}[0m ${message}`;
+
 const websocketFailure = logLine(
   'ERROR',
   'codex_api::endpoint::responses_websocket',
@@ -21,12 +28,14 @@ describe('Codex stderr policy', () => {
       '\u{1B}[2m2026-07-19T10:00:00.000000Z\u{1B}[0m \u{1B}[34mDEBUG\u{1B}[0m \u{1B}[2mcodex_core::poll\u{1B}[0m\u{1B}[2m:\u{1B}[0m polling account state';
     const info = logLine('INFO', 'codex_core::poll', 'account remains available');
     const started = logLine('INFO', 'codex_core::runtime', 'runtime started');
-    const warning = logLine('WARN', 'codex_core::runtime', 'runtime capacity is degraded');
+    const warning = coloredLogLine('WARN', 'codex_core::runtime', 'runtime capacity is degraded');
 
     expect(policy.accept(debug)).toStrictEqual([]);
     expect(policy.accept(info)).toStrictEqual([]);
     expect(policy.accept(started)).toStrictEqual([started]);
-    expect(policy.accept(warning)).toStrictEqual([warning]);
+    expect(policy.accept(warning)).toStrictEqual([
+      logLine('WARN', 'codex_core::runtime', 'runtime capacity is degraded'),
+    ]);
   });
 
   it('never promotes TRACE or DEBUG lines based on transition words', () => {
@@ -44,9 +53,11 @@ describe('Codex stderr policy', () => {
 
   it('retains every diagnostic line in verbose mode', () => {
     const policy = makeCodexStderrPolicy('verbose');
-    const diagnostic = logLine('DEBUG', 'codex_core::poll', 'polling account state');
+    const diagnostic = coloredLogLine('DEBUG', 'codex_core::poll', 'polling account state');
 
-    expect(policy.accept(diagnostic)).toStrictEqual([diagnostic]);
+    expect(policy.accept(diagnostic)).toStrictEqual([
+      logLine('DEBUG', 'codex_core::poll', 'polling account state'),
+    ]);
     expect(policy.accept(websocketFailure)).toStrictEqual([websocketFailure]);
     expect(policy.accept(websocketFailure)).toStrictEqual([websocketFailure]);
     expect(policy.flush()).toStrictEqual([]);
@@ -95,7 +106,27 @@ describe('Codex stderr policy', () => {
     expect(policy.flush()).toStrictEqual([]);
   });
 
-  it('preserves actionable tool failures and their correlation context byte-for-byte', () => {
+  it('bounds variable repetitive signatures and reports suppressed repeats before eviction', () => {
+    const policy = makeCodexStderrPolicy('quiet');
+    const output = [...policy.accept(websocketFailure)];
+    expect(policy.accept(websocketFailure)).toStrictEqual([]);
+
+    for (let index = 0; index < 40; index += 1) {
+      const failure = logLine(
+        'ERROR',
+        'codex_api::endpoint::responses_websocket',
+        `failed to connect to websocket: variable detail ${String(index)}`,
+      );
+      output.push(...policy.accept(failure));
+    }
+
+    expect(output).toContain(
+      '[warn] codex app-server repeats suppressed flow=responses-websocket-unavailable count=1',
+    );
+    expect(policy.accept(websocketFailure)).toStrictEqual([websocketFailure]);
+  });
+
+  it('preserves actionable failure context while removing terminal presentation codes', () => {
     const policy = makeCodexStderrPolicy('quiet');
     const failure = logLine(
       'ERROR',
@@ -104,8 +135,8 @@ describe('Codex stderr policy', () => {
     );
 
     expect(policy.accept(failure)).toStrictEqual([failure]);
-    expect(policy.accept('child exited before emitting structured diagnostics')).toStrictEqual([
-      'child exited before emitting structured diagnostics',
-    ]);
+    expect(
+      policy.accept('\u{1B}[31mchild exited before emitting structured diagnostics\u{1B}[0m'),
+    ).toStrictEqual(['child exited before emitting structured diagnostics']);
   });
 });

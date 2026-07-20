@@ -28,7 +28,7 @@ const outputs = {
     healthy: true,
     ok: true,
   },
-  logs: { ok: true, path: '/tmp/daemon.log', text: 'ready' },
+  logs: { ok: true, path: '/tmp/daemon.log', text: 'ready\nprocessing message' },
   restart: { label: 'com.mozeik.spike', ok: true, status: 'started' },
   start: { label: 'com.mozeik.spike', ok: true, status: 'started' },
   status: {
@@ -138,6 +138,21 @@ it('renders approval status for humans and keeps the structured list stable', as
   expect(log.mock.calls[1]?.[0]).toBe(JSON.stringify(outputs.approvals));
   expect(formatApprovals({ approvals: [], ok: true })).toBe('No approvals.');
   expect(calls).toStrictEqual(['approvals', 'approvals']);
+});
+
+it('renders plain daemon text for humans and preserves explicit structured modes', async () => {
+  const calls: string[] = [];
+  const log = vi.spyOn(console, 'log').mockImplementation(suppressConsoleLog);
+  const run = commandRunner(calls);
+
+  await run(['logs']);
+  await run(['logs', '--json']);
+  await run(['logs', '--agent']);
+
+  expect(log.mock.calls[0]?.[0]).toBe(outputs.logs.text);
+  expect(log.mock.calls[1]?.[0]).toBe(JSON.stringify(outputs.logs, null, 2));
+  expect(log.mock.calls[2]?.[0]).toBe(JSON.stringify(outputs.logs));
+  expect(calls).toStrictEqual(['logs', 'logs', 'logs']);
 });
 
 it('preserves typed operator failures through the CLI boundary', async () => {
