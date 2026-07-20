@@ -20,10 +20,14 @@ interface AttachmentStagingOptions {
   readonly beforeSourceOpen?: (sourcePath: string) => void;
   readonly maxBytes?: number;
   readonly sourceRoot: string;
+  readonly stagingBoundary: string;
   readonly stagingRoot: string;
 }
 
-type AttachmentStagingRunOptions = Omit<AttachmentStagingOptions, 'stagingRoot'>;
+type AttachmentStagingRunOptions = Omit<
+  AttachmentStagingOptions,
+  'stagingBoundary' | 'stagingRoot'
+>;
 
 interface ObservedAttachmentRow {
   readonly filename: string | null;
@@ -87,23 +91,16 @@ const transitionResult = (
   return true;
 };
 
-const transitionAsyncAttachment = async (
-  database: Database,
-  options: AttachmentStagingRunOptions,
-  attachmentId: string,
-  result: Promise<StageResult>,
-): Promise<boolean> => transitionResult(database, options, attachmentId, await result);
-
-const transitionAttachment = (
+const transitionAttachment = async (
   database: Database,
   options: AttachmentStagingRunOptions,
   store: AttachmentStore,
   attachment: ObservedAttachmentRow,
-): boolean | Promise<boolean> => {
+): Promise<boolean> => {
   const result =
     attachment.source_path === null
       ? ({ code: 'missing-source', kind: 'Rejected' } as const)
-      : stageAttachmentFile(attachment.source_path, {
+      : await stageAttachmentFile(attachment.source_path, {
           ...(options.afterSourceStat === undefined
             ? {}
             : { afterSourceStat: options.afterSourceStat }),
@@ -116,9 +113,7 @@ const transitionAttachment = (
           sourceRoot: options.sourceRoot,
           store,
         });
-  return result instanceof Promise
-    ? transitionAsyncAttachment(database, options, attachment.id, result)
-    : transitionResult(database, options, attachment.id, result);
+  return transitionResult(database, options, attachment.id, result);
 };
 
 const stagingFailure = (
@@ -174,16 +169,10 @@ const stageObservedAttachment = (
   store: AttachmentStore,
   attachment: ObservedAttachmentRow,
 ): Effect.Effect<boolean, AttachmentStagingPermissionError | JournalTransactionError> =>
-  Effect.try({
+  Effect.tryPromise({
     catch: stagingFailure,
     try: () => transitionAttachment(database, options, store, attachment),
-  }).pipe(
-    Effect.flatMap((transition) =>
-      transition instanceof Promise
-        ? Effect.tryPromise({ catch: stagingFailure, try: () => transition })
-        : Effect.succeed(transition),
-    ),
-  );
+  });
 
 const makeStagePendingAttachments = (
   database: Database,

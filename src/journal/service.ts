@@ -219,7 +219,10 @@ const makeAttachmentOperations = (
   if (attachmentStaging === undefined) {
     return { audit: Effect.succeed(0), redact: makeRedact(database), stage: Effect.succeed(0) };
   }
-  const store = makeAttachmentStore(attachmentStaging.stagingRoot);
+  const store = makeAttachmentStore(
+    attachmentStaging.stagingRoot,
+    attachmentStaging.stagingBoundary,
+  );
   return {
     audit: makeAuditStagedAttachments(database, store),
     redact: makeRedact(database, store),

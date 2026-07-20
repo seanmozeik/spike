@@ -30,7 +30,8 @@ describe('spike paths', () => {
       attachmentRoots('/Users/test/Library/Messages/chat.db', '/Users/test/spike-work'),
     ).toEqual({
       attachmentSourceRoot: '/Users/test/Library/Messages/Attachments',
-      attachmentStagingRoot: '/Users/test/spike-work/tmp/attachments',
+      attachmentStagingBoundary: '/Users/test/spike-work',
+      attachmentStagingRoot: '/Users/test/spike-work/tmp/spike/attachments',
     });
   });
 });

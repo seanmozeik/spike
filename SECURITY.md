@@ -24,7 +24,7 @@ By default, Spike stores data under `~/.config/spike` and its LaunchAgent under 
 
 Runtime directories, configuration, database, logs, account snapshots, and the control socket are owner-only. Eligible terminal payloads are redacted after 30 days. Active or unreconciled work may be retained longer. Retention reduces local exposure; it is not secure erasure and does not remove data already sent to Codex, a provider, an MCP server, a hook, a local tool, Messages, backups, or filesystem snapshots.
 
-Spike copies accepted iMessage attachments into `<working_directory>/tmp/attachments` so Codex can read them inside its configured working directory. These copies use content-addressed names and owner-only permissions, but they contain the original file data or, for HEIC images, a JPEG conversion. Treat that directory as sensitive and do not use a shared working directory.
+Spike copies accepted iMessage attachments into `<working_directory>/tmp/spike/attachments` so Codex can read them inside its configured working directory. These copies use content-addressed names and owner-only permissions, but they contain the original file data or, for HEIC images, a JPEG conversion. Treat that directory as sensitive and do not use a shared working directory.
 
 Ordinary logs suppress app-server noise, but bounded diagnostics can still disclose operational context. Never attach a live Spike home, database, log, prompt, Codex home, or account snapshot to a public issue.
 

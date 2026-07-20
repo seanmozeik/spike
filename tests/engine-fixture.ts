@@ -153,6 +153,7 @@ const buildFixture = ({
 }: FixtureParts): EngineFixtureShape => ({
   archived: trace.archived,
   attachmentInputs: trace.attachmentInputs,
+  attachmentStagingBoundary: root,
   attachmentStagingRoot: path.join(root, 'staged-attachments'),
   conversation,
   database: handle.database,

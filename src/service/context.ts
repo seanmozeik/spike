@@ -34,6 +34,7 @@ interface SpikeEngineOptions {
   readonly accountObservationIntervalMs?: number;
   readonly approvalExpiryMs?: number;
   readonly attachmentSourceRoot: string;
+  readonly attachmentStagingBoundary: string;
   readonly attachmentStagingRoot: string;
   readonly chatGuid: ChatGuid;
   readonly conversation: ConversationPolicy;

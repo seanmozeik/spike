@@ -115,10 +115,12 @@ it.effect('migrates a real v13 journal through the current schema', () =>
     const journal = makeJournal(
       migrated.database,
       { chatGuid: ChatGuid.make('any;-;+15555550199'), handle: '+15555550199' },
-      { attachmentStaging: { sourceRoot, stagingRoot } },
+      { attachmentStaging: { sourceRoot, stagingBoundary: root, stagingRoot } },
     );
     expect(yield* journal.stagePendingAttachments).toBe(2);
-    expect(readdirSync(stagingRoot)).toHaveLength(2);
+    expect(
+      readdirSync(stagingRoot).filter((name) => name !== '.spike-attachment-store-v1'),
+    ).toHaveLength(2);
     expect(
       migrated.database
         .query<{ id: string; state: string }, []>(

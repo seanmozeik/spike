@@ -47,8 +47,14 @@ const CREATED_AT = '2026-07-19T10:00:00.000Z';
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
-    chmodSync(path.join(root, 'Messages', 'Attachments'), 0o700);
-    chmodSync(path.join(root, 'spike-home', 'state'), 0o700);
+    const messagesRoot = path.join(root, 'Messages', 'Attachments');
+    const stateRoot = path.join(root, 'spike-home', 'state');
+    if (existsSync(messagesRoot)) {
+      chmodSync(messagesRoot, 0o700);
+    }
+    if (existsSync(stateRoot)) {
+      chmodSync(stateRoot, 0o700);
+    }
     rmSync(root, { force: true, recursive: true });
   }
 });
@@ -70,11 +76,11 @@ const makeFixture = (): Effect.Effect<StagingFixture, unknown> =>
     const messagesRoot = path.join(root, 'Messages', 'Attachments');
     const paths = spikePaths(path.join(root, 'spike-home'));
     mkdirSync(messagesRoot, { mode: 0o700, recursive: true });
-    mkdirSync(paths.attachments, { mode: 0o700, recursive: true });
+    mkdirSync(paths.state, { mode: 0o700, recursive: true });
     const handle = yield* openJournal(paths.database);
     let closed = false;
     return {
-      attachmentStore: makeAttachmentStore(paths.attachments),
+      attachmentStore: makeAttachmentStore(paths.attachments, paths.state),
       close: (): void => {
         if (!closed) {
           closed = true;
@@ -150,6 +156,9 @@ const VALID_PNG = Buffer.from(
   'base64',
 );
 
+const stagedEntries = (root: string): readonly string[] =>
+  readdirSync(root).filter((name) => name !== '.spike-attachment-store-v1');
+
 it.effect('deduplicates the same Messages GUID across ingestion retries', () =>
   Effect.gen(function* guidRetry() {
     const fixture = yield* makeFixture();
@@ -158,7 +167,13 @@ it.effect('deduplicates the same Messages GUID across ingestion retries', () =>
     const journal = makeJournal(
       fixture.database,
       { chatGuid, handle: 'handle' },
-      { attachmentStaging: { sourceRoot: fixture.messagesRoot, stagingRoot: fixture.stagingRoot } },
+      {
+        attachmentStaging: {
+          sourceRoot: fixture.messagesRoot,
+          stagingBoundary: fixture.root,
+          stagingRoot: fixture.stagingRoot,
+        },
+      },
     );
     const message = {
       attachments: [
@@ -249,9 +264,9 @@ it.effect('stages supported images with generated owner-only names and hash dedu
       ),
     ).toBe(true);
     expect(rows[0]?.staged_path).toBe(rows[4]?.staged_path);
-    expect(readdirSync(fixture.stagingRoot)).toHaveLength(4);
+    expect(stagedEntries(fixture.stagingRoot)).toHaveLength(4);
     expect(lstatSync(fixture.stagingRoot).mode % 0o1000).toBe(0o700);
-    for (const file of readdirSync(fixture.stagingRoot)) {
+    for (const file of stagedEntries(fixture.stagingRoot)) {
       expect(lstatSync(path.join(fixture.stagingRoot, file)).mode % 0o1000).toBe(0o600);
       expect(file).toMatch(/^[a-f0-9]{64}\.(?:gif|jpg|png|webp)$/u);
     }
@@ -290,7 +305,7 @@ it.effect('leaves a changing source Observed until a stable read reaches EOF', (
         .query<{ state: string }, [string]>('SELECT state FROM attachments WHERE id = ?')
         .get('growing'),
     ).toStrictEqual({ state: 'Observed' });
-    expect(readdirSync(fixture.stagingRoot)).toStrictEqual([]);
+    expect(stagedEntries(fixture.stagingRoot)).toStrictEqual([]);
     expect(
       yield* makeListPendingInbound(fixture.database)(MessagesRowId.make(0), MessagesRowId.make(2)),
     ).toStrictEqual({ blocked: true, controls: [], messages: [] });
@@ -373,6 +388,7 @@ it.effect('opens FIFOs nonblocking and rejects FIFOs and sockets as device files
 it.effect('sweeps only strict temporary and unreferenced CAS names', () =>
   Effect.gen(function* sweepStore() {
     const fixture = yield* makeFixture();
+    expect(yield* stagePending(fixture)).toBe(0);
     const temporary = '.00000000-0000-4000-8000-000000000000.tmp';
     const orphan = `${'0'.repeat(64)}.png`;
     const unknown = 'operator-note';
@@ -381,7 +397,7 @@ it.effect('sweeps only strict temporary and unreferenced CAS names', () =>
     }
 
     expect(yield* stagePending(fixture)).toBe(0);
-    expect(readdirSync(fixture.stagingRoot)).toStrictEqual([unknown]);
+    expect(stagedEntries(fixture.stagingRoot)).toStrictEqual([unknown]);
     fixture.close();
   }),
 );
@@ -540,7 +556,7 @@ it.effect('rejects traversal, symlinks, non-files, oversize data, and invalid HE
         state: 'Failed',
       })),
     );
-    expect(readdirSync(fixture.stagingRoot)).toStrictEqual([]);
+    expect(stagedEntries(fixture.stagingRoot)).toStrictEqual([]);
     fixture.close();
   }),
 );
@@ -577,7 +593,7 @@ it.effect('rejects a source when an ancestor is replaced by a symlink before ope
         )
         .get(),
     ).toStrictEqual({ failure_code: 'symlink', state: 'Failed' });
-    expect(readdirSync(fixture.stagingRoot)).toStrictEqual([]);
+    expect(stagedEntries(fixture.stagingRoot)).toStrictEqual([]);
     expect(readFileSync(path.join(outside, 'photo.png'))).toStrictEqual(PNG);
     fixture.close();
   }),
@@ -612,6 +628,7 @@ it.effect('keeps permission denial bounded and path-free', () =>
 it.effect('normalizes a non-writable staging destination as a permission outage', () =>
   Effect.gen(function* nonWritableStaging() {
     const fixture = yield* makeFixture();
+    expect(yield* stagePending(fixture)).toBe(0);
     seedInbound(fixture.database, 'inbound', 1, null);
     writeFileSync(path.join(fixture.messagesRoot, 'photo.png'), PNG);
     seedAttachment(fixture.database, {
@@ -641,6 +658,7 @@ it.effect('normalizes a non-writable staging destination as a permission outage'
 it.effect('refuses a symlinked staging root without writing through it', () =>
   Effect.gen(function* symlinkedStagingRoot() {
     const fixture = yield* makeFixture();
+    expect(yield* stagePending(fixture)).toBe(0);
     seedInbound(fixture.database, 'inbound', 1, null);
     writeFileSync(path.join(fixture.messagesRoot, 'photo.png'), PNG);
     seedAttachment(fixture.database, {
@@ -668,6 +686,37 @@ it.effect('refuses a symlinked staging root without writing through it', () =>
   }),
 );
 
+it('refuses a pre-existing attachment root without Spike ownership', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-unowned-'));
+  roots.push(root);
+  const boundary = path.join(root, 'work');
+  const stagingRoot = path.join(boundary, 'tmp', 'spike', 'attachments');
+  mkdirSync(stagingRoot, { recursive: true });
+  const operatorFile = path.join(stagingRoot, `${'0'.repeat(64)}.pdf`);
+  writeFileSync(operatorFile, 'operator data');
+  const store = makeAttachmentStore(stagingRoot, boundary);
+
+  expect(() => store.sweep([])).toThrow('not owned by Spike');
+  expect(readFileSync(operatorFile, 'utf8')).toBe('operator data');
+});
+
+it('refuses a symlinked staging ancestor without writing outside the working directory', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'spike-attachment-parent-symlink-'));
+  roots.push(root);
+  const boundary = path.join(root, 'work');
+  const outside = path.join(root, 'outside');
+  mkdirSync(boundary);
+  mkdirSync(outside);
+  symlinkSync(outside, path.join(boundary, 'tmp'));
+  const stagingRoot = path.join(boundary, 'tmp', 'spike', 'attachments');
+  const store = makeAttachmentStore(stagingRoot, boundary);
+
+  expect(() => store.persist(PNG, '0'.repeat(64), '.png')).toThrow(
+    'ancestor is not a regular directory',
+  );
+  expect(readdirSync(outside)).toStrictEqual([]);
+});
+
 it.effect('reconciles the copy-before-journal crash window and assigns before recovery', () =>
   Effect.gen(function* crashAndRecovery() {
     const fixture = yield* makeFixture();
@@ -686,7 +735,7 @@ it.effect('reconciles the copy-before-journal crash window and assigns before re
       }),
     );
     expect(Result.isFailure(crashed)).toBe(true);
-    const [orphanName] = readdirSync(fixture.stagingRoot);
+    const [orphanName] = stagedEntries(fixture.stagingRoot);
     expect(orphanName).toBeDefined();
     if (orphanName === undefined) {
       throw new Error('expected orphaned CAS file');
@@ -698,7 +747,7 @@ it.effect('reconciles the copy-before-journal crash window and assigns before re
     ).toStrictEqual({ state: 'Observed' });
 
     expect(yield* stagePending(fixture)).toBe(1);
-    expect(readdirSync(fixture.stagingRoot)).toStrictEqual([orphanName]);
+    expect(stagedEntries(fixture.stagingRoot)).toStrictEqual([orphanName]);
     expect(lstatSync(orphanPath).ino).toBe(orphanInode);
     const { messages } = yield* makeListPendingInbound(fixture.database)(
       MessagesRowId.make(0),
@@ -742,7 +791,13 @@ it.effect('reconciles the copy-before-journal crash window and assigns before re
     const journal = makeJournal(
       reopened.database,
       { chatGuid: ChatGuid.make('chat'), handle: 'handle' },
-      { attachmentStaging: { sourceRoot: fixture.messagesRoot, stagingRoot: fixture.stagingRoot } },
+      {
+        attachmentStaging: {
+          sourceRoot: fixture.messagesRoot,
+          stagingBoundary: fixture.root,
+          stagingRoot: fixture.stagingRoot,
+        },
+      },
     );
     expect(
       yield* journal.redactTerminalPayloads(

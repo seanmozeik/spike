@@ -47,6 +47,11 @@ const seedStagedAttachment = (
   const stagedPath = path.join(fixture.attachmentStagingRoot, `${contentHash}.jpg`);
   const inboundId = `inbound-${String(rowId)}`;
   mkdirSync(fixture.attachmentStagingRoot, { mode: 0o700, recursive: true });
+  writeFileSync(
+    path.join(fixture.attachmentStagingRoot, '.spike-attachment-store-v1'),
+    'spike-attachment-store-v1\n',
+    { mode: 0o600 },
+  );
   writeFileSync(stagedPath, JPEG, { mode: 0o600 });
   fixture.database.run(
     `INSERT INTO inbound_messages(

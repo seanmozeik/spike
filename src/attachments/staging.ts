@@ -152,10 +152,10 @@ const stageConvertedHeic = async (
     : converted;
 };
 
-const stageAttachmentFile = (
+const stageAttachmentFile = async (
   storedPath: string,
   options: AttachmentFileStagingOptions,
-): Promise<StageResult> | StageResult => {
+): Promise<StageResult> => {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
     throw new SafeStagingError('attachment size limit is invalid');
@@ -166,7 +166,8 @@ const stageAttachmentFile = (
   }
   const classification = imageFormat(read.bytes);
   if (classification === 'heic') {
-    return stageConvertedHeic(read.bytes, maxBytes, options.store);
+    const converted = await stageConvertedHeic(read.bytes, maxBytes, options.store);
+    return converted;
   }
   const extension =
     classification === null

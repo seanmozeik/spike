@@ -14,6 +14,20 @@ import type { SchedulerTransition } from '../src/scheduler/model';
 import { makeMigratedEngineFixture } from './engine-fixture';
 import { seedVersionThirteenAttachmentState } from './version-thirteen-attachment-fixture';
 
+const stagedEntries = (root: string): readonly string[] =>
+  readdirSync(root).filter((name) => name !== '.spike-attachment-store-v1');
+
+const waitUntil = async (predicate: () => boolean, deadline = Date.now() + 1000): Promise<void> => {
+  if (predicate()) {
+    return;
+  }
+  if (Date.now() >= deadline) {
+    throw new Error('timed out waiting for recovered attachment submission');
+  }
+  await Bun.sleep(5);
+  await waitUntil(predicate, deadline);
+};
+
 it.effect('stages a migrated v13 pool before scheduler reload and active recovery', () =>
   Effect.gen(function* recoverPooledAttachments() {
     const gate = Promise.withResolvers<undefined>();
@@ -24,7 +38,7 @@ it.effect('stages a migrated v13 pool before scheduler reload and active recover
     );
 
     yield* fixture.engine.pollOnce;
-    yield* Effect.promise(() => Bun.sleep(10));
+    yield* Effect.promise(() => waitUntil(() => fixture.steers.length === 1));
 
     expect(fixture.steers).toStrictEqual([
       'pooled request\n[Image attachment (image/jpeg)]\n[Image attachment (image/jpeg)]',
@@ -73,7 +87,7 @@ it.effect('restarts after durable Staged persistence without duplicate CAS or as
 
         const first = yield* openJournal(databasePath);
         const firstJournal = makeJournal(first.database, conversation, {
-          attachmentStaging: { sourceRoot, stagingRoot },
+          attachmentStaging: { sourceRoot, stagingBoundary: root, stagingRoot },
         });
         yield* firstJournal.ingestObservedMessages(conversation.chatGuid, observedAt, [
           {
@@ -106,14 +120,14 @@ it.effect('restarts after durable Staged persistence without duplicate CAS or as
         expect(stagedPath?.state).toBe('Staged');
         expect(stagedPath?.staged_path).toBeDefined();
         first.close();
-        expect(readdirSync(stagingRoot)).toHaveLength(1);
+        expect(stagedEntries(stagingRoot)).toHaveLength(1);
 
         const restarted = yield* openJournal(databasePath);
         const restartedJournal = makeJournal(restarted.database, conversation, {
-          attachmentStaging: { sourceRoot, stagingRoot },
+          attachmentStaging: { sourceRoot, stagingBoundary: root, stagingRoot },
         });
         expect(yield* restartedJournal.stagePendingAttachments).toBe(0);
-        expect(readdirSync(stagingRoot)).toHaveLength(1);
+        expect(stagedEntries(stagingRoot)).toHaveLength(1);
         const { messages } = yield* restartedJournal.listPendingInbound(
           MessagesRowId.make(0),
           MessagesRowId.make(1),
@@ -136,7 +150,7 @@ it.effect('restarts after durable Staged persistence without duplicate CAS or as
 
         const verified = yield* openJournal(databasePath);
         const verifiedJournal = makeJournal(verified.database, conversation, {
-          attachmentStaging: { sourceRoot, stagingRoot },
+          attachmentStaging: { sourceRoot, stagingBoundary: root, stagingRoot },
         });
         expect(yield* verifiedJournal.stagePendingAttachments).toBe(0);
         expect(
@@ -154,7 +168,7 @@ it.effect('restarts after durable Staged persistence without duplicate CAS or as
             )
             .get()?.state,
         ).toBe('Assigned');
-        expect(readdirSync(stagingRoot)).toHaveLength(1);
+        expect(stagedEntries(stagingRoot)).toHaveLength(1);
         verified.close();
       }),
     (root) =>

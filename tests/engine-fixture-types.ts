@@ -17,6 +17,7 @@ import type { TurnBehavior } from './fake-codex-runtime';
 interface EngineFixture {
   readonly archived: string[];
   readonly attachmentInputs: string[][];
+  readonly attachmentStagingBoundary: string;
   readonly attachmentStagingRoot: string;
   readonly closeCodexConnection: () => void;
   readonly conversation: ConversationPolicy;

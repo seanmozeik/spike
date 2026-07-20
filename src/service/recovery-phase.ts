@@ -34,6 +34,7 @@ const processRecovery = (
     if (!(yield* ensureConversation(context))) {
       return false;
     }
+    yield* context.attachmentStaging.stageIfDue(context.now());
     yield* context.journal.auditStagedAttachments;
     yield* retryTurnTerminals(context);
     if (context.recoveryPending.value) {

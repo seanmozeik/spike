@@ -83,6 +83,7 @@ const makeContext = (
     {
       attachmentStaging: {
         sourceRoot: options.attachmentSourceRoot,
+        stagingBoundary: options.attachmentStagingBoundary,
         stagingRoot: options.attachmentStagingRoot,
       },
     },

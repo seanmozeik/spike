@@ -112,7 +112,7 @@ it.effect(
       roots.push(root);
       const stagingRoot = path.join(root, 'staged');
       const handle = yield* openJournal(path.join(root, 'spike.db'));
-      const store = makeAttachmentStore(stagingRoot);
+      const store = makeAttachmentStore(stagingRoot, root);
       const ids = [
         'missing',
         'modified',
@@ -171,7 +171,13 @@ it.effect(
       const journal = makeJournal(
         handle.database,
         { chatGuid: ChatGuid.make('chat'), handle: 'handle' },
-        { attachmentStaging: { sourceRoot: path.join(root, 'source'), stagingRoot } },
+        {
+          attachmentStaging: {
+            sourceRoot: path.join(root, 'source'),
+            stagingBoundary: root,
+            stagingRoot,
+          },
+        },
       );
       expect(yield* journal.auditStagedAttachments).toBe(ids.length);
 
@@ -240,6 +246,11 @@ it.effect('audits a staged symlink before startup recovery can submit it to Code
           const stagedPath = path.join(stagingRoot, `${contentHash}.jpg`);
           const target = path.join(root, 'outside-startup.jpg');
           mkdirSync(stagingRoot, { mode: 0o700, recursive: true });
+          writeFileSync(
+            path.join(stagingRoot, '.spike-attachment-store-v1'),
+            'spike-attachment-store-v1\n',
+            { mode: 0o600 },
+          );
           writeFileSync(target, bytes);
           symlinkSync(target, stagedPath);
           seedInbound(

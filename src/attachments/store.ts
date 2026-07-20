@@ -7,7 +7,6 @@ import {
   type BigIntStats,
   fsyncSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -18,8 +17,13 @@ import {
 import path from 'node:path';
 
 import { fileErrorCode, SafeStagingError } from './errors';
+import {
+  ensureAttachmentStoreRoot,
+  inspectAttachmentStoreRoot,
+  resolveAttachmentStoreRoot,
+  type AttachmentStoreRoot,
+} from './store-root';
 
-const OWNER_ONLY_DIRECTORY_MODE = 0o700;
 const OWNER_ONLY_FILE_MODE = 0o600;
 const FILE_MODE_MODULUS = 0x10_00n;
 const OWNER_ONLY_FILE_MODE_BIGINT = 0o600n;
@@ -47,25 +51,6 @@ const syncPath = (target: string): void => {
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
-  }
-};
-
-const inspectRoot = (root: string): boolean => {
-  const stat = lstatSync(root, { throwIfNoEntry: false });
-  if (stat === undefined) {
-    return false;
-  }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw new SafeStagingError('attachment staging root is not a regular directory');
-  }
-  chmodSync(root, OWNER_ONLY_DIRECTORY_MODE);
-  return true;
-};
-
-const ensureRoot = (root: string): void => {
-  mkdirSync(root, { mode: OWNER_ONLY_DIRECTORY_MODE, recursive: true });
-  if (!inspectRoot(root)) {
-    throw new SafeStagingError('attachment staging root was not created');
   }
 };
 
@@ -120,12 +105,13 @@ const privateFile = (stat: BigIntStats): boolean =>
   stat.nlink === SINGLE_LINK &&
   stat.mode % FILE_MODE_MODULUS === OWNER_ONLY_FILE_MODE_BIGINT;
 
-const audit = (root: string, reference: AttachmentAuditReference): boolean => {
+const audit = (storeRoot: AttachmentStoreRoot, reference: AttachmentAuditReference): boolean => {
+  const { root } = storeRoot;
   if (!Number.isSafeInteger(reference.totalBytes) || reference.totalBytes < 0) {
     return false;
   }
   const candidate = auditPath(root, reference);
-  if (candidate === null || !inspectRoot(root)) {
+  if (candidate === null || !inspectAttachmentStoreRoot(storeRoot)) {
     return false;
   }
   let descriptor: number | null = null;
@@ -161,11 +147,17 @@ const audit = (root: string, reference: AttachmentAuditReference): boolean => {
   return valid;
 };
 
-const persist = (root: string, bytes: Uint8Array, hash: string, extension: string): string => {
+const persist = (
+  storeRoot: AttachmentStoreRoot,
+  bytes: Uint8Array,
+  hash: string,
+  extension: string,
+): string => {
+  const { root } = storeRoot;
   if (!SAFE_EXTENSION.test(extension)) {
     throw new SafeStagingError('attachment extension is invalid');
   }
-  ensureRoot(root);
+  ensureAttachmentStoreRoot(storeRoot);
   const destination = directChild(root, path.join(root, `${hash}${extension}`));
   if (verifyExisting(destination, hash)) {
     return destination;
@@ -186,16 +178,18 @@ const persist = (root: string, bytes: Uint8Array, hash: string, extension: strin
   }
 };
 
-const remove = (root: string, stagedPath: string): void => {
+const remove = (storeRoot: AttachmentStoreRoot, stagedPath: string): void => {
+  const { root } = storeRoot;
   const candidate = directChild(root, stagedPath);
-  if (inspectRoot(root) && inspectFile(candidate)) {
+  if (inspectAttachmentStoreRoot(storeRoot) && inspectFile(candidate)) {
     unlinkSync(candidate);
     syncPath(root);
   }
 };
 
-const sweep = (root: string, referencedPaths: readonly string[]): number => {
-  ensureRoot(root);
+const sweep = (storeRoot: AttachmentStoreRoot, referencedPaths: readonly string[]): number => {
+  const { root } = storeRoot;
+  ensureAttachmentStoreRoot(storeRoot);
   const referenced = new Set(referencedPaths.map((candidate) => directChild(root, candidate)));
   let removed = 0;
   for (const name of readdirSync(root)) {
@@ -214,15 +208,15 @@ const sweep = (root: string, referencedPaths: readonly string[]): number => {
   return removed;
 };
 
-const makeAttachmentStore = (stagingRoot: string): AttachmentStore => {
-  const root = path.resolve(stagingRoot);
+const makeAttachmentStore = (stagingRoot: string, stagingBoundary: string): AttachmentStore => {
+  const storeRoot = resolveAttachmentStoreRoot(stagingRoot, stagingBoundary);
   return {
-    audit: (reference) => audit(root, reference),
-    persist: (bytes, hash, extension) => persist(root, bytes, hash, extension),
+    audit: (reference) => audit(storeRoot, reference),
+    persist: (bytes, hash, extension) => persist(storeRoot, bytes, hash, extension),
     remove: (stagedPath) => {
-      remove(root, stagedPath);
+      remove(storeRoot, stagedPath);
     },
-    sweep: (referencedPaths) => sweep(root, referencedPaths),
+    sweep: (referencedPaths) => sweep(storeRoot, referencedPaths),
   };
 };
 
