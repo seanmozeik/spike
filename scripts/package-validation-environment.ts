@@ -27,6 +27,10 @@ if [ -n "$SPIKE_VALIDATION_TRAP_LOG" ]; then
 fi
 `;
 
+const assertBannerOutput = (output: string): void => {
+  assert.match(output, new RegExp(BANNER_MARKER, 'u'));
+};
+
 const expectProgram = `
 set timeout ${String(EXPECT_TIMEOUT_SECONDS)}
 proc await_prompt {text} {
@@ -208,7 +212,7 @@ const runPreview = async (
     timeoutMs: PREVIEW_TIMEOUT_MS,
   });
   requireExit(preview, 0, 'packaged init --preview');
-  assert.match(preview.stdout, new RegExp(BANNER_MARKER, 'u'));
+  assertBannerOutput(preview.stdout);
   await assert.rejects(lstat(trapLog));
   const changedPaths = changedTreePaths(before, await snapshotTree(validationRoot));
   assert.deepEqual(
@@ -219,6 +223,7 @@ const runPreview = async (
 };
 
 export {
+  assertBannerOutput,
   COMMAND_TIMEOUT_MS,
   isolatedEnvironment,
   makeFakeCodex,

@@ -58,7 +58,6 @@
     "@clack/prompts": "^1.7.0",
     "@effect/platform-bun": "4.0.0-beta.98",
     "effect": "4.0.0-beta.98",
-    "gradient-string": "3.0.0",
     "rrule-temporal": "2.0.0",
     "smol-toml": "^1.6.1",
     "temporal-polyfill": "1.0.1"

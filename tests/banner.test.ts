@@ -8,6 +8,8 @@ describe('Spike banner', () => {
     expect(SPIKE_BANNER).toContain(String.raw`/  ___/\____ \|`);
     expect(SPIKE_BANNER).toContain(String.raw`\/ |__|           \/    \/`);
     expect(renderBanner(false)).not.toContain('\u001B[');
+    expect(renderBanner(true)).toContain('\u001B[38;2;216;240;120m');
+    expect(renderBanner(true)).toContain('\u001B[38;2;34;107;58m');
   });
 
   it.each([

@@ -10,6 +10,7 @@ import pkg from '../package.json' with { type: 'json' };
 import { assertExtractedArchiveRoot, validateArchiveMembers } from './package-validation-archive';
 import { recordedCommands, requireExit, runCommand } from './package-validation-command';
 import {
+  assertBannerOutput,
   COMMAND_TIMEOUT_MS,
   isolatedEnvironment,
   makeFakeCodex,
@@ -26,7 +27,6 @@ import { changedTreePaths, snapshotTree } from './package-validation-tree';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const BUILD_TIMEOUT_MS = 120_000;
-const BANNER_MARKER = '____________ |__|';
 const sourceCopyExclusions = new Set(['.ast-bro', '.git', 'artifacts', 'dist', 'node_modules']);
 const sourceSnapshotExclusions = new Set(['.ast-bro', '.git', 'node_modules']);
 
@@ -134,10 +134,10 @@ const validateCliSurface = async (
   );
   const help = await runCli(cli, ['--help'], work, environment, 'packaged --help');
   requireExit(help, 0, '--help');
-  assert.match(help.stdout, new RegExp(BANNER_MARKER, 'u'));
+  assertBannerOutput(help.stdout);
   const version = await runCli(cli, ['--version'], work, environment, 'packaged --version');
   requireExit(version, 0, '--version');
-  assert.match(version.stdout, new RegExp(BANNER_MARKER, 'u'));
+  assertBannerOutput(version.stdout);
   assert.match(version.stdout, new RegExp(pkg.version.replaceAll('.', String.raw`\.`), 'u'));
   await runPreview(validationRoot, cli, work, fakeBin);
 };
