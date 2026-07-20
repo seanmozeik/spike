@@ -108,7 +108,7 @@ Spike's own configuration lives at `~/.config/spike/config.toml`. Codex model, p
 
 The repository and release archive include fictional, path-safe examples:
 
-- [`examples/spike.config.toml`](examples/spike.config.toml) for the conversation and working directory;
+- [`examples/spike.config.toml`](examples/spike.config.toml) for the conversation, working directory, preferred name, and local timezone;
 - [`examples/codex/openai.toml`](examples/codex/openai.toml) for OpenAI model, sandbox, and approvals;
 - [`examples/codex/custom-provider.toml`](examples/codex/custom-provider.toml), [`ollama.toml`](examples/codex/ollama.toml), and [`lm-studio.toml`](examples/codex/lm-studio.toml) for alternate providers; and
 - [`examples/codex/mcp-and-hooks.toml`](examples/codex/mcp-and-hooks.toml) for MCP and hook configuration.

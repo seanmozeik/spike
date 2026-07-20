@@ -35,8 +35,10 @@ const fixture = (): { config: SpikeConfig; paths: SpikePaths; root: string } => 
     handle: '+15555550199',
     likeAcknowledgements: false,
     messagesDatabase: path.join(root, 'chat.db'),
+    preferredName: 'Example',
     promptPath: paths.prompt,
     swearing: 'off',
+    timezone: 'UTC',
     wit: 'off',
     workingDirectory: root,
   };

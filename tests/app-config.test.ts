@@ -9,6 +9,7 @@ import { afterEach, expect } from 'vitest';
 import { loadSpikeConfig } from '../src/app-config';
 import { ensureRuntimeLayout } from '../src/config-files';
 import { spikePaths } from '../src/paths';
+import { systemTimezone } from '../src/timezone';
 
 const roots: string[] = [];
 
@@ -39,6 +40,8 @@ swearing = "filthy"
 wit = "playful"
 messages_database = "${root}/chat.db"
 like_acknowledgements = false
+preferred_name = "Example"
+timezone = "America/New_York"
 `,
     );
     const config = yield* loadSpikeConfig(paths);
@@ -51,8 +54,10 @@ like_acknowledgements = false
       handle: '+15555550199',
       likeAcknowledgements: false,
       messagesDatabase: `${root}/chat.db`,
+      preferredName: 'Example',
       promptPath: `${root}/custom-prompt.md`,
       swearing: 'filthy',
+      timezone: 'America/New_York',
       wit: 'playful',
       workingDirectory: '/tmp/example-workspace',
     });
@@ -76,7 +81,9 @@ working_directory = "/tmp/example-workspace"
       casing: 'lowercase',
       emoji: 'after_user',
       finalPunctuation: 'no_full_stop',
+      preferredName: null,
       swearing: 'tasteful',
+      timezone: systemTimezone(),
       wit: 'dry',
     });
     writeFileSync(
@@ -91,6 +98,28 @@ emoji = "sometimes"
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) {
       expect(result.failure.message).toContain('emoji');
+    }
+  }),
+);
+
+it.effect('rejects an unknown configured timezone', () =>
+  Effect.gen(function* invalidTimezone() {
+    const root = mkdtempSync(path.join(tmpdir(), 'spike-invalid-timezone-'));
+    roots.push(root);
+    const paths = spikePaths(root);
+    yield* ensureRuntimeLayout(paths);
+    writeFileSync(
+      paths.config,
+      `chat_guid = "any;-;+15555550199"
+handle = "+15555550199"
+working_directory = "/tmp/example-workspace"
+timezone = "Europe/Not-A-City"
+`,
+    );
+    const result = yield* Effect.result(loadSpikeConfig(paths));
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure.message).toContain('timezone');
     }
   }),
 );

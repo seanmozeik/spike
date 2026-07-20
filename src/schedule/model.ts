@@ -1,5 +1,7 @@
 import { Schema } from 'effect';
 
+import { IanaTimezone } from '../timezone';
+
 class ScheduleError extends Schema.TaggedErrorClass<ScheduleError>()('ScheduleError', {
   cause: Schema.Defect(),
   message: Schema.String,
@@ -27,9 +29,7 @@ const RecurrenceRule = Schema.String.annotate({
   description:
     'Optional RFC 5545 RRULE anchored by oneShotAt as DTSTART; omit for a one-shot task.',
 });
-const Timezone = Schema.String.annotate({
-  description: 'An IANA timezone such as Europe/London used for recurring wall-clock semantics.',
-});
+const Timezone = IanaTimezone;
 
 const ScheduleCreate = Schema.Struct({
   name: Schema.optionalKey(ScheduleName),
@@ -40,7 +40,13 @@ const ScheduleCreate = Schema.Struct({
 });
 type ScheduleCreate = typeof ScheduleCreate.Type;
 
-const ScheduleList = Schema.Struct({ includeTerminal: Schema.optionalKey(Schema.Boolean) });
+const ScheduleList = Schema.Struct({
+  includeTerminal: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: 'Include completed and cancelled tasks. Defaults to false.',
+    }),
+  ),
+});
 type ScheduleList = typeof ScheduleList.Type;
 
 const ScheduleUpdate = Schema.Struct({

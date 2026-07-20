@@ -57,7 +57,9 @@ interface OnboardingPlan {
   readonly conversation: ConversationCandidate;
   readonly messagesDatabase: string;
   readonly personality: PersonalityAnswers;
+  readonly preferredName: string;
   readonly sandboxMode: 'danger-full-access' | 'read-only' | 'workspace-write';
+  readonly timezone: string;
   readonly workingDirectory: string;
 }
 

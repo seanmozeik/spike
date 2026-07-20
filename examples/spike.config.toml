@@ -14,3 +14,5 @@ swearing = "tasteful"
 wit = "dry"
 messages_database = "~/Library/Messages/chat.db"
 like_acknowledgements = true
+preferred_name = "Example"
+timezone = "Europe/London"

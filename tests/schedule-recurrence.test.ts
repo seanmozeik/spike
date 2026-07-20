@@ -1,7 +1,8 @@
 import { Temporal } from 'temporal-polyfill';
 import { describe, expect, it } from 'vitest';
 
-import { initialDueAt, instant, recurrenceCursor, validTimezone } from '../src/schedule/recurrence';
+import { initialDueAt, instant, recurrenceCursor } from '../src/schedule/recurrence';
+import { isValidIanaTimezone } from '../src/timezone';
 
 interface LocalStamp {
   readonly day: number;
@@ -67,11 +68,11 @@ describe('schedule recurrence input validation', () => {
   });
 
   it('validates IANA timezone identifiers before recurrence evaluation', () => {
-    expect(validTimezone('Europe/London')).toBe(true);
-    expect(validTimezone('America/New_York')).toBe(true);
-    expect(validTimezone('UTC')).toBe(true);
-    expect(validTimezone('Europe/Not-A-City')).toBe(false);
-    expect(validTimezone('')).toBe(false);
+    expect(isValidIanaTimezone('Europe/London')).toBe(true);
+    expect(isValidIanaTimezone('America/New_York')).toBe(true);
+    expect(isValidIanaTimezone('UTC')).toBe(true);
+    expect(isValidIanaTimezone('Europe/Not-A-City')).toBe(false);
+    expect(isValidIanaTimezone('')).toBe(false);
     expect(() =>
       recurrenceCursor(
         'FREQ=DAILY',

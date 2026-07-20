@@ -32,6 +32,7 @@ interface OnboardingPrompts {
   readonly intro: () => void;
   readonly peerHandle: () => Promise<string>;
   readonly personality: () => Promise<PersonalityAnswers>;
+  readonly preferredName: () => Promise<string>;
   readonly runTask: <A>(
     title: string,
     task: (log: (message: string) => void) => Promise<A>,
@@ -151,6 +152,16 @@ const contextPrompt = async (): Promise<string> =>
     }),
   );
 
+const preferredNamePrompt = async (): Promise<string> =>
+  unwrap(
+    await clack.text({
+      message: 'What would you like Spike to call you?',
+      placeholder: 'Sean',
+      validate: (value) =>
+        (value ?? '').trim().length === 0 ? 'Enter the name Spike should use' : undefined,
+    }),
+  );
+
 const peerHandlePrompt = async (): Promise<string> =>
   unwrap(
     await clack.text({
@@ -225,6 +236,7 @@ const realPrompts = (mode: OnboardingPromptMode = 'install'): OnboardingPrompts 
   },
   peerHandle: peerHandlePrompt,
   personality: personalityPrompt,
+  preferredName: preferredNamePrompt,
   runTask: runTaskPrompt,
   sandboxMode: sandboxPrompt,
   waitForFirstMessage: waitForFirstMessagePrompt,

@@ -6,7 +6,9 @@ const personality = {
   casing: 'lowercase',
   emoji: 'after_user',
   finalPunctuation: 'no_full_stop',
+  preferredName: null,
   swearing: 'tasteful',
+  timezone: 'Europe/London',
   wit: 'dry',
 } as const;
 
@@ -21,6 +23,7 @@ describe('Spike system prompt', () => {
     expect(prompt).toContain('how can I help');
     expect(prompt).not.toMatch(/\bS(?:ean)\b/u);
     expect(prompt).not.toContain('/Users/');
+    expect(prompt).toContain("The user's configured local timezone is Europe/London");
   });
 
   it('appends user context after the system layer', () => {
@@ -33,13 +36,32 @@ describe('Spike system prompt', () => {
     );
   });
 
+  it('places the configured preferred name above free-form user context', () => {
+    const assembled = assembleSystemPrompt('Anything else Spike should know.', {
+      ...personality,
+      preferredName: 'Sean',
+    });
+    const nameInstruction = 'The user has asked you to call them Sean.';
+    expect(assembled).toContain(nameInstruction);
+    expect(assembled.indexOf(nameInstruction)).toBeLessThan(assembled.indexOf('User context'));
+    expect(assembleSystemPrompt('', personality)).not.toContain('asked you to call them');
+  });
+
   it('does not add an empty context section', () => {
     expect(assembleSystemPrompt(' \n ', personality)).not.toContain('User context');
     expect(DEFAULT_USER_CONTEXT).not.toMatch(/\bS(?:ean)\b/u);
   });
 
-  it('assembles the schedule clarification and privacy invariants', () => {
+  it('assembles schedule consent, clarification, and privacy invariants', () => {
     const prompt = assembleSystemPrompt('', personality);
+    expect(prompt).toContain(
+      'when the user explicitly asks for a reminder, recurring task, cron, or future execution',
+    );
+    expect(prompt).toContain('create it without asking for redundant confirmation');
+    expect(prompt).toContain('ask whether they want you to schedule it and wait for a clear yes');
+    expect(prompt).toContain(
+      'Never create a schedule merely because a message contains a date or time',
+    );
     expect(prompt).toContain(
       'Clarify any date or time that cannot be anchored to one exact instant',
     );

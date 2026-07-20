@@ -251,7 +251,9 @@ const openRuntime = Effect.fn('SpikeCodex.open')(function* openRuntime(
     casing: config.casing,
     emoji: config.emoji,
     finalPunctuation: config.finalPunctuation,
+    preferredName: config.preferredName,
     swearing: config.swearing,
+    timezone: config.timezone,
     wit: config.wit,
   });
   const handle = yield* spawnAppServer(paths, config, logMode);

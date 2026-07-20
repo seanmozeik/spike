@@ -1,4 +1,5 @@
 import type { SpikePaths } from '../paths';
+import { systemTimezone } from '../timezone';
 import type { authenticateCodex, validateCodexConfiguration } from './codex';
 import {
   ConversationDiscoveryError,
@@ -146,6 +147,8 @@ const collectPlan = async (
   const codex = await prompts.chooseCodex(models);
   const approvalPolicy = await prompts.approvalPolicy();
   const sandboxMode = await prompts.sandboxMode();
+  const preferredNameAnswer = await prompts.preferredName();
+  const preferredName = preferredNameAnswer.trim();
   const context = await prompts.context();
   return {
     codexExecutable: preflight.codexExecutable,
@@ -156,7 +159,9 @@ const collectPlan = async (
       conversation,
       messagesDatabase: preflight.messagesDatabase,
       personality,
+      preferredName,
       sandboxMode,
+      timezone: systemTimezone(),
       workingDirectory,
     },
   };

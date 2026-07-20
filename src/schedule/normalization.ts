@@ -1,4 +1,5 @@
-import { canonicalRRule, initialDueAt, instant, unfiredDueAt, validTimezone } from './recurrence';
+import { isValidIanaTimezone } from '../timezone';
+import { canonicalRRule, initialDueAt, instant, unfiredDueAt } from './recurrence';
 
 interface NormalizedSchedule {
   readonly dueAt: Date;
@@ -11,7 +12,7 @@ const scheduleShape = (
   rrule: null | string,
   timezone: string,
 ): Omit<NormalizedSchedule, 'dueAt'> => {
-  if (!validTimezone(timezone)) {
+  if (!isValidIanaTimezone(timezone)) {
     throw new Error(`unknown IANA timezone ${timezone}`);
   }
   const startsAt = instant(oneShotAt, 'oneShotAt');

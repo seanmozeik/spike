@@ -24,7 +24,7 @@ Warmth is earned, not sprayed, and never sycophantic. Be warm when the user need
 
 Push back plainly when the user is about to do something dumb, and explain why before acting. Use a best-friend standard on judgement calls. Help with slightly cheeky requests without becoming preachy or moralizing. Treat the user as an adult.
 
-Use the schedule tools for reminders and future tasks. Clarify any date or time that cannot be anchored to one exact instant before creating a schedule. Before updating, pausing, resuming, or cancelling, list schedules when the target is not uniquely identified and ask which one the user means if multiple tasks match. Never guess a schedule ID. Confirm the effective local time and recurrence in plain language. Schedule IDs are internal and must never appear in a reply.
+Use the schedule tools when the user explicitly asks for a reminder, recurring task, cron, or future execution. If the request has an exact date and time, create it without asking for redundant confirmation. Clarify any date or time that cannot be anchored to one exact instant before creating it. If scheduling only seems helpful because the user mentioned an intention, deadline, future event, or recurring habit, ask whether they want you to schedule it and wait for a clear yes. Never create a schedule merely because a message contains a date or time. Before updating, pausing, resuming, or cancelling, list schedules when the target is not uniquely identified and ask which one the user means if multiple tasks match. Never guess a schedule ID. Confirm the effective local time and recurrence in plain language. Schedule IDs are internal and must never appear in a reply.
 
 Do not perform a character such as Jarvis or Alfred.`;
 
@@ -34,11 +34,13 @@ The test for every message is whether a sharp person who actually knows the user
 
 const DEFAULT_USER_CONTEXT = `Add personal context here: who the user is, how Spike should relate to them, the working environment, and any tools or standing context Spike should know.`;
 
-interface PersonalityConfig {
+interface SystemPromptConfig {
   readonly casing: CasingMode;
   readonly emoji: EmojiMode;
   readonly finalPunctuation: FinalPunctuationMode;
+  readonly preferredName: null | string;
   readonly swearing: SwearingMode;
+  readonly timezone: string;
   readonly wit: WitMode;
 }
 
@@ -121,8 +123,17 @@ const witInstruction = (mode: WitMode): string =>
     Match.exhaustive,
   );
 
-const assembleSystemPrompt = (userContext: string, config: PersonalityConfig): string => {
+const assembleSystemPrompt = (userContext: string, config: SystemPromptConfig): string => {
   const context = userContext.trim();
+  const preferredName = config.preferredName?.trim();
+  const configuredContext = [
+    preferredName === undefined || preferredName === ''
+      ? null
+      : `The user has asked you to call them ${preferredName}.`,
+    `The user's configured local timezone is ${config.timezone}. Use it unless the user explicitly specifies another timezone.`,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
   const systemPrompt = `${SPIKE_SYSTEM_PROMPT_PREFIX}
 
 ${casingInstruction(config.casing)}
@@ -135,7 +146,9 @@ ${swearingInstruction(config.swearing)}
 
 ${witInstruction(config.wit)}
 
-${SPIKE_SYSTEM_PROMPT_SUFFIX}`;
+${SPIKE_SYSTEM_PROMPT_SUFFIX}
+
+${configuredContext}`;
   return context === ''
     ? systemPrompt
     : `${systemPrompt}
@@ -146,4 +159,4 @@ ${context}`;
 };
 
 export { assembleSystemPrompt, DEFAULT_USER_CONTEXT };
-export type { PersonalityConfig };
+export type { SystemPromptConfig };

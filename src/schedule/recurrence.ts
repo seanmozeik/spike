@@ -1,6 +1,8 @@
 import { RRuleTemporal } from 'rrule-temporal';
 import { Temporal } from 'temporal-polyfill';
 
+import { isValidIanaTimezone } from '../timezone';
+
 interface RecurrenceCursor {
   readonly due: Date | null;
   readonly next: Date | null;
@@ -18,15 +20,6 @@ const SUPPORTED_FREQUENCIES = new Set([
   'MINUTELY',
   'SECONDLY',
 ]);
-
-const validTimezone = (timezone: string): boolean => {
-  try {
-    new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const instant = (value: string, field: string): Date => {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) {
@@ -149,14 +142,14 @@ const zoned = (value: Date, timezone: string): Temporal.ZonedDateTime =>
   Temporal.Instant.from(value.toISOString()).toZonedDateTimeISO(timezone);
 
 const canonicalRRule = (rrule: string, startsAt: Date, timezone: string): string => {
-  if (!validTimezone(timezone)) {
+  if (!isValidIanaTimezone(timezone)) {
     throw new Error(`unknown IANA timezone ${timezone}`);
   }
   return boundedRule(rrule, zoned(startsAt, timezone));
 };
 
 const rule = (rrule: string, startsAt: Date, timezone: string): RRuleTemporal => {
-  if (!validTimezone(timezone)) {
+  if (!isValidIanaTimezone(timezone)) {
     throw new Error(`unknown IANA timezone ${timezone}`);
   }
   const start = zoned(startsAt, timezone);
@@ -239,6 +232,5 @@ export {
   instant,
   recurrenceCursor,
   unfiredDueAt,
-  validTimezone,
 };
 export type { RecurrenceCursor };
