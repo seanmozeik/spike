@@ -70,7 +70,7 @@ const formatStatus = (status: StatusSnapshot): string => {
   const loop = status.eventLoop;
   if (loop !== undefined) {
     lines.push(
-      `Messages event loop · ${String(loop.filesystem.wakes)} wakes · ${String(loop.messages.queries)} queries · ${String(loop.reconciliation.failures)} reconcile failures`,
+      `Messages event loop · ${String(loop.messages.polls)} polls · ${String(loop.filesystem.wakes)} watcher wakes · ${String(loop.messages.queries)} queries · ${String(loop.reconciliation.failures)} reconcile failures`,
     );
   }
   return lines.join('\n');

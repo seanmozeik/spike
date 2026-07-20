@@ -197,19 +197,21 @@ it.effect('retries a failed inbox scan without another filesystem event', () =>
   }),
 );
 
-it.effect('reconciles a missed filesystem event on the slower authoritative timer', () =>
-  Effect.gen(function* missedEventReconciliation() {
-    const fixture = yield* makeEngineFixture({ reconcileIntervalMs: 10 });
+it.effect('polls Messages within the bounded liveness interval when the watcher stays silent', () =>
+  Effect.gen(function* missedWatcherEventPoll() {
+    const fixture = yield* makeEngineFixture({ reconcileIntervalMs: 60_000 });
     const run = yield* Effect.forkChild(fixture.engine.run);
     yield* waitFor(() => {
       expect(fixture.inboxScans).toBeGreaterThan(0);
     });
     fixture.push(inbound(1, 'missed watcher event'));
-    yield* TestClock.adjust('10 millis');
+    yield* TestClock.adjust('500 millis');
     yield* waitFor(() => {
       expect(fixture.inputs).toContain('missed watcher event');
     });
     expect(fixture.inboxScans).toBeGreaterThan(1);
+    expect(fixture.engine.readEventLoopDiagnostics().messages.polls).toBe(1);
+    expect(fixture.engine.readEventLoopDiagnostics().reconciliation.passes).toBe(0);
     yield* shutdown(fixture, run);
   }),
 );

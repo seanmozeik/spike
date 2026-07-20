@@ -76,8 +76,10 @@ const eventLoopDiagnostics = (): EngineEventLoopDiagnostics => ({
   },
   messages: {
     lastPassAt: '2026-07-19T12:00:00.006Z',
+    lastPollAt: '2026-07-19T12:00:00.005Z',
     lastQueryAt: '2026-07-19T12:00:00.006Z',
     passes: 5,
+    polls: 20,
     queries: 5,
   },
   reconciliation: {
@@ -192,7 +194,9 @@ describe('compact status', () => {
     const current = { ...snapshot(), eventLoop: eventLoopDiagnostics() };
     expect(isStatusSnapshot(current)).toBe(true);
     const output = formatStatus(current);
-    expect(output).toContain('Messages event loop · 4 wakes · 5 queries · 0 reconcile failures');
+    expect(output).toContain(
+      'Messages event loop · 20 polls · 4 watcher wakes · 5 queries · 0 reconcile failures',
+    );
     const serialized = JSON.stringify(current.eventLoop);
     expect(serialized).not.toContain('chat.db');
     expect(serialized).not.toContain('/Users/');

@@ -14,6 +14,7 @@ interface EventLoopCounters {
   readonly filesystemEvents: Counter;
   readonly filesystemWakes: Counter;
   readonly ingestionPasses: Counter;
+  readonly messagesPolls: Counter;
   readonly messagesQueries: Counter;
   readonly reconciliation: ReconciliationCounter;
   readonly startedAt: string;
@@ -29,8 +30,10 @@ interface EngineEventLoopDiagnostics {
   };
   readonly messages: {
     readonly lastPassAt: string | null;
+    readonly lastPollAt: string | null;
     readonly lastQueryAt: string | null;
     readonly passes: number;
+    readonly polls: number;
     readonly queries: number;
   };
   readonly reconciliation: {
@@ -57,6 +60,7 @@ const makeEventLoopCounters = (startedAt: Date): EventLoopCounters => ({
   filesystemEvents: makeCounter(),
   filesystemWakes: makeCounter(),
   ingestionPasses: makeCounter(),
+  messagesPolls: makeCounter(),
   messagesQueries: makeCounter(),
   reconciliation: { ...makeCounter(), failures: 0, lastFailureAt: null },
   startedAt: startedAt.toISOString(),
@@ -104,8 +108,10 @@ const readEventLoopDiagnostics = (
   },
   messages: {
     lastPassAt: counters.ingestionPasses.lastAt,
+    lastPollAt: counters.messagesPolls.lastAt,
     lastQueryAt: counters.messagesQueries.lastAt,
     passes: counters.ingestionPasses.count,
+    polls: counters.messagesPolls.count,
     queries: counters.messagesQueries.count,
   },
   reconciliation: {

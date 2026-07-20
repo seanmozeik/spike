@@ -3,7 +3,7 @@ import { Duration, Effect, Result, type Semaphore } from 'effect';
 import { runSchedulePhase, scheduleNextWake } from '../schedule/phase';
 import type { SchedulerController } from '../scheduler/controller';
 import { report, type EngineContext } from './context';
-import { markReconciliation } from './event-loop-diagnostics';
+import { mark, markReconciliation } from './event-loop-diagnostics';
 import { pollApprovalEvents } from './ingestion-phase';
 import {
   runAccountObservationPhase,
@@ -14,11 +14,13 @@ import { processRecovery } from './recovery-phase';
 import type { EngineWakeKind } from './wake';
 
 const DEFAULT_RECONCILE_INTERVAL_MS = Duration.toMillis('1 minute');
+const DEFAULT_MESSAGES_POLL_INTERVAL_MS = Duration.toMillis('500 millis');
 const DEFAULT_PHASE_RETRY_MS = Duration.toMillis('1 second');
 const APPROVAL_RETRY_TIMER = 'approval-retry';
 const INGESTION_RETRY_TIMER = 'ingestion-retry';
 const RECOVERY_RETRY_TIMER = 'recovery-retry';
 const RECONCILE_TIMER = 'messages-reconcile';
+const MESSAGES_POLL_TIMER = 'messages-poll';
 const DATABASE_REPLACEMENT_RETRY_TIMER = 'database-replacement-retry';
 
 const runRetriablePhase = Effect.fn('SpikeEngine.runRetriablePhase')(function* runRetriablePhase(
@@ -46,6 +48,13 @@ const scheduleReconciliation = (context: EngineContext): Effect.Effect<void> =>
     RECONCILE_TIMER,
     'Reconcile',
     context.options.reconcileIntervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS,
+  );
+
+const scheduleMessagesPoll = (context: EngineContext): Effect.Effect<void> =>
+  context.wakes.scheduleAfter(
+    MESSAGES_POLL_TIMER,
+    'MessagesPoll',
+    DEFAULT_MESSAGES_POLL_INTERVAL_MS,
   );
 
 const prepareDatabaseReplacement = (context: EngineContext): Effect.Effect<boolean> =>
@@ -173,7 +182,12 @@ const runIngestionWake = (
   recoveryReady: boolean,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* ingestForWakes() {
-    if (!wakes.has('Messages') && !wakes.has('Reconcile') && !databaseReplaced) {
+    if (
+      !wakes.has('Messages') &&
+      !wakes.has('MessagesPoll') &&
+      !wakes.has('Reconcile') &&
+      !databaseReplaced
+    ) {
       return true;
     }
     const processed = yield* runRetriablePhase(
@@ -215,6 +229,10 @@ const runWakeBatch = Effect.fn('SpikeEngine.runWakeBatch')(function* runWakeBatc
   wakes: ReadonlySet<EngineWakeKind>,
 ) {
   const reconciliation = wakes.has('Reconcile');
+  if (wakes.has('MessagesPoll')) {
+    mark(context.loopDiagnostics.messagesPolls, context.now());
+    yield* scheduleMessagesPoll(context);
+  }
   yield* runMaintenanceWakes(context, controller, wakes);
   const databaseReplaced = wakes.has('DatabaseReplaced');
   if (databaseReplaced && !(yield* prepareDatabaseReplacement(context))) {
@@ -267,10 +285,10 @@ const makeEngineCycle = (
       report(context, result.failure);
     }
   });
-  return Effect.all([scheduleReconciliation(context), scheduleMaintenance(context)], {
-    concurrency: 'unbounded',
-    discard: true,
-  }).pipe(Effect.andThen(Effect.forever(wakeCycle)));
+  return Effect.all(
+    [scheduleMessagesPoll(context), scheduleReconciliation(context), scheduleMaintenance(context)],
+    { concurrency: 'unbounded', discard: true },
+  ).pipe(Effect.andThen(Effect.forever(wakeCycle)));
 };
 
 export { makeEngineCycle, runExplicitPoll };

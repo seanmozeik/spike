@@ -78,7 +78,7 @@ const hasValidEventLoop = (value: Record<string, unknown>): boolean => {
   const { watcher } = eventLoop;
   return (
     hasValidCounter(filesystem, ['events', 'wakes']) &&
-    hasValidCounter(messages, ['passes', 'queries']) &&
+    hasValidCounter(messages, ['passes', 'polls', 'queries']) &&
     hasValidCounter(reconciliation, ['failures', 'passes']) &&
     (watcher === null ||
       (isObject(watcher) &&

@@ -13,12 +13,18 @@ const numericField = (value: Record<string, unknown>, key: string): number =>
 
 const checkState = (
   watcher: Record<string, unknown> | null,
+  messagesPolls: number,
   reconciliationFailures: number,
 ): EventLoopCheckState => {
-  if (watcher === null || watcher['active'] !== true) {
+  if (messagesPolls === 0) {
     return 'fail';
   }
-  return reconciliationFailures > 0 || numericField(watcher, 'failures') > 0 ? 'warn' : 'pass';
+  return reconciliationFailures > 0 ||
+    watcher === null ||
+    watcher['active'] !== true ||
+    numericField(watcher, 'failures') > 0
+    ? 'warn'
+    : 'pass';
 };
 
 export const eventLoopCheck = (value: unknown): EventLoopCheck => {
@@ -30,11 +36,12 @@ export const eventLoopCheck = (value: unknown): EventLoopCheck => {
   const reconciliation = isObject(value['reconciliation']) ? value['reconciliation'] : {};
   const filesystem = isObject(value['filesystem']) ? value['filesystem'] : {};
   const active = watcher?.['active'] === true;
+  const polls = numericField(messages, 'polls');
   const failures = numericField(reconciliation, 'failures');
   const watcherFailures = watcher === null ? 0 : numericField(watcher, 'failures');
   return {
-    detail: `${active ? 'watching' : 'not watching'}, ${String(numericField(filesystem, 'wakes'))} wakes, ${String(numericField(messages, 'queries'))} queries, ${String(numericField(messages, 'passes'))} passes, ${String(failures)} reconciliation failures, ${String(watcherFailures)} watcher failures`,
+    detail: `${String(polls)} liveness polls, ${active ? 'watching' : 'not watching'}, ${String(numericField(filesystem, 'wakes'))} watcher wakes, ${String(numericField(messages, 'queries'))} queries, ${String(numericField(messages, 'passes'))} passes, ${String(failures)} reconciliation failures, ${String(watcherFailures)} watcher failures`,
     name: 'Messages event loop',
-    state: checkState(watcher, failures),
+    state: checkState(watcher, polls, failures),
   };
 };

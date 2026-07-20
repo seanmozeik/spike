@@ -5,6 +5,7 @@ type EngineWakeKind =
   | 'Approval'
   | 'DatabaseReplaced'
   | 'Messages'
+  | 'MessagesPoll'
   | 'Reconcile'
   | 'Recovery'
   | 'Redaction'

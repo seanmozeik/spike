@@ -41,7 +41,14 @@ const occurrences = (text: string, value: string): number => text.split(value).l
 
 const eventLoop: EngineEventLoopDiagnostics = {
   filesystem: { events: 3, lastEventAt: null, lastWakeAt: null, wakes: 1 },
-  messages: { lastPassAt: null, lastQueryAt: null, passes: 2, queries: 2 },
+  messages: {
+    lastPassAt: null,
+    lastPollAt: null,
+    lastQueryAt: null,
+    passes: 2,
+    polls: 20,
+    queries: 2,
+  },
   reconciliation: { failures: 0, lastAt: null, lastFailureAt: null, passes: 1 },
   startedAt: '2026-07-19T12:00:00.000Z',
   watcher: {
@@ -107,7 +114,7 @@ it.effect('keeps attachment diagnostics separate from Codex outage recovery and 
     expect(serializedSignals).not.toContain('could not use any configured Codex account');
     expect(doctor.checks.find(({ name }) => name === 'Messages event loop')).toStrictEqual({
       detail:
-        'watching, 1 wakes, 2 queries, 2 passes, 0 reconciliation failures, 0 watcher failures',
+        '20 liveness polls, watching, 1 watcher wakes, 2 queries, 2 passes, 0 reconciliation failures, 0 watcher failures',
       name: 'Messages event loop',
       state: 'pass',
     });
